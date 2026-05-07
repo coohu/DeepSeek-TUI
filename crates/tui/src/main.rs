@@ -1358,7 +1358,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                 crate::config::ApiProvider::Ollama => {
                     ("OLLAMA_API_KEY", "deepseek auth set --provider ollama")
                 }
-                crate::config::ApiProvider::Shengsuanyun => (
+                crate::config::ApiProvider::ShengSuanYun => (
                     "SHENGSUANYUN_API_KEY",
                     "deepseek auth set --provider shengsuanyun --api-key \"...\"",
                 ),
@@ -1377,7 +1377,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
                     crate::config::ApiProvider::Sglang => "sglang",
                     crate::config::ApiProvider::Vllm => "vllm",
                     crate::config::ApiProvider::Ollama => "ollama",
-                    crate::config::ApiProvider::Shengsuanyun => "shengsuanyun",
+                    crate::config::ApiProvider::ShengSuanYun => "shengsuanyun",
                     crate::config::ApiProvider::Deepseek
                     | crate::config::ApiProvider::DeepseekCN => "deepseek",
                 }
@@ -1612,6 +1612,11 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             crate::config::ApiProvider::Ollama,
             "ollama",
             &["OLLAMA_API_KEY"][..],
+        ),
+        (
+            crate::config::ApiProvider::ShengSuanYun,
+            "shengsuanyun",
+            &["SHENGSUANYUN_API_KEY"][..],
         ),
     ] {
         let in_env = env_names.iter().any(|n| {

@@ -5083,7 +5083,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Sglang => Some("SGLang"),
             crate::config::ApiProvider::Vllm => Some("vLLM"),
             crate::config::ApiProvider::Ollama => Some("Ollama"),
-            crate::config::ApiProvider::Shengsuanyun => Some("ShengSuanYun"),
+            crate::config::ApiProvider::ShengSuanYun => Some("ShengSuanYun"),
         };
         let header_data = HeaderData::new(
             app.mode,
@@ -5715,7 +5715,7 @@ async fn apply_provider_picker_api_key(
             ApiProvider::Sglang => &mut providers.sglang,
             ApiProvider::Vllm => &mut providers.vllm,
             ApiProvider::Ollama => &mut providers.ollama,
-            ApiProvider::Shengsuanyun => &mut providers.shengsuanyun,
+            ApiProvider::ShengSuanYun => &mut providers.shengsuanyun,
         };
         entry.api_key = Some(api_key);
     }

@@ -810,7 +810,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
             | ApiProvider::Vllm
-            | ApiProvider::Shengsuanyun => {
+            | ApiProvider::ShengSuanYun => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
             ApiProvider::Ollama => {}
@@ -828,7 +828,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
             | ApiProvider::Vllm
-            | ApiProvider::Shengsuanyun => {
+            | ApiProvider::ShengSuanYun => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
@@ -848,7 +848,7 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::Fireworks
             | ApiProvider::Sglang
             | ApiProvider::Vllm
-            | ApiProvider::Shengsuanyun => {
+            | ApiProvider::ShengSuanYun => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }

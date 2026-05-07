@@ -32,7 +32,7 @@ enum ProviderArg {
     Sglang,
     Vllm,
     Ollama,
-    Shengsuanyun,
+    ShengSuanYun,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -47,7 +47,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Sglang => ProviderKind::Sglang,
             ProviderArg::Vllm => ProviderKind::Vllm,
             ProviderArg::Ollama => ProviderKind::Ollama,
-            ProviderArg::Shengsuanyun => ProviderKind::ShengSuanYun,
+            ProviderArg::ShengSuanYun => ProviderKind::ShengSuanYun,
         }
     }
 }
