@@ -13,6 +13,7 @@ use crate::client::PromptInspection;
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
+    save_api_key_for, save_active_provider_to_config,
 };
 use crate::config_ui::ConfigUiMode;
 use crate::core::coherence::CoherenceState;
@@ -51,6 +52,8 @@ pub enum OnboardingState {
     /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
     /// land in `~/.deepseek/settings.toml` via `Settings::set("locale", …)`.
     Language,
+    /// Pick the API provider (DeepSeek or ShengSuanYun) before entering key.
+    ApiKeyProviderSelect,
     ApiKey,
     TrustDirectory,
     Tips,
@@ -104,7 +107,7 @@ fn initial_onboarding_state(
     }
 
     if was_onboarded && needs_api_key {
-        OnboardingState::ApiKey
+        OnboardingState::ApiKeyProviderSelect
     } else if was_onboarded && needs_workspace_trust {
         OnboardingState::TrustDirectory
     } else {
@@ -910,6 +913,8 @@ pub struct App {
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
+    /// Provider chosen during the ApiKeyProviderSelect onboarding step.
+    pub onboarding_api_provider: ApiProvider,
     // Hooks system
     pub hooks: HookExecutor,
     #[allow(dead_code)]
@@ -1534,6 +1539,7 @@ impl App {
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
+            onboarding_api_provider: ApiProvider::Deepseek,
             hooks,
             yolo: initial_mode == AppMode::Yolo,
             yolo_restore,
@@ -1658,6 +1664,24 @@ impl App {
         let key = self.api_key_input.trim().to_string();
         if key.is_empty() {
             return Err(ApiKeyError::Empty);
+        }
+
+        let provider = self.onboarding_api_provider;
+
+        if matches!(provider, ApiProvider::ShengSuanYun) {
+            // Save key to [providers.shengsuanyun] and activate the provider.
+            let path = save_api_key_for(provider, &key)
+                .map_err(|source| ApiKeyError::SaveFailed { source })?;
+            save_active_provider_to_config(
+                provider,
+                Some(crate::config::DEFAULT_SHENGSUANYUN_MODEL),
+            )
+            .map_err(|source| ApiKeyError::SaveFailed { source })?;
+            self.api_key_input.clear();
+            self.api_key_cursor = 0;
+            self.onboarding_needs_api_key = false;
+            self.api_key_env_only = false;
+            return Ok(SavedCredential::ConfigFile(path));
         }
 
         match save_api_key(&key) {
@@ -4427,12 +4451,12 @@ mod tests {
     fn returning_user_missing_api_key_goes_to_api_key_screen() {
         assert_eq!(
             initial_onboarding_state(false, true, true, false),
-            OnboardingState::ApiKey
+            OnboardingState::ApiKeyProviderSelect
         );
         // workspace trust doesn't affect the api-key gate
         assert_eq!(
             initial_onboarding_state(false, true, true, true),
-            OnboardingState::ApiKey
+            OnboardingState::ApiKeyProviderSelect
         );
     }
 

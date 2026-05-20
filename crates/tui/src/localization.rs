@@ -434,6 +434,10 @@ pub enum MessageId {
     OnboardApiKeyPlaceholder,
     OnboardApiKeyLabel,
     OnboardApiKeyFooter,
+    // Onboarding screens — API key provider selection.
+    OnboardApiKeyProviderTitle,
+    OnboardApiKeyProviderBlurb,
+    OnboardApiKeyProviderFooter,
     // Onboarding screens — workspace trust prompt.
     OnboardTrustTitle,
     OnboardTrustQuestion,
@@ -668,6 +672,9 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardApiKeyPlaceholder,
     MessageId::OnboardApiKeyLabel,
     MessageId::OnboardApiKeyFooter,
+    MessageId::OnboardApiKeyProviderTitle,
+    MessageId::OnboardApiKeyProviderBlurb,
+    MessageId::OnboardApiKeyProviderFooter,
     MessageId::OnboardTrustTitle,
     MessageId::OnboardTrustQuestion,
     MessageId::OnboardTrustLocationPrefix,
@@ -1178,6 +1185,12 @@ fn english(id: MessageId) -> &'static str {
         MessageId::OnboardApiKeyPlaceholder => "(paste key here)",
         MessageId::OnboardApiKeyLabel => "Key: ",
         MessageId::OnboardApiKeyFooter => "Press Enter to save, Esc to go back.",
+        // Onboarding — provider selection.
+        MessageId::OnboardApiKeyProviderTitle => "Choose API Provider",
+        MessageId::OnboardApiKeyProviderBlurb => {
+            "Select the provider for your API key:"
+        }
+        MessageId::OnboardApiKeyProviderFooter => "Press 1 or 2 to select, Esc to go back.",
         // Onboarding — workspace trust.
         MessageId::OnboardTrustTitle => "Trust Workspace",
         MessageId::OnboardTrustQuestion => "Do you trust the contents of this directory?",
@@ -1562,6 +1575,10 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardApiKeyPlaceholder => "（ここにキーを貼り付け）",
         MessageId::OnboardApiKeyLabel => "キー: ",
         MessageId::OnboardApiKeyFooter => "Enter で保存、Esc で戻る。",
+        // Onboarding — provider selection.
+        MessageId::OnboardApiKeyProviderTitle => "API プロバイダを選択",
+        MessageId::OnboardApiKeyProviderBlurb => "API キーのプロバイダを選択してください：",
+        MessageId::OnboardApiKeyProviderFooter => "1 または 2 を押して選択、Esc で戻る。",
         // Onboarding — workspace trust.
         MessageId::OnboardTrustTitle => "ワークスペースを信頼",
         MessageId::OnboardTrustQuestion => "このディレクトリの内容を信頼しますか？",
@@ -1874,6 +1891,10 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardApiKeyPlaceholder => "（在此粘贴密钥）",
         MessageId::OnboardApiKeyLabel => "密钥: ",
         MessageId::OnboardApiKeyFooter => "Enter 保存，Esc 返回。",
+        // Onboarding — provider selection.
+        MessageId::OnboardApiKeyProviderTitle => "选择 API 提供商",
+        MessageId::OnboardApiKeyProviderBlurb => "请选择您的 API 密钥所属提供商：",
+        MessageId::OnboardApiKeyProviderFooter => "按 1 或 2 选择，Esc 返回。",
         // Onboarding — workspace trust.
         MessageId::OnboardTrustTitle => "信任工作目录",
         MessageId::OnboardTrustQuestion => "你信任此目录中的内容吗？",
@@ -2248,6 +2269,10 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardApiKeyPlaceholder => "(cole a chave aqui)",
         MessageId::OnboardApiKeyLabel => "Chave: ",
         MessageId::OnboardApiKeyFooter => "Enter para salvar, Esc para voltar.",
+        // Onboarding — provider selection.
+        MessageId::OnboardApiKeyProviderTitle => "Escolha o provedor de API",
+        MessageId::OnboardApiKeyProviderBlurb => "Selecione o provedor da sua chave de API:",
+        MessageId::OnboardApiKeyProviderFooter => "Pressione 1 ou 2 para selecionar, Esc para voltar.",
         // Onboarding — workspace trust.
         MessageId::OnboardTrustTitle => "Confiar no diretório",
         MessageId::OnboardTrustQuestion => "Você confia no conteúdo deste diretório?",
@@ -2638,6 +2663,10 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::OnboardApiKeyPlaceholder => "(pega la clave acá)",
         MessageId::OnboardApiKeyLabel => "Clave: ",
         MessageId::OnboardApiKeyFooter => "Enter para guardar, Esc para volver.",
+        // Onboarding — provider selection.
+        MessageId::OnboardApiKeyProviderTitle => "Elige el proveedor de API",
+        MessageId::OnboardApiKeyProviderBlurb => "Selecciona el proveedor de tu clave de API:",
+        MessageId::OnboardApiKeyProviderFooter => "Presiona 1 o 2 para seleccionar, Esc para volver.",
         MessageId::OnboardTrustTitle => "Confiar en el directorio",
         MessageId::OnboardTrustQuestion => "¿Confías en el contenido de este directorio?",
         MessageId::OnboardTrustLocationPrefix => "Estás en ",

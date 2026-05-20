@@ -2208,9 +2208,13 @@ async fn run_event_loop(
                         return Ok(());
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
-                        app.onboarding = OnboardingState::Welcome;
+                        app.onboarding = OnboardingState::ApiKeyProviderSelect;
                         app.api_key_input.clear();
                         app.api_key_cursor = 0;
+                        app.status_message = None;
+                    }
+                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKeyProviderSelect => {
+                        app.onboarding = OnboardingState::Language;
                         app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Language => {
@@ -2246,6 +2250,26 @@ async fn run_event_loop(
                             }
                         }
                     }
+                    // Provider picker hotkeys select provider and advance to key entry.
+                    KeyCode::Char(c)
+                        if app.onboarding == OnboardingState::ApiKeyProviderSelect
+                            && c.is_ascii_digit() =>
+                    {
+                        if let Some((_, provider_id, _, _)) =
+                            onboarding::provider_select::PROVIDER_OPTIONS
+                                .iter()
+                                .find(|(hotkey, _, _, _)| *hotkey == c)
+                        {
+                            use crate::config::ApiProvider;
+                            if let Some(provider) = ApiProvider::parse(provider_id) {
+                                app.onboarding_api_provider = provider;
+                                app.onboarding = OnboardingState::ApiKey;
+                                app.api_key_input.clear();
+                                app.api_key_cursor = 0;
+                                app.status_message = None;
+                            }
+                        }
+                    }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
                             onboarding::advance_onboarding_from_welcome(app);
@@ -2254,6 +2278,14 @@ async fn run_event_loop(
                             // Enter without a digit pick keeps the existing
                             // setting (which defaults to "auto").
                             onboarding::advance_onboarding_after_language(app);
+                        }
+                        OnboardingState::ApiKeyProviderSelect => {
+                            // Enter with no digit pressed keeps the current
+                            // provider selection and advances to key entry.
+                            app.onboarding = OnboardingState::ApiKey;
+                            app.api_key_input.clear();
+                            app.api_key_cursor = 0;
+                            app.status_message = None;
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_string();
@@ -2281,15 +2313,37 @@ async fn run_event_loop(
                                     // Recreate the engine so it picks up the newly saved key
                                     // without requiring a full process restart.
                                     let _ = engine_handle.send(Op::Shutdown).await;
-                                    // Stamp the new key on the long-lived
-                                    // `Config` reference so any future clone
-                                    // (e.g. a subsequent /provider switch)
-                                    // sees it; the explicit-override path
-                                    // in `deepseek_api_key` (#343) makes
-                                    // this win immediately.
-                                    config.api_key = Some(key.clone());
+                                    // Stamp the new key on the long-lived `Config` so the engine
+                                    // restart picks it up immediately. For ShengSuanYun the key
+                                    // lives under [providers.shengsuanyun] and we also flip the
+                                    // active provider; for DeepSeek the legacy root `api_key` path.
                                     let mut refreshed_config = config.clone();
-                                    refreshed_config.api_key = Some(key);
+                                    use crate::config::ApiProvider;
+                                    if app.onboarding_api_provider == ApiProvider::ShengSuanYun {
+                                        config.provider =
+                                            Some(ApiProvider::ShengSuanYun.as_str().to_string());
+                                        config.default_text_model = Some(
+                                            crate::config::DEFAULT_SHENGSUANYUN_MODEL.to_string(),
+                                        );
+                                        refreshed_config.provider =
+                                            Some(ApiProvider::ShengSuanYun.as_str().to_string());
+                                        refreshed_config.default_text_model = Some(
+                                            crate::config::DEFAULT_SHENGSUANYUN_MODEL.to_string(),
+                                        );
+                                        refreshed_config
+                                            .providers
+                                            .get_or_insert_with(Default::default)
+                                            .shengsuanyun
+                                            .api_key = Some(key);
+                                        // Update in-process model and provider so the current
+                                        // session uses SSY immediately without a restart.
+                                        app.model =
+                                            crate::config::DEFAULT_SHENGSUANYUN_MODEL.to_string();
+                                        app.api_provider = ApiProvider::ShengSuanYun;
+                                    } else {
+                                        config.api_key = Some(key.clone());
+                                        refreshed_config.api_key = Some(key);
+                                    }
                                     let engine_config = build_engine_config(app, &refreshed_config);
                                     engine_handle = spawn_engine(engine_config, &refreshed_config);
                                     app.offline_mode = false;

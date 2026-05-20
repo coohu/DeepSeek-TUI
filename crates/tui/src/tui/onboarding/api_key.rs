@@ -3,21 +3,38 @@
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::config::ApiProvider;
 use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::App;
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
+    let is_ssy = app.onboarding_api_provider == ApiProvider::ShengSuanYun;
+
+    // Title: provider-specific
+    let title = if is_ssy {
+        "Connect your 胜算云 (ShengSuanYun) API key".to_string()
+    } else {
+        app.tr(MessageId::OnboardApiKeyTitle).to_string()
+    };
+
+    // Step 1: provider-specific URL
+    let step1 = if is_ssy {
+        "步骤 1.  登录 https://www.shengsuanyun.com 获取 API 密钥。".to_string()
+    } else {
+        app.tr(MessageId::OnboardApiKeyStep1).to_string()
+    };
+
     let mut lines = vec![
         Line::from(Span::styled(
-            app.tr(MessageId::OnboardApiKeyTitle).to_string(),
+            title,
             Style::default()
                 .fg(palette::DEEPSEEK_SKY)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            app.tr(MessageId::OnboardApiKeyStep1).to_string(),
+            step1,
             Style::default().fg(palette::TEXT_PRIMARY),
         )),
         Line::from(Span::styled(

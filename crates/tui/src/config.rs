@@ -3112,6 +3112,46 @@ impl SavedCredential {
     }
 }
 
+/// Write `provider = "<name>"` (and optionally `default_text_model`) at the
+/// root level of `~/.deepseek/config.toml` so that the chosen provider and
+/// its model are active on subsequent launches.
+pub fn save_active_provider_to_config(
+    provider: ApiProvider,
+    default_model: Option<&str>,
+) -> Result<PathBuf> {
+    let config_path = default_config_path()
+        .context("Failed to resolve config path: home directory not found.")?;
+    ensure_parent_dir(&config_path)?;
+
+    let mut doc: toml::Value = if config_path.exists() {
+        let raw = fs::read_to_string(&config_path)?;
+        toml::from_str(&raw)
+            .with_context(|| format!("Failed to parse config at {}", config_path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc
+        .as_table_mut()
+        .context("Config root must be a TOML table.")?;
+    table.insert(
+        "provider".to_string(),
+        toml::Value::String(provider.as_str().to_string()),
+    );
+    if let Some(model) = default_model {
+        table.insert(
+            "default_text_model".to_string(),
+            toml::Value::String(model.to_string()),
+        );
+    }
+
+    let serialized = toml::to_string_pretty(&doc).context("failed to serialize updated config")?;
+    write_config_file_secure(&config_path, &serialized)
+        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
+
+    Ok(config_path)
+}
+
 /// Save the active provider's API key.
 ///
 /// **Dual-write strategy (#593):** writes to `~/.deepseek/config.toml`

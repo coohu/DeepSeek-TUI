@@ -135,10 +135,17 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.session.last_prompt_tokens = None;
             app.session.last_completion_tokens = None;
         }
+        let save_note = match super::persist_root_string_key("default_text_model", &model_id) {
+            Ok(path) => format!(" (saved to {})", path.display()),
+            Err(err) => format!(" (warning: could not save: {err})"),
+        };
         CommandResult::with_message_and_action(
-            tr(app.ui_locale, MessageId::ModelChanged)
-                .replace("{old}", &old_model)
-                .replace("{new}", &model_id),
+            format!(
+                "{}{save_note}",
+                tr(app.ui_locale, MessageId::ModelChanged)
+                    .replace("{old}", &old_model)
+                    .replace("{new}", &model_id)
+            ),
             AppAction::UpdateCompaction(app.compaction_config()),
         )
     } else {

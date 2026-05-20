@@ -1221,11 +1221,11 @@ pub fn lsp_command(app: &mut App, arg: Option<&str>) -> CommandResult {
 pub fn logout(app: &mut App) -> CommandResult {
     match clear_api_key() {
         Ok(()) => {
-            app.onboarding = OnboardingState::ApiKey;
+            app.onboarding = OnboardingState::ApiKeyProviderSelect;
             app.onboarding_needs_api_key = true;
             app.api_key_input.clear();
             app.api_key_cursor = 0;
-            CommandResult::message("Logged out. Enter a new API key to continue.")
+            CommandResult::message("Logged out. Select a provider and enter a new API key to continue.")
         }
         Err(e) => CommandResult::error(format!("Failed to clear API key: {e}")),
     }
@@ -1882,7 +1882,7 @@ mod tests {
         let mut app = create_test_app();
         let result = logout(&mut app);
         assert!(result.message.is_some());
-        assert_eq!(app.onboarding, OnboardingState::ApiKey);
+        assert_eq!(app.onboarding, OnboardingState::ApiKeyProviderSelect);
         assert!(app.onboarding_needs_api_key);
         assert!(app.api_key_input.is_empty());
         assert_eq!(app.api_key_cursor, 0);

@@ -2,6 +2,7 @@
 
 pub mod api_key;
 pub mod language;
+pub mod provider_select;
 pub mod trust_directory;
 pub mod welcome;
 
@@ -34,6 +35,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(),
         OnboardingState::Language => language::lines(app),
+        OnboardingState::ApiKeyProviderSelect => provider_select::lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
         OnboardingState::Tips => tips_lines(app),
@@ -73,7 +75,8 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     // Welcome + Language + Tips are always shown.
     let mut total = 3;
     if app.onboarding_needs_api_key {
-        total += 1;
+        // Provider select + key input = 2 steps
+        total += 2;
     }
     if needs_trust {
         total += 1;
@@ -82,10 +85,14 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
         OnboardingState::Language => 2,
-        OnboardingState::ApiKey => 3,
-        OnboardingState::TrustDirectory => {
-            // Welcome (1) + Language (2) + optional ApiKey
+        OnboardingState::ApiKeyProviderSelect => 3,
+        OnboardingState::ApiKey => {
+            // Welcome (1) + Language (2) + ApiKeyProviderSelect (3)
             if app.onboarding_needs_api_key { 4 } else { 3 }
+        }
+        OnboardingState::TrustDirectory => {
+            // Welcome (1) + Language (2) + optional ApiKeyProviderSelect + ApiKey
+            if app.onboarding_needs_api_key { 5 } else { 3 }
         }
         OnboardingState::Tips => total,
         OnboardingState::None => total,
@@ -218,7 +225,7 @@ pub fn advance_onboarding_from_welcome(app: &mut App) {
 pub fn advance_onboarding_after_language(app: &mut App) {
     app.status_message = None;
     if app.onboarding_needs_api_key {
-        app.onboarding = OnboardingState::ApiKey;
+        app.onboarding = OnboardingState::ApiKeyProviderSelect;
     } else if !app.trust_mode && needs_trust(&app.workspace) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else {
