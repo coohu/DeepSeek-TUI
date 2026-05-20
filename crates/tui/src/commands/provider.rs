@@ -27,21 +27,16 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let Some(target) = ApiProvider::parse(name) else {
         return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openrouter, novita, fireworks, sglang, vllm, or ollama."
+            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openai, atlascloud, openrouter, novita, fireworks, sglang, vllm, or ollama."
         ));
     };
 
     let model = match model_arg {
         None => None,
-        Some(raw) if target == ApiProvider::Ollama => Some(raw.trim().to_string()),
-        Some(raw) => match normalize_model_name(&expand_model_alias(raw)) {
-            Some(normalized) => Some(normalized),
-            None => {
-                return CommandResult::error(format!(
-                    "Invalid model '{raw}'. Try: flash, pro, deepseek-v4-flash, deepseek-v4-pro."
-                ));
-            }
-        },
+        Some(raw) => Some(
+            normalize_model_name(&expand_model_alias(raw))
+                .unwrap_or_else(|| raw.trim().to_string()),
+        ),
     };
 
     if target == app.api_provider && model.is_none() {
@@ -123,6 +118,19 @@ mod tests {
         match result.action {
             Some(AppAction::SwitchProvider { provider, model }) => {
                 assert_eq!(provider, ApiProvider::Openrouter);
+                assert_eq!(model, None);
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_to_atlascloud_emits_action() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("atlascloud"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::Atlascloud);
                 assert_eq!(model, None);
             }
             other => panic!("expected SwitchProvider, got {other:?}"),
@@ -257,11 +265,15 @@ mod tests {
     }
 
     #[test]
-    fn invalid_model_returns_error() {
+    fn arbitrary_model_id_passes_through() {
         let mut app = create_test_app();
         let result = provider(&mut app, Some("nim gpt-4"));
-        let msg = result.message.expect("expected error message");
-        assert!(msg.contains("Invalid model"));
-        assert!(result.action.is_none());
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::NvidiaNim);
+                assert_eq!(model.as_deref(), Some("gpt-4"));
+            }
+            other => panic!("expected SwitchProvider action, got {other:?}"),
+        }
     }
 }

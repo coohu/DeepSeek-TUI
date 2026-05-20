@@ -15,8 +15,9 @@ use deepseek_mcp::{
 };
 use deepseek_protocol::{
     AppResponse, EventFrame, ExecApprovalRequestEvent, PromptRequest, PromptResponse,
-    ReviewDecision, Thread, ThreadForkParams, ThreadListParams, ThreadReadParams, ThreadRequest,
-    ThreadResponse, ThreadResumeParams, ThreadSetNameParams, ThreadStatus, ToolPayload,
+    ResponseChannel, ReviewDecision, Thread, ThreadForkParams, ThreadListParams, ThreadReadParams,
+    ThreadRequest, ThreadResponse, ThreadResumeParams, ThreadSetNameParams, ThreadStatus,
+    ToolPayload,
 };
 use deepseek_state::{
     JobStateRecord, JobStateStatus, SessionSource, StateStore, ThreadListFilters, ThreadMetadata,
@@ -292,7 +293,7 @@ impl JobManager {
 
     pub fn list(&self) -> Vec<JobRecord> {
         let mut out = self.jobs.values().cloned().collect::<Vec<_>>();
-        out.sort_by_key(|job| -job.updated_at);
+        out.sort_by_key(|job| std::cmp::Reverse(job.updated_at));
         out
     }
 
@@ -319,7 +320,7 @@ impl JobManager {
     pub fn load_from_store(&mut self, store: &StateStore) -> Result<()> {
         let persisted = store.list_jobs(Some(500))?;
         for job in persisted {
-            let fallback_status = job_state_status_to_runtime(job.status.clone());
+            let fallback_status = job_state_status_to_runtime(job.status);
             let parsed = Self::parse_persisted_detail(job.detail.as_deref());
             let (status, detail, retry, history) = if let Some(detail_state) = parsed {
                 (
@@ -913,6 +914,7 @@ impl Runtime {
                         EventFrame::ResponseDelta {
                             response_id: response_id.clone(),
                             delta: "queued".to_string(),
+                            channel: ResponseChannel::Text,
                         },
                         EventFrame::ResponseEnd { response_id },
                     ],
@@ -992,6 +994,7 @@ impl Runtime {
                 EventFrame::ResponseDelta {
                     response_id: response_id.clone(),
                     delta: "model-selected".to_string(),
+                    channel: ResponseChannel::Text,
                 },
                 EventFrame::ResponseEnd { response_id },
             ],
@@ -1252,6 +1255,7 @@ impl Runtime {
                         "at": entry.at
                     })
                     .to_string(),
+                    channel: ResponseChannel::Text,
                 })
             })
             .collect::<Vec<_>>();

@@ -23,6 +23,8 @@
 //!     - `gc.auto = 0` on the side repo (we don't want background gcs
 //!       firing mid-turn) plus an explicit `git gc --prune=now` after
 //!       prune.
+//!     - Startup cleanup for stale `tmp_pack_*` files left by interrupted
+//!       git pack operations.
 //!
 //! ## Failure model
 //!
@@ -38,5 +40,12 @@ pub mod repo;
 #[allow(unused_imports)]
 pub use paths::{snapshot_dir_for, snapshot_git_dir};
 pub use prune::{DEFAULT_MAX_AGE, prune_older_than};
+
+/// Maximum snapshots kept per workspace side-repo. Oldest are pruned
+/// after each new snapshot to cap disk usage (#1112).
+pub const DEFAULT_MAX_SNAPSHOTS: usize = 50;
 #[allow(unused_imports)]
-pub use repo::{Snapshot, SnapshotId, SnapshotRepo};
+pub use repo::{
+    DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT, Snapshot, SnapshotId, SnapshotRepo,
+    estimate_workspace_size_bounded,
+};

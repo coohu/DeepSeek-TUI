@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +25,7 @@ use std::os::unix::process::CommandExt;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use super::shell_output::{summarize_output, truncate_with_meta};
+use crate::child_env;
 use crate::sandbox::{
     CommandSpec,
     ExecEnv,
@@ -109,6 +110,7 @@ pub struct ShellJobDetail {
 }
 
 pub struct ShellDeltaResult {
+    pub command: String,
     pub result: ShellResult,
     pub stdout_total_len: usize,
     pub stderr_total_len: usize,
@@ -327,6 +329,15 @@ impl BackgroundShell {
 
     /// Collect output from the background threads
     fn collect_output(&mut self) {
+        // Kill the whole process group before joining reader threads.
+        // When the shell spawned persistent background jobs (e.g. `nohup curl`),
+        // those subprocesses keep the pipe write-ends open after the shell exits.
+        // Without this kill, handle.join() blocks indefinitely, freezing the UI
+        // event loop that calls list_jobs() → poll() → collect_output().
+        #[cfg(unix)]
+        if let Some(ShellChild::Process(ref mut proc)) = self.child {
+            let _ = kill_child_process_group(proc);
+        }
         if let Some(handle) = self.stdout_thread.take() {
             let _ = handle.join();
         }
@@ -416,7 +427,6 @@ impl BackgroundShell {
     }
 
     /// Kill the process
-    #[allow(dead_code)]
     fn kill(&mut self) -> Result<()> {
         if let Some(ref mut child) = self.child {
             child.kill().context("Failed to kill process")?;
@@ -458,7 +468,17 @@ impl BackgroundShell {
     }
 
     fn job_snapshot(&self) -> ShellJobSnapshot {
-        let (stdout_full, stderr_full, stdout_len, stderr_len) = self.full_output();
+        // Use tail_from_buffer instead of full_output so we never clone the
+        // entire accumulated stdout/stderr for display purposes.  full_output
+        // is O(total_bytes_written), which caused the ShellManager mutex to be
+        // held for an arbitrarily long time during list_jobs() calls from the
+        // TUI event loop — freezing input handling on long automation runs.
+        let (stdout_len, stdout_tail) = tail_from_buffer(&self.stdout_buffer, 1200);
+        let (stderr_len, stderr_tail) = self
+            .stderr_buffer
+            .as_ref()
+            .map(|buf| tail_from_buffer(buf, 1200))
+            .unwrap_or((0, String::new()));
         ShellJobSnapshot {
             id: self.id.clone(),
             job_id: self.id.clone(),
@@ -467,8 +487,8 @@ impl BackgroundShell {
             status: self.status.clone(),
             exit_code: self.exit_code,
             elapsed_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-            stdout_tail: tail_text(&stdout_full, 1200),
-            stderr_tail: tail_text(&stderr_full, 1200),
+            stdout_tail,
+            stderr_tail,
             stdout_len,
             stderr_len,
             stdin_available: self.stdin.is_some() && self.status == ShellStatus::Running,
@@ -581,6 +601,11 @@ impl ShellManager {
     #[allow(dead_code)]
     pub fn is_sandbox_available(&mut self) -> bool {
         self.sandbox_manager.is_available()
+    }
+
+    #[allow(dead_code)]
+    pub fn default_workspace(&self) -> &Path {
+        &self.default_workspace
     }
 
     /// Execute a shell command with the configured sandbox policy.
@@ -764,10 +789,7 @@ impl ShellManager {
             cmd.stdin(Stdio::piped());
         }
 
-        // Set environment variables from exec_env
-        for (key, value) in &exec_env.env {
-            cmd.env(key, value);
-        }
+        child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
         let mut child = cmd
             .spawn()
@@ -903,9 +925,7 @@ impl ShellManager {
         }
         install_parent_death_signal(&mut cmd);
 
-        for (key, value) in &exec_env.env {
-            cmd.env(key, value);
-        }
+        child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
         let mut child = cmd
             .spawn()
@@ -1009,9 +1029,7 @@ impl ShellManager {
                 cmd.arg(arg);
             }
             cmd.cwd(working_dir);
-            for (key, value) in &exec_env.env {
-                cmd.env(key, value);
-            }
+            child_env::apply_to_pty_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
             let child = pair
                 .slave
@@ -1047,9 +1065,7 @@ impl ShellManager {
                 cmd.process_group(0);
             }
 
-            for (key, value) in &exec_env.env {
-                cmd.env(key, value);
-            }
+            child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
             let mut child = cmd
                 .spawn()
@@ -1206,6 +1222,7 @@ impl ShellManager {
         let (stderr, stderr_meta) = truncate_with_meta(&stderr_delta);
         let sandboxed = !matches!(shell.sandbox_type, SandboxType::None);
 
+        let command = shell.command.clone();
         let result = ShellResult {
             task_id: Some(shell.id.clone()),
             status: shell.status.clone(),
@@ -1229,6 +1246,7 @@ impl ShellManager {
         };
 
         Ok(ShellDeltaResult {
+            command,
             result,
             stdout_total_len: stdout_total,
             stderr_total_len: stderr_total,
@@ -1236,7 +1254,6 @@ impl ShellManager {
     }
 
     /// Kill a running background process
-    #[allow(dead_code)]
     pub fn kill(&mut self, task_id: &str) -> Result<ShellResult> {
         let shell = self
             .processes
@@ -1304,6 +1321,8 @@ impl ShellManager {
         for shell in self.processes.values_mut() {
             shell.poll();
         }
+        // Evict completed processes older than 1 hour to bound memory growth.
+        self.cleanup(Duration::from_secs(3600));
 
         let mut jobs = self
             .processes
@@ -1351,7 +1370,6 @@ impl ShellManager {
     }
 
     /// Clean up completed processes older than the given duration
-    #[allow(dead_code)]
     pub fn cleanup(&mut self, max_age: Duration) {
         let _now = Instant::now();
         self.processes.retain(|_, shell| {
@@ -1365,11 +1383,36 @@ impl ShellManager {
 }
 
 fn take_delta_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, cursor: &mut usize) -> (Vec<u8>, usize) {
-    let data = buffer.lock().map(|d| d.clone()).unwrap_or_default();
-    let start = (*cursor).min(data.len());
-    let delta = data[start..].to_vec();
-    *cursor = data.len();
-    (delta, data.len())
+    let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+    let total = guard.len();
+    let start = (*cursor).min(total);
+    // Clone only the unread portion (the delta), not the entire accumulated buffer.
+    // Long-running processes can produce megabytes of output; cloning the full
+    // buffer on every poll held the ShellManager mutex for O(total_bytes) time.
+    let delta = guard[start..].to_vec();
+    *cursor = total;
+    (delta, total)
+}
+
+/// Read only the tail of a byte buffer and return (total_len, tail_string).
+///
+/// Avoids cloning the full buffer when only a trailing excerpt is needed
+/// (e.g. for the job-panel display).  `max_tail_chars` is in Unicode scalar
+/// values; we read at most `max_tail_chars * 4` bytes from the end to account
+/// for multi-byte UTF-8 sequences.
+fn tail_from_buffer(buffer: &Arc<Mutex<Vec<u8>>>, max_tail_chars: usize) -> (usize, String) {
+    let guard = buffer.lock().unwrap_or_else(|e| e.into_inner());
+    let total = guard.len();
+    // Over-estimate byte count (4 bytes per char worst case for UTF-8).
+    let mut tail_start = total.saturating_sub(max_tail_chars.saturating_mul(4));
+    // Snap forward to the next valid UTF-8 codepoint boundary so we don't
+    // pass a slice beginning with continuation bytes (0x80–0xBF) to
+    // from_utf8_lossy, which would emit a leading U+FFFD replacement char.
+    while tail_start < total && (guard[tail_start] & 0xC0) == 0x80 {
+        tail_start += 1;
+    }
+    let tail_str = String::from_utf8_lossy(&guard[tail_start..]).into_owned();
+    (total, tail_text(&tail_str, max_tail_chars))
 }
 
 fn tail_text(text: &str, max_chars: usize) -> String {
@@ -1409,7 +1452,7 @@ pub fn new_shared_shell_manager(workspace: PathBuf) -> SharedShellManager {
 
 // === ToolSpec Implementations ===
 
-use crate::command_safety::{SafetyLevel, analyze_command};
+use crate::command_safety::{SafetyLevel, analyze_command, extract_primary_command};
 use crate::execpolicy::{ExecPolicyDecision, load_default_policy};
 use crate::features::Feature;
 use crate::tools::spec::{
@@ -1423,11 +1466,130 @@ const FOREGROUND_TIMEOUT_RECOVERY_HINT: &str = "Foreground exec_shell is for bou
 The timed-out process was killed; rerun long work with task_shell_start or exec_shell with \
 background: true, then poll with task_shell_wait or exec_shell_wait.";
 
+const MACOS_PROVENANCE_HINT: &str = "Docker buildx failed to update its activity file due to a macOS \
+com.apple.provenance restriction. Files created by Docker Desktop's signed process carry a \
+kernel-enforced provenance tag that blocks writes from child processes (including the TUI \
+shell sandbox). Workarounds: (1) run the Docker build from a regular terminal outside the \
+TUI, or (2) disable BuildKit with DOCKER_BUILDKIT=0 (only works if your Dockerfiles do not \
+use RUN --mount directives).";
+
+pub(crate) fn looks_like_macos_provenance_failure(result: &ShellResult) -> bool {
+    if matches!(result.status, ShellStatus::Completed) && result.exit_code == Some(0) {
+        return false;
+    }
+    let combined = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    combined.contains("com.apple.provenance")
+        || combined.contains("update builder last activity")
+        || (combined.contains("buildx/activity") && combined.contains("operation not permitted"))
+}
+
+fn macos_provenance_hint(result: &ShellResult) -> Option<&'static str> {
+    if looks_like_macos_provenance_failure(result) {
+        Some(MACOS_PROVENANCE_HINT)
+    } else {
+        None
+    }
+}
+
+fn command_likely_needs_network(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase();
+    let Some(primary) = extract_primary_command(&normalized) else {
+        return false;
+    };
+    let primary = primary.rsplit(['/', '\\']).next().unwrap_or(primary);
+
+    match primary {
+        "curl" | "wget" | "fetch" | "nc" | "netcat" | "ncat" | "ssh" | "scp" | "sftp" | "rsync"
+        | "ftp" | "ping" | "traceroute" | "nslookup" | "dig" | "host" | "nmap" | "gh" | "hub" => {
+            true
+        }
+        "git" => [
+            " fetch",
+            " pull",
+            " clone",
+            " ls-remote",
+            " submodule",
+            " push",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle)),
+        "cargo" => [" install", " fetch", " update", " publish", " search"]
+            .iter()
+            .any(|needle| normalized.contains(needle)),
+        "npm" | "pnpm" | "yarn" => [" install", " i", " add", " update", " publish"]
+            .iter()
+            .any(|needle| normalized.contains(needle)),
+        "pip" | "pip3" | "uv" | "poetry" => [" install", " add", " sync", " update"]
+            .iter()
+            .any(|needle| normalized.contains(needle)),
+        "brew" | "apt" | "apt-get" | "yum" | "dnf" | "pacman" => true,
+        "go" => [" get", " install", " mod download"]
+            .iter()
+            .any(|needle| normalized.contains(needle)),
+        _ => false,
+    }
+}
+
+fn looks_like_network_blocked_failure(result: &ShellResult) -> bool {
+    if matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
+        || result.exit_code == Some(0)
+    {
+        return false;
+    }
+
+    if result.stdout.trim() == "000" {
+        return true;
+    }
+    if result.sandboxed && result.stdout.is_empty() && result.stderr.is_empty() {
+        return true;
+    }
+
+    let output = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    [
+        "operation not permitted",
+        "network is unreachable",
+        "could not resolve host",
+        "couldn't resolve host",
+        "failed to resolve",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "nodename nor servname provided",
+        "no address associated",
+        "failed to connect",
+        "couldn't connect",
+        "connection timed out",
+        "connection reset",
+    ]
+    .iter()
+    .any(|pattern| output.contains(pattern))
+}
+
+fn shell_network_restricted_hint<'a>(
+    context: &'a ToolContext,
+    command: &str,
+    result: &ShellResult,
+) -> Option<&'a str> {
+    let hint = context.shell_network_denied_hint.as_deref()?;
+    let policy_blocks_network = context
+        .elevated_sandbox_policy
+        .as_ref()
+        .is_some_and(|policy| !policy.has_network_access());
+    if !policy_blocks_network || !command_likely_needs_network(command) {
+        return None;
+    }
+    if result.sandbox_denied || looks_like_network_blocked_failure(result) {
+        Some(hint)
+    } else {
+        None
+    }
+}
+
 async fn execute_foreground_via_background(
     context: &ToolContext,
     command: &str,
     timeout_ms: u64,
     stdin_data: Option<&str>,
+    tty: bool,
     policy_override: Option<ExecutionSandboxPolicy>,
     extra_env: HashMap<String, String>,
 ) -> Result<ShellResult> {
@@ -1444,7 +1606,7 @@ async fn execute_foreground_via_background(
             timeout_ms,
             true,
             stdin_data,
-            false,
+            tty,
             policy_override,
             extra_env,
         )?
@@ -1548,6 +1710,10 @@ impl ToolSpec for ExecShellTool {
                 "tty": {
                     "type": "boolean",
                     "description": "Allocate a pseudo-terminal for interactive programs (implies background)"
+                },
+                "combined_output": {
+                    "type": "boolean",
+                    "description": "Capture stdout and stderr as one chronological PTY stream (default false). In foreground mode, waits for completion; in background mode, implies tty."
                 }
             },
             "required": ["command"]
@@ -1575,7 +1741,8 @@ impl ToolSpec for ExecShellTool {
         let timeout_ms = optional_u64(&input, "timeout_ms", 120_000).min(600_000);
         let background = optional_bool(&input, "background", false);
         let interactive = optional_bool(&input, "interactive", false);
-        let tty = optional_bool(&input, "tty", false);
+        let combined_output = optional_bool(&input, "combined_output", false);
+        let tty = optional_bool(&input, "tty", false) || (combined_output && background);
         let stdin_data = input
             .get("stdin")
             .or_else(|| input.get("input"))
@@ -1588,9 +1755,9 @@ impl ToolSpec for ExecShellTool {
                 "Interactive commands cannot run in background mode.",
             ));
         }
-        if interactive && tty {
+        if interactive && (tty || combined_output) {
             return Ok(ToolResult::error(
-                "Interactive mode cannot be combined with TTY sessions.",
+                "Interactive mode cannot be combined with TTY or combined_output sessions.",
             ));
         }
         if interactive && stdin_data.is_some() {
@@ -1811,6 +1978,7 @@ impl ToolSpec for ExecShellTool {
                 command,
                 timeout_ms,
                 stdin_data.as_deref(),
+                combined_output,
                 policy_override,
                 extra_env,
             )
@@ -1843,7 +2011,10 @@ impl ToolSpec for ExecShellTool {
                 } else {
                     stdout_summary.clone()
                 };
-                let output = if interactive {
+                let network_restricted_hint =
+                    shell_network_restricted_hint(context, command, &result).map(str::to_string);
+                let provenance_hint = macos_provenance_hint(&result);
+                let mut output = if interactive {
                     format!(
                         "Interactive command completed (exit code: {:?})",
                         result.exit_code
@@ -1880,6 +2051,12 @@ impl ToolSpec for ExecShellTool {
                         result.exit_code, result.stdout, result.stderr
                     )
                 };
+                if let Some(hint) = network_restricted_hint.as_deref() {
+                    output = format!("{hint}\n\n{output}");
+                }
+                if let Some(hint) = provenance_hint {
+                    output = format!("{hint}\n\n{output}");
+                }
 
                 let mut metadata = json!({
                     "exit_code": result.exit_code,
@@ -1900,6 +2077,7 @@ impl ToolSpec for ExecShellTool {
                     "stderr_summary": stderr_summary,
                     "safety_level": format!("{:?}", safety.level),
                     "interactive": interactive,
+                    "combined_output": combined_output,
                     "canceled": was_cancelled,
                     "execpolicy": execpolicy_decision.as_ref().map(|decision| match decision {
                         ExecPolicyDecision::Allow => json!({
@@ -1929,6 +2107,13 @@ impl ToolSpec for ExecShellTool {
                         "exec_shell_background": true,
                         "poll_with": ["task_shell_wait", "exec_shell_wait"]
                     });
+                }
+                if let Some(hint) = network_restricted_hint {
+                    metadata["sandbox_network_restricted"] = json!(true);
+                    metadata["sandbox_network_denied_hint"] = json!(hint);
+                }
+                if provenance_hint.is_some() {
+                    metadata["macos_provenance_restricted"] = json!(true);
                 }
 
                 Ok(ToolResult {
@@ -1971,8 +2156,11 @@ fn required_task_id(input: &serde_json::Value) -> Result<&str, ToolError> {
         .ok_or_else(|| ToolError::missing_field("task_id"))
 }
 
-fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
+fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext) -> ToolResult {
     let result = delta.result;
+    let network_restricted_hint =
+        shell_network_restricted_hint(context, &delta.command, &result).map(str::to_string);
+    let provenance_hint = macos_provenance_hint(&result);
     let stdout_summary = summarize_output(&result.stdout);
     let stderr_summary = summarize_output(&result.stderr);
     let summary = if !stderr_summary.is_empty() {
@@ -1981,7 +2169,7 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
         stdout_summary.clone()
     };
 
-    let output = if result.stdout.is_empty() && result.stderr.is_empty() {
+    let mut output = if result.stdout.is_empty() && result.stderr.is_empty() {
         match result.status {
             ShellStatus::Running => "Background task running (no new output).".to_string(),
             ShellStatus::Completed => "(no new output)".to_string(),
@@ -1994,8 +2182,14 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
     } else {
         format!("{}\n\nSTDERR:\n{}", result.stdout, result.stderr)
     };
+    if let Some(hint) = network_restricted_hint.as_deref() {
+        output = format!("{hint}\n\n{output}");
+    }
+    if let Some(hint) = provenance_hint {
+        output = format!("{hint}\n\n{output}");
+    }
 
-    ToolResult {
+    let mut tool_result = ToolResult {
         content: output,
         success: matches!(result.status, ShellStatus::Completed | ShellStatus::Running),
         metadata: Some(json!({
@@ -2019,7 +2213,21 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult) -> ToolResult {
             "stderr_summary": stderr_summary,
             "stream_delta": true,
         })),
+    };
+    if let Some(hint) = network_restricted_hint
+        && let Some(metadata) = tool_result.metadata.as_mut()
+        && let Some(object) = metadata.as_object_mut()
+    {
+        object.insert("sandbox_network_restricted".to_string(), json!(true));
+        object.insert("sandbox_network_denied_hint".to_string(), json!(hint));
     }
+    if provenance_hint.is_some()
+        && let Some(metadata) = tool_result.metadata.as_mut()
+        && let Some(object) = metadata.as_object_mut()
+    {
+        object.insert("macos_provenance_restricted".to_string(), json!(true));
+    }
+    tool_result
 }
 
 async fn wait_for_shell_delta_cancellable(
@@ -2032,7 +2240,7 @@ async fn wait_for_shell_delta_cancellable(
     let mut stdout_accum = String::new();
     let mut stderr_accum = String::new();
 
-    let (result, stdout_total_len, stderr_total_len) = loop {
+    let (command, result, stdout_total_len, stderr_total_len) = loop {
         if context
             .cancel_token
             .as_ref()
@@ -2048,6 +2256,7 @@ async fn wait_for_shell_delta_cancellable(
             append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
             return Ok((
                 shell_delta_with_accumulated_output(
+                    delta.command,
                     delta.result,
                     &stdout_accum,
                     &stderr_accum,
@@ -2070,11 +2279,12 @@ async fn wait_for_shell_delta_cancellable(
 
         let stdout_total_len = delta.stdout_total_len;
         let stderr_total_len = delta.stderr_total_len;
+        let command = delta.command.clone();
         append_shell_delta_output(&mut stdout_accum, &mut stderr_accum, &delta.result);
 
         let status = delta.result.status.clone();
         if status != ShellStatus::Running || Instant::now() >= deadline {
-            break (delta.result, stdout_total_len, stderr_total_len);
+            break (command, delta.result, stdout_total_len, stderr_total_len);
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2082,6 +2292,7 @@ async fn wait_for_shell_delta_cancellable(
 
     Ok((
         shell_delta_with_accumulated_output(
+            command,
             result,
             &stdout_accum,
             &stderr_accum,
@@ -2106,6 +2317,7 @@ fn append_shell_delta_output(
 }
 
 fn shell_delta_with_accumulated_output(
+    command: String,
     mut result: ShellResult,
     stdout_accum: &str,
     stderr_accum: &str,
@@ -2124,6 +2336,7 @@ fn shell_delta_with_accumulated_output(
     result.stderr_truncated = stderr_meta.truncated;
 
     ShellDeltaResult {
+        command,
         result,
         stdout_total_len,
         stderr_total_len,
@@ -2258,7 +2471,7 @@ impl ToolSpec for ShellWaitTool {
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Timeout in milliseconds (default: 5000)"
+                    "description": "Timeout in milliseconds (default: 30000, max: 600000). Use a higher value for long-running builds, CI watchers, and interactive commands that are expected to keep producing output."
                 },
                 "wait": {
                     "type": "boolean",
@@ -2284,7 +2497,7 @@ impl ToolSpec for ShellWaitTool {
     ) -> Result<ToolResult, ToolError> {
         let task_id = required_task_id(&input)?;
         let wait = optional_bool(&input, "wait", true);
-        let timeout_ms = optional_u64(&input, "timeout_ms", 5_000);
+        let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
 
         let (delta, wait_canceled) = if wait {
             wait_for_shell_delta_cancellable(context, task_id, timeout_ms).await?
@@ -2300,7 +2513,7 @@ impl ToolSpec for ShellWaitTool {
         };
 
         let status = delta.result.status.clone();
-        let mut result = build_shell_delta_tool_result(delta);
+        let mut result = build_shell_delta_tool_result(delta, context);
         if wait_canceled {
             if matches!(status, ShellStatus::Running) {
                 result.content = format!(
@@ -2411,7 +2624,7 @@ impl ToolSpec for ShellInteractTool {
                 let delta = manager
                     .get_output_delta(task_id, false, 0)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?;
-                let mut result = build_shell_delta_tool_result(delta);
+                let mut result = build_shell_delta_tool_result(delta, context);
                 if let Some(metadata) = result.metadata.as_mut()
                     && let Some(object) = metadata.as_object_mut()
                 {
@@ -2435,7 +2648,7 @@ impl ToolSpec for ShellInteractTool {
                 || delta.result.status != ShellStatus::Running
                 || elapsed >= timeout_ms
             {
-                return Ok(build_shell_delta_tool_result(delta));
+                return Ok(build_shell_delta_tool_result(delta, context));
             }
 
             tokio::time::sleep(Duration::from_millis(50)).await;

@@ -20,7 +20,7 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
     };
 
     let messages = app.api_messages.clone();
-    let session = create_saved_session_with_mode(
+    let mut session = create_saved_session_with_mode(
         &messages,
         &app.model,
         &app.workspace,
@@ -28,6 +28,8 @@ pub fn save(app: &mut App, path: Option<&str>) -> CommandResult {
         app.system_prompt.as_ref(),
         Some(app.mode.label()),
     );
+    app.sync_cost_to_metadata(&mut session.metadata);
+    session.artifacts = app.session_artifacts.clone();
 
     let sessions_dir = save_path
         .parent()
@@ -97,9 +99,21 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
     app.workspace.clone_from(&session.metadata.workspace);
     app.session.total_tokens = u32::try_from(session.metadata.total_tokens).unwrap_or(u32::MAX);
     app.session.total_conversation_tokens = app.session.total_tokens;
+    app.session.session_cost = 0.0;
+    app.session.session_cost_cny = 0.0;
+    app.session.subagent_cost = 0.0;
+    app.session.subagent_cost_cny = 0.0;
+    app.session.subagent_cost_event_seqs.clear();
+    app.session.displayed_cost_high_water = 0.0;
+    app.session.displayed_cost_high_water_cny = 0.0;
     app.session.last_prompt_tokens = None;
     app.session.last_completion_tokens = None;
+    app.session.last_prompt_cache_hit_tokens = None;
+    app.session.last_prompt_cache_miss_tokens = None;
+    app.session.last_reasoning_replay_tokens = None;
+    app.session.turn_cache_history.clear();
     app.current_session_id = Some(session.metadata.id.clone());
+    app.session_artifacts = session.artifacts.clone();
     if let Some(sp) = session.system_prompt {
         app.system_prompt = Some(crate::models::SystemPrompt::Text(sp));
     }
@@ -113,6 +127,7 @@ pub fn load(app: &mut App, path: Option<&str>) -> CommandResult {
             session.metadata.message_count
         ),
         crate::tui::app::AppAction::SyncSession {
+            session_id: app.current_session_id.clone(),
             messages: app.api_messages.clone(),
             system_prompt: app.system_prompt.clone(),
             model: app.model.clone(),
@@ -188,7 +203,7 @@ pub fn export(app: &mut App, path: Option<&str>) -> CommandResult {
 pub fn sessions(app: &mut App, arg: Option<&str>) -> CommandResult {
     let trimmed = arg.unwrap_or("").trim();
     if trimmed.is_empty() {
-        app.view_stack.push(SessionPickerView::new());
+        app.view_stack.push(SessionPickerView::new(&app.workspace));
         return CommandResult::ok();
     }
 
@@ -197,7 +212,7 @@ pub fn sessions(app: &mut App, arg: Option<&str>) -> CommandResult {
     match action.as_str() {
         "prune" => prune(app, parts.next()),
         "show" | "list" | "picker" => {
-            app.view_stack.push(SessionPickerView::new());
+            app.view_stack.push(SessionPickerView::new(&app.workspace));
             CommandResult::ok()
         }
         _ => CommandResult::error(format!(
@@ -274,7 +289,8 @@ fn line_to_string(line: ratatui::text::Line<'static>) -> String {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::tui::app::{App, TuiOptions};
+    use crate::tui::app::{App, TuiOptions, TurnCacheRecord};
+    use std::time::Instant;
     use tempfile::TempDir;
 
     fn create_test_app_with_tmpdir(tmpdir: &TempDir) -> App {
@@ -315,6 +331,32 @@ mod tests {
         assert!(msg.contains("ID:"));
         assert!(app.current_session_id.is_some());
         assert!(save_path.exists());
+    }
+
+    #[test]
+    fn save_preserves_artifact_registry() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        let save_path = tmpdir.path().join("artifact_session.json");
+        app.session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_call_big".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "artifact-session".to_string(),
+                tool_call_id: "call-big".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 512_000,
+                preview: "cargo test output".to_string(),
+                storage_path: tmpdir.path().join("call-big.txt"),
+            });
+
+        let result = save(&mut app, Some(save_path.to_str().unwrap()));
+
+        assert!(!result.is_error);
+        let saved: crate::session_manager::SavedSession =
+            serde_json::from_str(&std::fs::read_to_string(save_path).unwrap()).unwrap();
+        assert_eq!(saved.artifacts, app.session_artifacts);
     }
 
     #[test]
@@ -404,6 +446,103 @@ mod tests {
         assert_eq!(app2.session.total_tokens, 500);
         assert!(app2.current_session_id.is_some());
         assert!(matches!(result.action, Some(AppAction::SyncSession { .. })));
+    }
+
+    #[test]
+    fn load_restores_artifact_registry() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut saved_app = create_test_app_with_tmpdir(&tmpdir);
+        saved_app
+            .session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_call_big".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "artifact-session".to_string(),
+                tool_call_id: "call-big".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 128,
+                preview: "checking crate".to_string(),
+                storage_path: tmpdir.path().join("call-big.txt"),
+            });
+        let save_path = tmpdir.path().join("artifact_load.json");
+        save(&mut saved_app, Some(save_path.to_str().unwrap()));
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.session_artifacts
+            .push(crate::artifacts::ArtifactRecord {
+                id: "art_stale".to_string(),
+                kind: crate::artifacts::ArtifactKind::ToolOutput,
+                session_id: "stale-session".to_string(),
+                tool_call_id: "stale".to_string(),
+                tool_name: "exec_shell".to_string(),
+                created_at: chrono::Utc::now(),
+                byte_size: 1,
+                preview: "stale".to_string(),
+                storage_path: tmpdir.path().join("stale.txt"),
+            });
+
+        let result = load(&mut app, Some(save_path.to_str().unwrap()));
+
+        assert!(!result.is_error);
+        assert_eq!(app.session_artifacts, saved_app.session_artifacts);
+    }
+
+    #[test]
+    fn load_resets_cache_history_and_cost() {
+        let tmpdir = TempDir::new().unwrap();
+        let mut saved_app = create_test_app_with_tmpdir(&tmpdir);
+        saved_app.api_messages.push(crate::models::Message {
+            role: "user".to_string(),
+            content: vec![crate::models::ContentBlock::Text {
+                text: "checkpoint".to_string(),
+                cache_control: None,
+            }],
+        });
+        saved_app.session.total_tokens = 500;
+        let save_path = tmpdir.path().join("checkpoint.json");
+        save(&mut saved_app, Some(save_path.to_str().unwrap()));
+
+        let mut app = create_test_app_with_tmpdir(&tmpdir);
+        app.session.session_cost = 1.25;
+        app.session.session_cost_cny = 9.13;
+        app.session.subagent_cost = 0.75;
+        app.session.subagent_cost_cny = 5.48;
+        app.session.subagent_cost_event_seqs.insert(42);
+        app.session.displayed_cost_high_water = 2.0;
+        app.session.displayed_cost_high_water_cny = 14.61;
+        app.session.last_prompt_tokens = Some(120);
+        app.session.last_completion_tokens = Some(35);
+        app.session.last_prompt_cache_hit_tokens = Some(80);
+        app.session.last_prompt_cache_miss_tokens = Some(40);
+        app.session.last_reasoning_replay_tokens = Some(12);
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 120,
+            output_tokens: 35,
+            cache_hit_tokens: Some(80),
+            cache_miss_tokens: Some(40),
+            reasoning_replay_tokens: Some(12),
+            recorded_at: Instant::now(),
+        });
+
+        let result = load(&mut app, Some(save_path.to_str().unwrap()));
+
+        assert!(result.message.is_some());
+        assert_eq!(app.session.total_tokens, 500);
+        assert_eq!(app.session.total_conversation_tokens, 500);
+        assert_eq!(app.session.session_cost, 0.0);
+        assert_eq!(app.session.session_cost_cny, 0.0);
+        assert_eq!(app.session.subagent_cost, 0.0);
+        assert_eq!(app.session.subagent_cost_cny, 0.0);
+        assert!(app.session.subagent_cost_event_seqs.is_empty());
+        assert_eq!(app.session.displayed_cost_high_water, 0.0);
+        assert_eq!(app.session.displayed_cost_high_water_cny, 0.0);
+        assert_eq!(app.session.last_prompt_tokens, None);
+        assert_eq!(app.session.last_completion_tokens, None);
+        assert_eq!(app.session.last_prompt_cache_hit_tokens, None);
+        assert_eq!(app.session.last_prompt_cache_miss_tokens, None);
+        assert_eq!(app.session.last_reasoning_replay_tokens, None);
+        assert!(app.session.turn_cache_history.is_empty());
     }
 
     #[test]

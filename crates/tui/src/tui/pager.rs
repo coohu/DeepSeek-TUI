@@ -10,11 +10,12 @@
 //! - `Ctrl+F` / PageDown / Space — full page down
 //! - `Ctrl+B` / PageUp / Shift+Space — full page up
 //! - `/` — start search; `n` / `N` — next / previous match
+//! - `c` / `y` — copy the entire pager body to the system clipboard
 //! - `q` / Esc — close pager
 
 use std::cell::Cell;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -22,15 +23,16 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
-use crate::tui::views::{ModalKind, ModalView, ViewAction};
+use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 
 /// Footer hint shown along the bottom border of the pager. Kept short so it
 /// fits on narrow terminals; full reference lives in the module docs.
-const FOOTER_HINT: &str =
-    " j/k scroll  Space/b page  Ctrl+D/U half  g/G top/bottom  / search  q quit ";
+const FOOTER_HINT_NAV: &str =
+    " j/k scroll  Space page  Ctrl+D/U half  g/G top/bottom  / search  c copy";
+const FOOTER_HINT_EXIT: &str = " q/Esc close ";
 
 pub struct PagerView {
     title: String,
@@ -94,6 +96,16 @@ impl PagerView {
         self.scroll = max_scroll;
     }
 
+    /// Plain-text body of the pager joined with `\n`, suitable for sending
+    /// to the system clipboard via `ViewEvent::CopyToClipboard`. Reflects the
+    /// content the user sees, including any width-based wrapping that
+    /// `from_text` introduced — copying the visible text is the expected
+    /// affordance when the user can't reach terminal-native selection inside
+    /// the modal (#1354).
+    pub fn body_text(&self) -> String {
+        self.plain_lines.join("\n")
+    }
+
     /// Return the page height (in lines) used for paging keys.
     ///
     /// Falls back to a small constant (10) before the first render so the
@@ -112,10 +124,9 @@ impl PagerView {
     }
 
     fn max_scroll(&self) -> usize {
-        // Match the existing 1-line scroll convention used by `j`/`k`. Render
-        // clamps `self.scroll` to `lines.len() - visible_height` for display
-        // purposes, so over-scrolling here is harmless.
-        self.lines.len().saturating_sub(1)
+        // Match the render-side clamp so G/End land at the visible bottom and
+        // k/Up immediately scroll back up by one line.
+        self.lines.len().saturating_sub(self.page_height())
     }
 
     fn start_search(&mut self) {
@@ -321,6 +332,36 @@ impl ModalView for PagerView {
                 self.pending_g = false;
                 ViewAction::None
             }
+            // Copy the entire pager body to the clipboard. The pager
+            // intercepts mouse capture so terminal-native selection is
+            // disabled inside it; without this binding users with no
+            // out-of-band copy path would have no way to extract content
+            // they can see (#1354). Both `c` and `y` are wired so users
+            // landing from either OS-clipboard or vim convention find a
+            // working key.
+            KeyCode::Char('c') | KeyCode::Char('y') => {
+                self.pending_g = false;
+                ViewAction::Emit(ViewEvent::CopyToClipboard {
+                    text: self.body_text(),
+                    label: "Pager content".to_string(),
+                })
+            }
+            _ => ViewAction::None,
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.scroll_up(3);
+                self.pending_g = false;
+                ViewAction::None
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_down(3, self.max_scroll());
+                self.pending_g = false;
+                ViewAction::None
+            }
             _ => ViewAction::None,
         }
     }
@@ -416,10 +457,15 @@ impl ModalView for PagerView {
             )));
         }
 
-        let footer = Line::from(Span::styled(
-            FOOTER_HINT,
-            Style::default().fg(palette::TEXT_HINT),
-        ));
+        let footer = Line::from(vec![
+            Span::styled(
+                FOOTER_HINT_EXIT,
+                Style::default()
+                    .fg(palette::DEEPSEEK_SKY)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(FOOTER_HINT_NAV, Style::default().fg(palette::TEXT_HINT)),
+        ]);
         let block = Block::default()
             .title(self.title.clone())
             .title_bottom(footer)
@@ -451,6 +497,14 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     for word in text.split_whitespace() {
         let word_width = word.width();
+        if word_width > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            push_word_breaking_chars(word, width, &mut current, &mut current_width, &mut lines);
+            continue;
+        }
         let additional = if current.is_empty() {
             word_width
         } else {
@@ -477,6 +531,24 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 
     lines
+}
+
+fn push_word_breaking_chars(
+    word: &str,
+    width: usize,
+    current: &mut String,
+    current_width: &mut usize,
+    lines: &mut Vec<String>,
+) {
+    for ch in word.chars() {
+        let char_width = ch.width().unwrap_or(1);
+        if *current_width + char_width > width && *current_width > 0 {
+            lines.push(std::mem::take(current));
+            *current_width = 0;
+        }
+        current.push(ch);
+        *current_width += char_width;
+    }
 }
 
 #[cfg(test)]
@@ -558,6 +630,32 @@ mod tests {
         let mut p = make_pager(50);
         let _ = p.handle_key(key(KeyCode::End));
         assert_eq!(p.scroll, p.max_scroll());
+    }
+
+    #[test]
+    fn up_immediately_scrolls_after_shift_g_to_bottom() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 22);
+        let bottom = p.max_scroll();
+
+        let _ = p.handle_key(key(KeyCode::Char('G')));
+        assert_eq!(p.scroll, bottom);
+        let _ = p.handle_key(key(KeyCode::Up));
+        assert_eq!(p.scroll, bottom - 1);
+        let _ = p.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(p.scroll, bottom - 2);
+    }
+
+    #[test]
+    fn k_immediately_scrolls_after_end_to_bottom() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 22);
+        let bottom = p.max_scroll();
+
+        let _ = p.handle_key(key(KeyCode::End));
+        assert_eq!(p.scroll, bottom);
+        let _ = p.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(p.scroll, bottom - 1);
     }
 
     #[test]
@@ -657,13 +755,63 @@ mod tests {
     #[test]
     fn footer_hint_includes_new_bindings() {
         // The rendered pager must surface the new vim-style bindings to
-        // the user; check the footer string covers the headline keys.
-        for needle in &["j/k", "g/G", "Space", "Ctrl+D", "/ search", "q quit"] {
+        // the user; check the footer hint covers the headline keys.
+        for needle in &[
+            "j/k",
+            "g/G",
+            "Space",
+            "Ctrl+D",
+            "/ search",
+            "c copy",
+            "q/Esc close",
+        ] {
+            let full_hint = format!("{FOOTER_HINT_EXIT}{FOOTER_HINT_NAV}");
             assert!(
-                FOOTER_HINT.contains(needle),
-                "footer hint missing {needle:?}: {FOOTER_HINT}"
+                full_hint.contains(needle),
+                "footer hint missing {needle:?}: {full_hint}"
             );
         }
+    }
+
+    #[test]
+    fn c_emits_copy_event_with_full_body() {
+        // #1354: the pager intercepts mouse capture, so users have no way to
+        // copy content out without an in-app key. Both `c` and `y` should
+        // emit a CopyToClipboard event carrying the whole body so the host
+        // dispatcher (in ui.rs) can write through `app.clipboard` and toast
+        // a confirmation.
+        let mut p = make_pager(3);
+        let action = p.handle_key(key(KeyCode::Char('c')));
+        match action {
+            ViewAction::Emit(ViewEvent::CopyToClipboard { text, label }) => {
+                assert_eq!(text, "line-000\nline-001\nline-002");
+                assert_eq!(label, "Pager content");
+            }
+            other => panic!("expected CopyToClipboard emit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn y_emits_copy_event_for_vim_users() {
+        let mut p = make_pager(3);
+        let action = p.handle_key(key(KeyCode::Char('y')));
+        assert!(
+            matches!(action, ViewAction::Emit(ViewEvent::CopyToClipboard { .. })),
+            "y must emit a copy event for vim-yank parity"
+        );
+    }
+
+    #[test]
+    fn copy_keys_inert_in_search_mode() {
+        // Within `/`-search mode `c` and `y` must be treated as search
+        // characters, not as a copy trigger — otherwise users typing a
+        // query that contains either letter would lose their input.
+        let mut p = make_pager(10);
+        let _ = p.handle_key(key(KeyCode::Char('/')));
+        assert!(p.search_mode);
+        let action = p.handle_key(key(KeyCode::Char('c')));
+        assert!(matches!(action, ViewAction::None));
+        assert_eq!(p.search_input, "c");
     }
 
     #[test]
@@ -681,7 +829,7 @@ mod tests {
             bottom.push_str(buf[(x, popup_bottom_y as u16)].symbol());
         }
         assert!(
-            bottom.contains("j/k") || bottom.contains("scroll"),
+            bottom.contains("close") || bottom.contains("scroll"),
             "expected footer hint on bottom border row {popup_bottom_y}, got: {bottom:?}"
         );
     }
@@ -804,5 +952,66 @@ mod tests {
             found_highlight,
             "expected a Yellow/DarkGray highlight cell on the matched-line text columns"
         );
+    }
+
+    #[test]
+    fn mouse_scroll_up_scrolls_content() {
+        let mut p = make_pager(50);
+        p.scroll = 10;
+        let action = p.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(p.scroll, 7);
+        assert!(matches!(action, ViewAction::None));
+    }
+
+    #[test]
+    fn mouse_scroll_down_scrolls_content() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 20);
+        p.scroll = 10;
+        let action = p.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+
+        assert_eq!(p.scroll, 13);
+        assert!(matches!(action, ViewAction::None));
+    }
+
+    #[test]
+    fn mouse_scroll_down_clamps_to_pager_bottom() {
+        let mut p = make_pager(50);
+        prime_layout(&mut p, 20);
+        let bottom = p.max_scroll();
+
+        for _ in 0..100 {
+            let _ = p.handle_mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+
+        assert_eq!(p.scroll, bottom);
+    }
+
+    #[test]
+    fn wrap_text_breaks_overlong_cjk_runs() {
+        let text = "这是一个非常长的中文字符串".repeat(10);
+        let lines = wrap_text(&text, 16);
+
+        for line in &lines {
+            assert!(line.width() <= 16, "line {line:?} exceeds width 16");
+        }
+
+        assert_eq!(lines.join(""), text);
     }
 }

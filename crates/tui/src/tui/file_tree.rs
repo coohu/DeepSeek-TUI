@@ -11,14 +11,14 @@ use std::sync::{Arc, Mutex};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
 };
 
-use crate::deepseek_theme::active_theme;
+use crate::deepseek_theme::Theme;
 use crate::palette;
-use crate::tui::ui::truncate_line_to_width;
+use crate::tui::ui_text::truncate_line_to_width;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -287,7 +287,12 @@ const FILE_TREE_MIN_WIDTH: u16 = 20;
 
 /// Render the file tree inside `area`.
 /// Polls async loading state before rendering (#399 S3).
-pub fn render_file_tree(f: &mut Frame, area: Rect, state: &mut FileTreeState) {
+pub fn render_file_tree(
+    f: &mut Frame,
+    area: Rect,
+    state: &mut FileTreeState,
+    mode: palette::PaletteMode,
+) {
     state.poll_loading();
     if area.width < FILE_TREE_MIN_WIDTH || area.height < 3 {
         return;
@@ -328,14 +333,12 @@ pub fn render_file_tree(f: &mut Frame, area: Rect, state: &mut FileTreeState) {
             } else {
                 "  "
             };
-            let icon = if entry.is_dir {
-                "\u{1F4C1} "
-            } else {
-                "\u{1F4C4} "
-            }; // 📁 / 📄
+            // No separate icon: the ▼/▶ expand marker already signals dirs,
+            // and SMP emoji (📁/📄, U+1F4C1/U+1F4C4) render at inconsistent
+            // column widths across terminals, breaking layout. See issue #1314.
 
             // Build the display text.
-            let raw = format!("{indent}{expand_marker}{icon}{}", entry.name);
+            let raw = format!("{indent}{expand_marker}{}", entry.name);
             let display = truncate_line_to_width(&raw, content_width.max(1));
 
             let style = if is_selected {
@@ -351,7 +354,7 @@ pub fn render_file_tree(f: &mut Frame, area: Rect, state: &mut FileTreeState) {
     }
 
     // Use the same theme as the sidebar for consistent styling.
-    let theme = active_theme();
+    let theme = Theme::for_palette_mode(mode);
     let section = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         Block::default()
             .title(Line::from(Span::styled(

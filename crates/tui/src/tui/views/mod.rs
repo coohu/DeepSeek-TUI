@@ -7,10 +7,13 @@ use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tools::UserInputResponse;
-use crate::tools::subagent::{SubAgentResult, SubAgentStatus, SubAgentType};
+use crate::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
+use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
+use crate::tui::widgets::agent_card::AgentLifecycle;
 
+pub mod mode_picker;
 pub mod status_picker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,8 +31,11 @@ pub enum ModalKind {
     Config,
     ModelPicker,
     ProviderPicker,
+    ModePicker,
     FilePicker,
     StatusPicker,
+    FeedbackPicker,
+    ThemePicker,
     ContextMenu,
     ShellControl,
 }
@@ -86,8 +92,10 @@ pub enum ViewEvent {
         tool_name: String,
         decision: ReviewDecision,
         timed_out: bool,
-        /// Fingerprint key for per‑call approval caching (§5.A).
+        /// Exact-argument fingerprint, used to scope *denials* (#1617).
         approval_key: String,
+        /// Lossy / arity-aware fingerprint, used to scope *approvals*.
+        approval_grouping_key: String,
     },
     ElevationDecision {
         tool_id: String,
@@ -148,6 +156,10 @@ pub enum ViewEvent {
         provider: crate::config::ApiProvider,
         api_key: String,
     },
+    /// Emitted by the `/mode` picker when the user chooses a mode.
+    ModeSelected {
+        mode: crate::tui::app::AppMode,
+    },
     /// Emitted by the `/statusline` picker every time the user toggles an
     /// item (live preview) and once more on Enter (final). The handler
     /// updates `app.status_items` immediately and persists on `final_save`
@@ -178,6 +190,14 @@ pub enum ViewEvent {
     },
     ShellControlBackground,
     ShellControlCancel,
+    /// Emitted by the pager (`c` / `y`) to copy its body to the system
+    /// clipboard. The host handler writes via `app.clipboard` and surfaces a
+    /// status message — modal views cannot reach `app` directly. `label` is
+    /// the noun shown in the success / failure status (e.g. "Pager content").
+    CopyToClipboard {
+        text: String,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -399,7 +419,6 @@ impl ModalView for ShellControlView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
-            prelude::Stylize,
             style::Style,
             text::{Line, Span},
             widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
@@ -554,6 +573,9 @@ pub struct ConfigView {
     last_row_hitboxes: RefCell<Vec<(u16, usize)>>,
 }
 
+const CONFIG_MIN_KEY_COLUMN_WIDTH: usize = 19;
+const CONFIG_VALUE_COLUMN_WIDTH: usize = 44;
+
 impl ConfigView {
     pub fn new_for_app(app: &App) -> Self {
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
@@ -592,8 +614,25 @@ impl ConfigView {
             },
             ConfigRow {
                 section: ConfigSection::Display,
+                key: "theme".to_string(),
+                value: settings.theme.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
                 key: "locale".to_string(),
                 value: settings.locale.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "background_color".to_string(),
+                value: settings
+                    .background_color
+                    .clone()
+                    .unwrap_or_else(|| "(default)".to_string()),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -613,6 +652,13 @@ impl ConfigView {
             },
             ConfigRow {
                 section: ConfigSection::Display,
+                key: "fancy_animations".to_string(),
+                value: settings.fancy_animations.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
                 key: "show_thinking".to_string(),
                 value: settings.show_thinking.to_string(),
                 editable: true,
@@ -622,6 +668,27 @@ impl ConfigView {
                 section: ConfigSection::Display,
                 key: "show_tool_details".to_string(),
                 value: settings.show_tool_details.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "status_indicator".to_string(),
+                value: settings.status_indicator.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "synchronized_output".to_string(),
+                value: settings.synchronized_output.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Display,
+                key: "cost_currency".to_string(),
+                value: settings.cost_currency.clone(),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -648,6 +715,20 @@ impl ConfigView {
             },
             ConfigRow {
                 section: ConfigSection::Composer,
+                key: "composer_vim_mode".to_string(),
+                value: settings.composer_vim_mode.clone(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Composer,
+                key: "bracketed_paste".to_string(),
+                value: settings.bracketed_paste.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Composer,
                 key: "paste_burst_detection".to_string(),
                 value: settings.paste_burst_detection.to_string(),
                 editable: true,
@@ -668,6 +749,13 @@ impl ConfigView {
                 scope: ConfigScope::Saved,
             },
             ConfigRow {
+                section: ConfigSection::Sidebar,
+                key: "context_panel".to_string(),
+                value: settings.context_panel.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
                 section: ConfigSection::History,
                 key: "auto_compact".to_string(),
                 value: settings.auto_compact.to_string(),
@@ -678,6 +766,13 @@ impl ConfigView {
                 section: ConfigSection::History,
                 key: "max_history".to_string(),
                 value: settings.max_input_history.to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Mcp,
+                key: "prefer_external_pdftotext".to_string(),
+                value: settings.prefer_external_pdftotext.to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -756,6 +851,15 @@ impl ConfigView {
         }
 
         items
+    }
+
+    fn key_column_width(&self) -> usize {
+        self.rows
+            .iter()
+            .map(|row| row.key.chars().count())
+            .max()
+            .unwrap_or(CONFIG_MIN_KEY_COLUMN_WIDTH)
+            .max(CONFIG_MIN_KEY_COLUMN_WIDTH)
     }
 
     fn selected_row_index(&self) -> Option<usize> {
@@ -1002,10 +1106,12 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "composer_border"
         | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
+        "theme" => "system | dark | light | grayscale",
         "locale" => "auto | en | ja | zh-Hans | pt-BR",
+        "background_color" => "#RRGGBB | default",
         "default_mode" => "agent | plan | yolo",
         "sidebar_width" => "10..=50",
-        "sidebar_focus" => "auto | plan | todos | tasks | agents",
+        "sidebar_focus" => "auto | work | tasks | agents | context | hidden",
         "max_history" => "integer (0 allowed)",
         "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
         "mcp_config_path" => "path to mcp.json",
@@ -1015,7 +1121,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
 
 fn render_config_editor_value_line(edit: &ConfigEdit) -> ratatui::text::Line<'static> {
     use ratatui::{
-        prelude::Stylize,
         style::Style,
         text::{Line, Span},
     };
@@ -1172,7 +1277,6 @@ impl ModalView for ConfigView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
-            prelude::Stylize,
             style::Style,
             text::{Line, Span},
             widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
@@ -1247,6 +1351,7 @@ impl ModalView for ConfigView {
                 self.filter.clone()
             };
 
+            let key_column_width = self.key_column_width();
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![Span::styled(
                     self.tr(MessageId::ConfigTitle),
@@ -1261,8 +1366,17 @@ impl ModalView for ConfigView {
                     ),
                 ]),
                 Line::from(""),
-                Line::from("  Key                 Value                                    Scope"),
-                Line::from("  ----------------------------------------------------------------"),
+                Line::from(format!(
+                    "  {:<key_width$} {:<value_width$} Scope",
+                    "Key",
+                    "Value",
+                    key_width = key_column_width,
+                    value_width = CONFIG_VALUE_COLUMN_WIDTH
+                )),
+                Line::from(format!(
+                    "  {}",
+                    "-".repeat(key_column_width + CONFIG_VALUE_COLUMN_WIDTH + 8)
+                )),
             ];
             let mut row_hitboxes = Vec::new();
 
@@ -1289,12 +1403,14 @@ impl ModalView for ConfigView {
                         } else {
                             Style::default().fg(palette::TEXT_PRIMARY)
                         };
-                        let value = truncate_view_text(&row.value, 44);
+                        let value = truncate_view_text(&row.value, CONFIG_VALUE_COLUMN_WIDTH);
                         let mut line = Line::from(format!(
-                            "  {:<19} {:<44} {}",
+                            "  {:<key_width$} {:<value_width$} {}",
                             row.key,
                             value,
-                            row.scope.label()
+                            row.scope.label(),
+                            key_width = key_column_width,
+                            value_width = CONFIG_VALUE_COLUMN_WIDTH
                         ));
                         line.style = style;
                         lines.push(line);
@@ -1384,6 +1500,108 @@ pub struct SubAgentsView {
     scroll: usize,
 }
 
+/// Build the agent rows shown by `/subagents`.
+///
+/// The engine manager is the durable source of truth, but live UI cards can
+/// briefly be ahead of the manager-list refresh. Include those live rows so
+/// the command does not say "no agents" while the footer/sidebar already show
+/// active delegated work.
+pub(crate) fn subagent_view_agents(
+    app: &App,
+    manager_agents: &[SubAgentResult],
+) -> Vec<SubAgentResult> {
+    let mut agents = manager_agents.to_vec();
+    let mut seen: std::collections::HashSet<String> =
+        agents.iter().map(|agent| agent.agent_id.clone()).collect();
+
+    for (agent_id, progress) in &app.agent_progress {
+        if seen.insert(agent_id.clone()) {
+            agents.push(live_subagent_result(
+                agent_id,
+                SubAgentType::General,
+                SubAgentStatus::Running,
+                progress,
+                Some("live"),
+            ));
+        }
+    }
+
+    for cell in &app.history {
+        match cell {
+            HistoryCell::SubAgent(SubAgentCell::Delegate(card))
+                if seen.insert(card.agent_id.clone()) =>
+            {
+                let agent_type =
+                    SubAgentType::from_str(&card.agent_type).unwrap_or(SubAgentType::General);
+                agents.push(live_subagent_result(
+                    &card.agent_id,
+                    agent_type,
+                    lifecycle_to_subagent_status(card.status),
+                    card.summary.as_deref().unwrap_or(card.agent_type.as_str()),
+                    Some("transcript"),
+                ));
+            }
+            HistoryCell::SubAgent(SubAgentCell::Fanout(card)) => {
+                for worker in &card.workers {
+                    if seen.insert(worker.agent_id.clone()) {
+                        let objective = format!(
+                            "{} worker {}",
+                            summarize_tool_output(&card.kind),
+                            summarize_tool_output(&worker.worker_id)
+                        );
+                        agents.push(live_subagent_result(
+                            &worker.agent_id,
+                            SubAgentType::General,
+                            lifecycle_to_subagent_status(worker.status),
+                            &objective,
+                            Some(card.kind.as_str()),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    agents
+}
+
+fn lifecycle_to_subagent_status(status: AgentLifecycle) -> SubAgentStatus {
+    match status {
+        AgentLifecycle::Pending | AgentLifecycle::Running => SubAgentStatus::Running,
+        AgentLifecycle::Completed => SubAgentStatus::Completed,
+        AgentLifecycle::Failed => SubAgentStatus::Failed("failed in transcript".to_string()),
+        AgentLifecycle::Cancelled => SubAgentStatus::Cancelled,
+    }
+}
+
+fn live_subagent_result(
+    agent_id: &str,
+    agent_type: SubAgentType,
+    status: SubAgentStatus,
+    objective: &str,
+    role: Option<&str>,
+) -> SubAgentResult {
+    SubAgentResult {
+        name: agent_id.to_string(),
+        agent_id: agent_id.to_string(),
+        context_mode: "fresh".to_string(),
+        fork_context: false,
+        agent_type,
+        assignment: SubAgentAssignment {
+            objective: summarize_tool_output(objective),
+            role: role.map(str::to_string),
+        },
+        model: String::new(),
+        nickname: None,
+        status,
+        result: None,
+        steps_taken: 0,
+        duration_ms: 0,
+        from_prior_session: false,
+    }
+}
+
 impl SubAgentsView {
     pub fn new(agents: Vec<SubAgentResult>) -> Self {
         Self { agents, scroll: 0 }
@@ -1427,7 +1645,6 @@ impl ModalView for SubAgentsView {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::{
-            prelude::Stylize,
             style::Style,
             text::{Line, Span},
             widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
@@ -1604,7 +1821,6 @@ fn append_subagent_group(
     content_width: usize,
 ) {
     use ratatui::{
-        prelude::Stylize,
         style::Style,
         text::{Line, Span},
     };
@@ -1742,11 +1958,17 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::{
         ConfigListItem, ConfigSection, ConfigView, ModalKind, ModalView, ShellControlView,
-        ViewAction, ViewEvent, ViewStack, truncate_view_text,
+        ViewAction, ViewEvent, ViewStack, subagent_view_agents, truncate_view_text,
     };
     use crate::config::Config;
     use crate::localization::Locale;
+    use crate::settings::Settings;
+    use crate::tools::subagent::{
+        SubAgentAssignment, SubAgentResult, SubAgentStatus, SubAgentType,
+    };
     use crate::tui::app::{App, TuiOptions};
+    use crate::tui::history::{HistoryCell, SubAgentCell};
+    use crate::tui::widgets::agent_card::{AgentLifecycle, FanoutCard};
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -1783,6 +2005,75 @@ mod tests {
             let action = view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             assert!(matches!(action, ViewAction::None));
         }
+    }
+
+    fn manager_agent(id: &str, status: SubAgentStatus) -> SubAgentResult {
+        SubAgentResult {
+            name: id.to_string(),
+            agent_id: id.to_string(),
+            context_mode: "fresh".to_string(),
+            fork_context: false,
+            agent_type: SubAgentType::Explore,
+            assignment: SubAgentAssignment {
+                objective: "read the docs".to_string(),
+                role: None,
+            },
+            model: "deepseek-v4-flash".to_string(),
+            nickname: None,
+            status,
+            result: None,
+            steps_taken: 1,
+            duration_ms: 10,
+            from_prior_session: false,
+        }
+    }
+
+    #[test]
+    fn subagent_view_agents_includes_progress_only_running_agent() {
+        let mut app = create_test_app();
+        app.agent_progress
+            .insert("agent_live".to_string(), "reading code".to_string());
+
+        let agents = subagent_view_agents(&app, &[]);
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent_id, "agent_live");
+        assert!(matches!(agents[0].status, SubAgentStatus::Running));
+        assert_eq!(agents[0].assignment.role.as_deref(), Some("live"));
+        assert!(agents[0].assignment.objective.contains("reading code"));
+    }
+
+    #[test]
+    fn subagent_view_agents_includes_live_fanout_workers_when_cache_is_empty() {
+        let mut app = create_test_app();
+        let mut card = FanoutCard::new("rlm").with_workers(["chunk_1", "chunk_2"]);
+        card.upsert_worker("chunk_1", AgentLifecycle::Completed);
+        card.upsert_worker("chunk_2", AgentLifecycle::Running);
+        app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
+        app.last_fanout_card_index = Some(app.history.len().saturating_sub(1));
+
+        let agents = subagent_view_agents(&app, &[]);
+
+        assert_eq!(agents.len(), 2);
+        assert_eq!(agents[0].agent_id, "chunk_1");
+        assert!(matches!(agents[0].status, SubAgentStatus::Completed));
+        assert_eq!(agents[1].agent_id, "chunk_2");
+        assert!(matches!(agents[1].status, SubAgentStatus::Running));
+        assert_eq!(agents[1].assignment.role.as_deref(), Some("rlm"));
+    }
+
+    #[test]
+    fn subagent_view_agents_deduplicates_manager_rows_over_live_rows() {
+        let mut app = create_test_app();
+        app.agent_progress
+            .insert("agent_cached".to_string(), "live duplicate".to_string());
+        let manager = vec![manager_agent("agent_cached", SubAgentStatus::Running)];
+
+        let agents = subagent_view_agents(&app, &manager);
+
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent_type, SubAgentType::Explore);
+        assert_eq!(agents[0].assignment.objective, "read the docs");
     }
 
     fn visible_section_labels(view: &ConfigView) -> Vec<&'static str> {
@@ -1844,11 +2135,33 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"approval_mode"));
+        assert!(keys.contains(&"theme"));
         assert!(keys.contains(&"locale"));
+        assert!(keys.contains(&"background_color"));
+        assert!(keys.contains(&"fancy_animations"));
+        assert!(keys.contains(&"status_indicator"));
+        assert!(keys.contains(&"synchronized_output"));
         assert!(keys.contains(&"auto_compact"));
         assert!(keys.contains(&"composer_border"));
+        assert!(keys.contains(&"composer_vim_mode"));
+        assert!(keys.contains(&"bracketed_paste"));
+        assert!(keys.contains(&"context_panel"));
+        assert!(keys.contains(&"cost_currency"));
+        assert!(keys.contains(&"prefer_external_pdftotext"));
         assert!(keys.contains(&"mcp_config_path"));
         assert!(view.rows.iter().all(|row| row.editable));
+    }
+
+    #[test]
+    fn config_view_exposes_all_available_saved_settings() {
+        let app = create_test_app();
+        let view = ConfigView::new_for_app(&app);
+        let keys: std::collections::HashSet<&str> =
+            view.rows.iter().map(|row| row.key.as_str()).collect();
+
+        for (key, _) in Settings::available_settings() {
+            assert!(keys.contains(key), "missing native config row for {key}");
+        }
     }
 
     #[test]
@@ -1862,7 +2175,7 @@ mod tests {
         assert_eq!(visible_section_labels(&view), vec!["Sidebar"]);
         assert_eq!(
             visible_row_keys(&view),
-            vec!["sidebar_width", "sidebar_focus"]
+            vec!["sidebar_width", "sidebar_focus", "context_panel"]
         );
         assert_eq!(view.rows[view.selected].key, "sidebar_width");
     }
@@ -1903,6 +2216,37 @@ mod tests {
     }
 
     #[test]
+    fn config_view_keeps_scope_column_aligned_for_long_keys() {
+        let app = create_test_app();
+        let mut view = ConfigView::new_for_app(&app);
+        type_filter(&mut view, "composer");
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+
+        view.render(area, &mut buf);
+
+        let dump = buffer_text(&buf, area);
+        assert!(
+            dump.contains("paste_burst_detection"),
+            "long config keys should stay readable:\n{dump}"
+        );
+        let scope_columns = dump
+            .lines()
+            .filter_map(|line| line.find("SAVED").or_else(|| line.find("SESSION")))
+            .collect::<Vec<_>>();
+        assert!(
+            scope_columns.len() >= 3,
+            "expected composer config rows with scopes:\n{dump}"
+        );
+        assert!(
+            scope_columns
+                .iter()
+                .all(|column| *column == scope_columns[0]),
+            "scope column should stay aligned even for long keys:\n{dump}"
+        );
+    }
+
+    #[test]
     fn config_view_filter_no_match_does_not_edit_hidden_row() {
         let app = create_test_app();
         let mut view = ConfigView::new_for_app(&app);
@@ -1925,7 +2269,7 @@ mod tests {
         let app = create_test_app();
         let mut view = ConfigView::new_for_app(&app);
 
-        type_filter(&mut view, "mcp");
+        type_filter(&mut view, "mcp_config");
         assert_eq!(visible_row_keys(&view), vec!["mcp_config_path"]);
 
         let start = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

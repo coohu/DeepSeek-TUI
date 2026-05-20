@@ -34,8 +34,6 @@ const STDOUT_METADATA_PREVIEW_LEN: usize = 800;
 const PROMPT_PREVIEW_LEN: usize = 500;
 /// Temperature for root LLM calls.
 const ROOT_TEMPERATURE: f32 = 0.3;
-/// Hard wall-clock cap on a whole RLM turn.
-const TURN_TIMEOUT: Duration = Duration::from_secs(180);
 /// Bound on conversation history we keep across iterations.
 const MAX_HISTORY_MESSAGES: usize = 20;
 
@@ -156,6 +154,13 @@ pub(crate) fn run_rlm_turn_inner(
     ))
 }
 
+/// RLM turns are long-running background-style work. Do not kill the whole
+/// turn with the old fixed 180s wall-clock cap; per-request cancellation still
+/// comes from the parent turn token and the user can cancel from the TUI.
+fn turn_timeout() -> Option<Duration> {
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -237,15 +242,14 @@ async fn run_rlm_turn_impl(
 
     let result = 'turn: {
         for iteration in 0..MAX_RLM_ITERATIONS {
-            if start.elapsed() > TURN_TIMEOUT {
+            if let Some(timeout) = turn_timeout()
+                && start.elapsed() > timeout
+            {
                 break 'turn RlmTurnResult {
                     answer: String::new(),
                     iterations: iteration,
                     duration: start.elapsed(),
-                    error: Some(format!(
-                        "RLM turn timed out after {}s",
-                        TURN_TIMEOUT.as_secs()
-                    )),
+                    error: Some(format!("RLM turn timed out after {}s", timeout.as_secs())),
                     usage: total_usage,
                     termination: RlmTermination::Error,
                     trace: trace.clone(),
@@ -280,12 +284,7 @@ async fn run_rlm_turn_impl(
                 }
             };
 
-            total_usage.input_tokens = total_usage
-                .input_tokens
-                .saturating_add(response.usage.input_tokens);
-            total_usage.output_tokens = total_usage
-                .output_tokens
-                .saturating_add(response.usage.output_tokens);
+            super::add_usage_with_prompt_cache(&mut total_usage, &response.usage);
 
             let response_text = extract_text_blocks(&response.content);
             last_response_text = response_text.clone();
@@ -325,7 +324,8 @@ async fn run_rlm_turn_impl(
                             text: "You called FINAL(...) without ever running a ```repl block. \
                                    That defeats the recursive language model — you're guessing \
                                    from the preview alone. Emit a ```repl block now that uses \
-                                   `llm_query`, `llm_query_batched`, or `rlm_query` against \
+                                   `llm_query`, `sub_query_sequence`, or an explicitly independent \
+                                   `llm_query_batched(..., dependency_mode=\"independent\")` against \
                                    `context` to actually compute the answer."
                                 .to_string(),
                             cache_control: None,
@@ -384,7 +384,8 @@ async fn run_rlm_turn_impl(
                         role: "user".to_string(),
                         content: vec![ContentBlock::Text {
                             text: "Reminder: emit Python inside a ```repl … ``` fence. \
-                                   Use `llm_query` / `llm_query_batched` / `rlm_query` to \
+                                   Use `llm_query`, `sub_query_sequence`, or \
+                                   `llm_query_batched(..., dependency_mode=\"independent\")` to \
                                    process `context` and call `FINAL(value)` when done."
                                 .to_string(),
                             cache_control: None,
@@ -506,12 +507,7 @@ async fn run_rlm_turn_impl(
     // Fold bridge usage (children + nested sub_rlm) into totals.
     let bridge_usage = usage_handle.lock().await;
     let mut final_usage = result.usage.clone();
-    final_usage.input_tokens = final_usage
-        .input_tokens
-        .saturating_add(bridge_usage.input_tokens);
-    final_usage.output_tokens = final_usage
-        .output_tokens
-        .saturating_add(bridge_usage.output_tokens);
+    super::add_usage_with_prompt_cache(&mut final_usage, &bridge_usage);
     drop(bridge_usage);
 
     repl.shutdown().await;
@@ -589,11 +585,19 @@ fn build_metadata_message(
     parts.push("- `context` / `ctx`                       — the full input string".to_string());
     parts.push("- `len(context)` / `context[a:b]` / `context.splitlines()` — slice it".to_string());
     parts.push(
+        "- `chunk_context(max_chars=20000, overlap=0)` — full-coverage chunks with index/start/end/text"
+            .to_string(),
+    );
+    parts.push(
+        "- `chunk_coverage(chunks)`              — coverage report for chunk_context output"
+            .to_string(),
+    );
+    parts.push(
         "- `llm_query(prompt, model=None)`        — one-shot child LLM; `model` is ignored and child calls stay pinned to Flash"
             .to_string(),
     );
     parts.push(
-        "- `llm_query_batched([p1, p2, ...])`     — concurrent fan-out; `model` is ignored"
+        "- `llm_query_batched([p1, p2, ...], dependency_mode=\"independent\")` — concurrent fan-out for independent prompts only; `model` is ignored"
             .to_string(),
     );
     parts.push(
@@ -601,7 +605,15 @@ fn build_metadata_message(
             .to_string(),
     );
     parts.push(
-        "- `rlm_query_batched([p1, p2, ...])`     — concurrent recursive sub-RLMs; `model` is ignored"
+        "- `rlm_query_batched([p1, p2, ...], dependency_mode=\"independent\")` — concurrent recursive sub-RLMs for independent prompts only; `model` is ignored"
+            .to_string(),
+    );
+    parts.push(
+        "- `sub_query_sequence(prompt, slices)`   — sequential child calls for A->B dependencies and rollback-sensitive work"
+            .to_string(),
+    );
+    parts.push(
+        "- Batch safety: never batch dependent steps, global-state refactors, schema migrations, or rollback-sensitive tasks"
             .to_string(),
     );
     parts.push("- `SHOW_VARS()`                          — list user variables".to_string());
@@ -970,5 +982,13 @@ mod tests {
         assert!(s.contains("line0"));
         assert!(s.contains("line19"));
         assert!(s.contains("…"));
+    }
+
+    #[test]
+    fn rlm_turn_has_no_fixed_wall_clock_timeout() {
+        assert!(
+            turn_timeout().is_none(),
+            "RLM turns should not be killed by the old fixed 180s wall-clock cap"
+        );
     }
 }

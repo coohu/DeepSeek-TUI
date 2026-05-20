@@ -16,7 +16,9 @@ use tokio_util::sync::CancellationToken;
 use crate::features::Features;
 use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
+use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
 use crate::sandbox::backend::SandboxBackend;
+use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
 pub use deepseek_tools::{
@@ -30,7 +32,7 @@ pub use deepseek_tools::{
 /// contexts keep working. Tools that need durable task/automation state fail
 /// closed with a clear "not available" error when the relevant service is not
 /// attached.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RuntimeToolServices {
     pub shell_manager: Option<SharedShellManager>,
     pub task_manager: Option<crate::task_manager::SharedTaskManager>,
@@ -42,6 +44,27 @@ pub struct RuntimeToolServices {
     /// tool-side hook events. `None` outside the live engine — test
     /// contexts that don't care about hooks get a no-op.
     pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
+    /// Per-session backing store for `var_handle` payloads. Cloned tool
+    /// contexts share this Arc so handles survive across turns.
+    pub handle_store: SharedHandleStore,
+    /// Per-session persistent RLM kernels, keyed by caller-chosen context name.
+    pub rlm_sessions: SharedRlmSessionStore,
+}
+
+impl Default for RuntimeToolServices {
+    fn default() -> Self {
+        Self {
+            shell_manager: None,
+            task_manager: None,
+            automations: None,
+            task_data_dir: None,
+            active_task_id: None,
+            active_thread_id: None,
+            hook_executor: None,
+            handle_store: new_shared_handle_store(),
+            rlm_sessions: new_shared_rlm_session_store(),
+        }
+    }
 }
 
 impl std::fmt::Debug for RuntimeToolServices {
@@ -54,6 +77,8 @@ impl std::fmt::Debug for RuntimeToolServices {
             .field("active_task_id", &self.active_task_id)
             .field("active_thread_id", &self.active_thread_id)
             .field("hook_executor", &self.hook_executor.is_some())
+            .field("handle_store", &true)
+            .field("rlm_sessions", &true)
             .finish()
     }
 }
@@ -86,6 +111,9 @@ pub struct ToolContext {
     /// Elevated sandbox policy override (used when retrying after sandbox denial).
     /// This overrides the default sandbox behavior for shell commands.
     pub elevated_sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    /// Optional user-facing hint for shell commands that fail because the
+    /// active sandbox policy intentionally denies outbound network access.
+    pub shell_network_denied_hint: Option<String>,
     /// Whether tools should auto-approve without safety checks (YOLO mode).
     /// When true, command safety analysis is skipped for shell execution.
     pub auto_approve: bool,
@@ -129,6 +157,12 @@ pub struct ToolContext {
     /// routing (e.g. in sub-agents and test contexts to avoid recursion).
     pub large_output_router: Option<crate::tools::large_output_router::LargeOutputRouter>,
 
+    /// Which search backend `web_search` should use. Default: Bing. Set via
+    /// `[search] provider` in config.toml.
+    pub search_provider: crate::config::SearchProvider,
+    /// API key for Tavily or Bocha. `None` for Bing or DuckDuckGo.
+    pub search_api_key: Option<String>,
+
     /// Per-session workshop variable store (#548). Holds the raw content of
     /// the most recent large-tool routing event so the parent can call
     /// `promote_to_context` later. `None` when the router is disabled.
@@ -153,6 +187,7 @@ impl ToolContext {
             notes_path,
             mcp_config_path,
             elevated_sandbox_policy: None,
+            shell_network_denied_hint: None,
             auto_approve: false,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
@@ -164,6 +199,8 @@ impl ToolContext {
             memory_path: None,
             lsp_manager: None,
             large_output_router: None,
+            search_provider: crate::config::SearchProvider::default(),
+            search_api_key: None,
             workshop_vars: None,
         }
     }
@@ -186,6 +223,7 @@ impl ToolContext {
             notes_path: notes_path.into(),
             mcp_config_path: mcp_config_path.into(),
             elevated_sandbox_policy: None,
+            shell_network_denied_hint: None,
             auto_approve: false,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
@@ -197,6 +235,8 @@ impl ToolContext {
             memory_path: None,
             lsp_manager: None,
             large_output_router: None,
+            search_provider: crate::config::SearchProvider::default(),
+            search_api_key: None,
             workshop_vars: None,
         }
     }
@@ -219,6 +259,7 @@ impl ToolContext {
             notes_path: notes_path.into(),
             mcp_config_path: mcp_config_path.into(),
             elevated_sandbox_policy: None,
+            shell_network_denied_hint: None,
             auto_approve,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
@@ -230,6 +271,8 @@ impl ToolContext {
             memory_path: None,
             lsp_manager: None,
             large_output_router: None,
+            search_provider: crate::config::SearchProvider::default(),
+            search_api_key: None,
             workshop_vars: None,
         }
     }
@@ -445,6 +488,12 @@ impl ToolContext {
     /// with elevated permissions.
     pub fn with_elevated_sandbox_policy(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
         self.elevated_sandbox_policy = Some(policy);
+        self
+    }
+
+    /// Set the shell network-denial hint used by network-restricted modes.
+    pub fn with_shell_network_denied_hint(mut self, hint: impl Into<String>) -> Self {
+        self.shell_network_denied_hint = Some(hint.into());
         self
     }
 

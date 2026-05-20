@@ -142,7 +142,6 @@ const ALLOW_INSECURE_HTTP_ENV: &str = "DEEPSEEK_ALLOW_INSECURE_HTTP";
 pub(super) const SSE_BACKPRESSURE_HIGH_WATERMARK: usize = 8 * 1024 * 1024; // 8 MB
 pub(super) const SSE_BACKPRESSURE_SLEEP_MS: u64 = 10;
 pub(super) const SSE_MAX_LINES_PER_CHUNK: usize = 256;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Healthy,
@@ -346,9 +345,15 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
 
     if base_url.starts_with("http://") {
         anyhow::bail!(
-            "Refusing insecure base URL '{}'. Use HTTPS or set {}=1 to override for trusted environments.",
-            base_url,
-            ALLOW_INSECURE_HTTP_ENV
+            "Refusing insecure base URL '{base_url}'.\n\
+             \n\
+             Loopback hosts (localhost, 127.0.0.1, [::1]) are auto-allowed.\n\
+             For other trusted local hosts (LAN, llama.cpp on a private IP, etc.)\n\
+             set the env var `{env}=1` in the shell that runs deepseek and re-run.\n\
+             \n\
+             Example: `{env}=1 deepseek` (note the underscores).",
+            base_url = base_url,
+            env = ALLOW_INSECURE_HTTP_ENV,
         );
     }
 
@@ -360,7 +365,7 @@ fn validate_base_url_security(base_url: &str) -> Result<()> {
 
 pub(super) fn versioned_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
-    if trimmed.ends_with("/v1") || trimmed.ends_with("/beta") {
+    if base_url_has_version_suffix(trimmed) {
         trimmed.to_string()
     } else {
         format!("{trimmed}/v1")
@@ -370,10 +375,23 @@ pub(super) fn versioned_base_url(base_url: &str) -> String {
 fn unversioned_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     trimmed
-        .strip_suffix("/v1")
-        .or_else(|| trimmed.strip_suffix("/beta"))
+        .rsplit_once('/')
+        .filter(|(_, segment)| is_version_segment(segment))
+        .map(|(base, _)| base)
         .unwrap_or(trimmed)
         .to_string()
+}
+
+fn base_url_has_version_suffix(trimmed: &str) -> bool {
+    trimmed.rsplit('/').next().is_some_and(is_version_segment)
+}
+
+fn is_version_segment(segment: &str) -> bool {
+    segment.eq_ignore_ascii_case("beta")
+        || segment
+            .strip_prefix('v')
+            .or_else(|| segment.strip_prefix('V'))
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 pub(super) fn api_url(base_url: &str, path: &str) -> String {
@@ -381,11 +399,16 @@ pub(super) fn api_url(base_url: &str, path: &str) -> String {
     if path.starts_with("beta/") {
         return format!("{}/{}", unversioned_base_url(base_url), path);
     }
-    format!(
-        "{}/{}",
-        versioned_base_url(base_url).trim_end_matches('/'),
-        path
-    )
+    let mut versioned = versioned_base_url(base_url);
+    // The /beta suffix is not a real API version — it is an
+    // opt-in surface for beta features.  Only paths with an
+    // explicit `beta/` prefix should hit the beta surface;
+    // everything else (models, chat/completions, health, …)
+    // must go to the standard /v1 surface.
+    if versioned.ends_with("beta") {
+        versioned = format!("{}/v1", unversioned_base_url(base_url));
+    }
+    format!("{}/{}", versioned.trim_end_matches('/'), path)
 }
 
 // === DeepSeekClient ===
@@ -490,6 +513,11 @@ impl DeepSeekClient {
         let headers = build_default_headers(api_key, extra_headers)?;
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
+            .user_agent(concat!(
+                "Mozilla/5.0 (compatible; deepseek-tui/",
+                env!("CARGO_PKG_VERSION"),
+                "; +https://github.com/Hmbown/DeepSeek-TUI)"
+            ))
             .connect_timeout(Duration::from_secs(30))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Some(Duration::from_secs(15)))
@@ -544,6 +572,62 @@ fn build_default_headers(
 }
 
 impl DeepSeekClient {
+    /// Translate text to the requested target language using a focused
+    /// non-streaming chat completion call on the supplied model.
+    ///
+    /// This is a lightweight translation service — no tool calls, no
+    /// streaming, no conversation history. The dedicated translation agent
+    /// receives the source text and returns only the translated result.
+    pub async fn translate(
+        &self,
+        text: &str,
+        model: &str,
+        target_language: &str,
+    ) -> Result<String> {
+        let url = api_url(&self.base_url, "chat/completions");
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": format!(
+                        "You are a professional translator. Your ONLY task is to translate text to {target_language}. \
+                         Rules:\n\
+                         1. Output ONLY the translation, nothing else — no explanations, no notes, no quotes.\n\
+                         2. Preserve all code blocks (```...```), URLs, file paths, command names, \
+                         and technical terms like API names, function names, and library names untranslated.\n\
+                         3. Keep Markdown formatting (headings, lists, bold, italics, links) intact.\n\
+                         4. Translate all natural-language prose naturally and professionally.\n\
+                         5. Do NOT add any prefix, suffix, or commentary.\n\
+                         6. If the input is already in {target_language} or contains no prose to translate, \
+                         return it as-is."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            "max_tokens": 4096,
+            "temperature": 0.1,
+            "stream": false
+        });
+        apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
+
+        let response = self
+            .send_with_retry(|| self.http_client.post(&url).json(&body))
+            .await?;
+
+        let value: serde_json::Value = response.json().await?;
+        let translated = value["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("translate: unexpected API response shape"))?
+            .trim()
+            .to_string();
+
+        Ok(translated)
+    }
+
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
         let url = api_url(&self.base_url, "models");
@@ -628,10 +712,6 @@ impl DeepSeekClient {
                         .map_err(|err| LlmError::from_reqwest(&err))?;
                     let status = response.status();
                     if status.is_success() {
-                        return Ok(response);
-                    }
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
-                    if !retryable {
                         return Ok(response);
                     }
                     let retry_after = extract_retry_after(response.headers());
@@ -807,13 +887,26 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm
-            | ApiProvider::ShengSuanYun => {
+            | ApiProvider::ShengSuanYun
+            | ApiProvider::Sglang => {
                 body["thinking"] = json!({ "type": "disabled" });
             }
-            ApiProvider::Ollama => {}
+            ApiProvider::Fireworks => {}
+            // vLLM is an OpenAI-protocol server, not an Anthropic-protocol one.
+            // For Qwen3 / DeepSeek-R1 / other reasoning models hosted via vLLM,
+            // the canonical OpenAI extension to disable thinking is
+            // `chat_template_kwargs.enable_thinking`. The old
+            // `thinking: {type: disabled}` field is Anthropic-native and
+            // silently ignored by vLLM — the model still emits a full
+            // reasoning trace into the `reasoning` field (which this client
+            // doesn't surface), causing 10+ seconds of perceived "freeze"
+            // before the first content token (PR #1480 by @h3c-hexin).
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": false,
+                });
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": false,
@@ -825,14 +918,21 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm
-            | ApiProvider::ShengSuanYun => {
+            | ApiProvider::ShengSuanYun
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Ollama => {}
+            ApiProvider::Fireworks => {
+                body["reasoning_effort"] = json!("high");
+            }
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("high");
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -845,14 +945,21 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::DeepseekCN
             | ApiProvider::Openrouter
             | ApiProvider::Novita
-            | ApiProvider::Fireworks
-            | ApiProvider::Sglang
-            | ApiProvider::Vllm
-            | ApiProvider::ShengSuanYun => {
+            | ApiProvider::ShengSuanYun
+            | ApiProvider::Sglang => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }
-            ApiProvider::Ollama => {}
+            ApiProvider::Fireworks => {
+                body["reasoning_effort"] = json!("max");
+            }
+            ApiProvider::Vllm => {
+                body["chat_template_kwargs"] = json!({
+                    "enable_thinking": true,
+                });
+                body["reasoning_effort"] = json!("max");
+            }
+            ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {}
             ApiProvider::NvidiaNim => {
                 body["chat_template_kwargs"] = json!({
                     "thinking": true,
@@ -876,6 +983,9 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         })
         .and_then(Value::as_u64)
         .unwrap_or(0);
+    let total_tokens = usage
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(Value::as_u64);
     let reasoning_tokens_raw = usage
         .and_then(|u| u.get("completion_tokens_details"))
         .and_then(|details| details.get("reasoning_tokens"))
@@ -884,6 +994,10 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
         && let Some(reasoning_tokens) = reasoning_tokens_raw
     {
         output_tokens = reasoning_tokens;
+    } else if output_tokens == 0
+        && let Some(total_tokens) = total_tokens
+    {
+        output_tokens = total_tokens.saturating_sub(input_tokens);
     }
     let cached_tokens = usage
         .and_then(|u| u.get("prompt_tokens_details"))
@@ -964,12 +1078,24 @@ impl DeepSeekClient {
 
 mod chat;
 
+pub(crate) use chat::PromptInspection;
+
+pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {
+    chat::inspect_prompt_for_request(request)
+}
+
+pub(crate) fn build_cache_warmup_request(request: &MessageRequest) -> MessageRequest {
+    chat::build_cache_warmup_request(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::chat::{
-        build_chat_messages, build_chat_messages_for_request, count_reasoning_replay_chars,
+        build_chat_messages, build_chat_messages_for_request,
+        build_chat_messages_for_request_and_provider, count_reasoning_replay_chars,
         parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
+        tool_to_chat_for_base_url,
     };
     use crate::models::{
         ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool,
@@ -1031,9 +1157,18 @@ mod tests {
             api_url("https://api.deepseek.com/v1", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
+        // Non-beta paths from a /beta base URL route to /v1.
+        // Only paths with an explicit beta/ prefix use the beta surface.
         assert_eq!(
             api_url("https://api.deepseek.com/beta", "chat/completions"),
-            "https://api.deepseek.com/beta/chat/completions"
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            api_url(
+                "https://openai-compatible.example/api/coding/paas/v4",
+                "chat/completions"
+            ),
+            "https://openai-compatible.example/api/coding/paas/v4/chat/completions"
         );
     }
 
@@ -1050,6 +1185,33 @@ mod tests {
         assert_eq!(
             api_url("https://api.deepseek.com/beta", "beta/completions"),
             "https://api.deepseek.com/beta/completions"
+        );
+    }
+
+    #[test]
+    fn api_url_routes_models_and_non_beta_paths_to_v1() {
+        // The /models endpoint only exists at /v1/models, never at
+        // /beta/models. Non-beta paths from a /beta base URL must
+        // still route to /v1.
+        assert_eq!(
+            api_url("https://api.deepseek.com", "models"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/v1", "models"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            api_url("https://api.deepseek.com/beta", "models"),
+            "https://api.deepseek.com/v1/models"
+        );
+        // explicit v<N> versions other than /v1 should be preserved
+        assert_eq!(
+            api_url(
+                "https://openai-compatible.example/api/coding/paas/v4",
+                "models"
+            ),
+            "https://openai-compatible.example/api/coding/paas/v4/models"
         );
     }
 
@@ -1075,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_messages_keep_reasoning_content_on_all_assistant_messages() {
+    fn chat_messages_keep_current_turn_reasoning_content() {
         let message = Message {
             role: "assistant".to_string(),
             content: vec![
@@ -1100,7 +1262,114 @@ mod tests {
         assert_eq!(
             assistant.get("reasoning_content").and_then(Value::as_str),
             Some("plan"),
-            "thinking-mode models must keep reasoning_content on all assistant messages"
+            "thinking-mode models keep reasoning_content while still in the current turn"
+        );
+    }
+
+    #[test]
+    fn generic_openai_provider_drops_deepseek_reasoning_content() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "plan".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "done".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            }],
+            max_tokens: 16,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let deepseek =
+            build_chat_messages_for_request_and_provider(&request, ApiProvider::Deepseek);
+        let native_assistant = deepseek
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            native_assistant
+                .get("reasoning_content")
+                .and_then(Value::as_str),
+            Some("plan")
+        );
+
+        let openai = build_chat_messages_for_request_and_provider(&request, ApiProvider::Openai);
+        let generic_assistant = openai
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+        assert_eq!(
+            generic_assistant.get("content").and_then(Value::as_str),
+            Some("done")
+        );
+        assert!(
+            generic_assistant.get("reasoning_content").is_none(),
+            "generic OpenAI-compatible providers reject DeepSeek-only reasoning_content (#1542)"
+        );
+    }
+
+    #[test]
+    fn chat_messages_replay_tool_round_reasoning_before_new_user_turn() {
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Need the date".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Need to call a tool".to_string(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "tool-1".to_string(),
+                        name: "get_date".to_string(),
+                        input: json!({}),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool-1".to_string(),
+                    content: "2026-04-23".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let tool_assistant = out
+            .iter()
+            .find(|value| {
+                value.get("role").and_then(Value::as_str) == Some("assistant")
+                    && value.get("tool_calls").is_some()
+            })
+            .expect("tool-call assistant message");
+        assert_eq!(
+            tool_assistant
+                .get("reasoning_content")
+                .and_then(Value::as_str),
+            Some("Need to call a tool"),
+            "thinking-mode tool sub-turns must replay reasoning_content until the tool chain finishes"
         );
     }
 
@@ -1165,7 +1434,118 @@ mod tests {
                 .get("reasoning_content")
                 .and_then(Value::as_str),
             Some("Need to call a tool"),
-            "thinking-mode tool rounds must replay reasoning_content on later requests"
+            "tool-call reasoning_content must be replayed across later user turns"
+        );
+    }
+
+    #[test]
+    fn chat_messages_keep_prior_non_tool_reasoning_after_new_user_turn() {
+        // The serialized JSON for a stored assistant message MUST be a pure
+        // function of that message — never of what comes after it. DeepSeek's
+        // prompt cache hashes the leading bytes of every request; flipping
+        // `reasoning_content` on/off across turns rewrites historical bytes
+        // and busts the prefix cache from that message onwards. (#583)
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Explain it".to_string(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "Internal explanation plan".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "Final answer".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "Next question".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let out = build_chat_messages(None, &messages, "deepseek-v4-pro");
+        let assistant = out
+            .iter()
+            .find(|value| value.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant message");
+
+        assert_eq!(
+            assistant.get("content").and_then(Value::as_str),
+            Some("Final answer")
+        );
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Internal explanation plan"),
+            "reasoning_content must be preserved across follow-up user turns to keep DeepSeek's prefix cache warm"
+        );
+    }
+
+    #[test]
+    fn chat_messages_assistant_json_is_byte_stable_across_follow_up_user_turn() {
+        // Direct prefix-cache regression: the JSON for the assistant message
+        // built on turn N must equal the JSON for the same assistant message
+        // built on turn N+1, after a new user message has been appended.
+        let assistant = Message {
+            role: "assistant".to_string(),
+            content: vec![
+                ContentBlock::Thinking {
+                    thinking: "I should explain step by step.".to_string(),
+                },
+                ContentBlock::Text {
+                    text: "Here is the explanation.".to_string(),
+                    cache_control: None,
+                },
+            ],
+        };
+        let user_initial = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Explain it".to_string(),
+                cache_control: None,
+            }],
+        };
+        let user_follow_up = Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Next question".to_string(),
+                cache_control: None,
+            }],
+        };
+
+        let turn_n = build_chat_messages(
+            None,
+            &[user_initial.clone(), assistant.clone()],
+            "deepseek-v4-pro",
+        );
+        let turn_n_plus_1 = build_chat_messages(
+            None,
+            &[user_initial, assistant, user_follow_up],
+            "deepseek-v4-pro",
+        );
+
+        let assistant_n = turn_n
+            .iter()
+            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant present in turn N");
+        let assistant_n1 = turn_n_plus_1
+            .iter()
+            .find(|v| v.get("role").and_then(Value::as_str) == Some("assistant"))
+            .expect("assistant present in turn N+1");
+
+        assert_eq!(
+            assistant_n, assistant_n1,
+            "assistant message JSON must be byte-identical across turns or DeepSeek's prefix cache breaks"
         );
     }
 
@@ -1217,6 +1597,267 @@ mod tests {
             out.iter()
                 .any(|value| value.get("role").and_then(Value::as_str) == Some("tool")),
             "matching tool result should remain"
+        );
+    }
+
+    #[test]
+    fn prompt_builder_keeps_system_first_and_current_user_input_last() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Previous answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "<turn_meta>\nCurrent local date: 2026-05-08\n</turn_meta>"
+                                .to_string(),
+                            cache_control: None,
+                        },
+                        ContentBlock::Text {
+                            text: "Current user question".to_string(),
+                            cache_control: None,
+                        },
+                    ],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Stable mode, project rules, and tool policy".to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let out = build_chat_messages_for_request(&request);
+
+        assert_eq!(out[0].get("role").and_then(Value::as_str), Some("system"));
+        assert_eq!(
+            out[0].get("content").and_then(Value::as_str),
+            Some("Stable mode, project rules, and tool policy")
+        );
+        let last = out.last().expect("latest user message");
+        assert_eq!(last.get("role").and_then(Value::as_str), Some("user"));
+        assert!(
+            last.get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|content| content.ends_with("Current user question")),
+            "current-turn user input must be at the tail of the wire prompt: {last:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_inspect_reports_stable_layers_and_dynamic_user_task() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Prior answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Current task".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nRules\n</project_instructions>\n\n## Project Context Pack\n\n<project_context_pack>\n{}\n</project_context_pack>\n\n## Environment\n\n- lang: en"
+                    .to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        };
+
+        let inspection = inspect_prompt_for_request(&request);
+
+        assert_eq!(inspection.base_static_prefix_hash.len(), 64);
+        assert_eq!(inspection.full_request_prefix_hash.len(), 64);
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Global system prefix"
+                && layer.stability.label() == "static"
+                && layer.char_len == "Base policy".chars().count()
+                && layer.sha256.len() == 64
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Project context" && layer.stability.label() == "static"
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Project context pack" && layer.stability.label() == "static"
+        }));
+        assert!(inspection.layers.iter().any(|layer| {
+            layer.name == "Message #1 assistant" && layer.stability.label() == "history"
+        }));
+        assert!(
+            inspection.layers.last().is_some_and(
+                |layer| layer.name == "User task" && layer.stability.label() == "dynamic"
+            )
+        );
+    }
+
+    #[test]
+    fn prompt_inspect_keeps_static_base_hash_across_different_user_tasks() {
+        fn request_with_user_task(task: &str) -> MessageRequest {
+            MessageRequest {
+                model: "deepseek-v4-pro".to_string(),
+                messages: vec![
+                    Message {
+                        role: "assistant".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: "Prior answer".to_string(),
+                            cache_control: None,
+                        }],
+                    },
+                    Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::Text {
+                            text: task.to_string(),
+                            cache_control: None,
+                        }],
+                    },
+                ],
+                max_tokens: 1024,
+                system: Some(SystemPrompt::Text(
+                    "Base policy\n\n## Environment\n\n- shell: powershell\n\n## Skills\n\n- rust\n\n## Context Management\n\nKeep concise\n\n## Compact\n\nTemplate"
+                        .to_string(),
+                )),
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: Some("max".to_string()),
+                stream: None,
+                temperature: None,
+                top_p: None,
+            }
+        }
+
+        let first = inspect_prompt_for_request(&request_with_user_task("First task"));
+        let second = inspect_prompt_for_request(&request_with_user_task("Second task"));
+        let mut changed_history_request = request_with_user_task("Second task");
+        changed_history_request.messages[0] = Message {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Different prior answer".to_string(),
+                cache_control: None,
+            }],
+        };
+        let changed_history = inspect_prompt_for_request(&changed_history_request);
+
+        assert_eq!(
+            first.base_static_prefix_hash,
+            second.base_static_prefix_hash
+        );
+        assert_eq!(
+            first.full_request_prefix_hash, second.full_request_prefix_hash,
+            "full request prefix excludes the final dynamic user task"
+        );
+        assert_ne!(
+            second.full_request_prefix_hash, changed_history.full_request_prefix_hash,
+            "full request prefix can change when session history changes"
+        );
+        assert!(
+            second.layers.last().is_some_and(
+                |layer| layer.name == "User task" && layer.stability.label() == "dynamic"
+            ),
+            "current user task must remain the final layer"
+        );
+        assert!(second.layers.iter().any(|layer| {
+            layer.name == "Message #1 assistant" && layer.stability.label() == "history"
+        }));
+        assert!(!second.layers.iter().any(
+            |layer| layer.name.starts_with("Message #") && layer.stability.label() == "static"
+        ));
+    }
+
+    #[test]
+    fn cache_warmup_request_reuses_stable_prefix_and_fixed_user_tail() {
+        let request = MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Stable prior answer".to_string(),
+                        cache_control: None,
+                    }],
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "Dynamic latest user task".to_string(),
+                        cache_control: None,
+                    }],
+                },
+            ],
+            max_tokens: 1024,
+            system: Some(SystemPrompt::Text(
+                "Base policy\n\n<project_instructions source=\"AGENTS.md\">\nStable project rules\n</project_instructions>\n\n## Previous Session Relay\n\nDynamic relay"
+                    .to_string(),
+            )),
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("max".to_string()),
+            stream: Some(true),
+            temperature: Some(0.7),
+            top_p: None,
+        };
+
+        let warmup = build_cache_warmup_request(&request);
+
+        assert_eq!(warmup.max_tokens, 8);
+        assert_eq!(warmup.temperature, Some(0.0));
+        assert_eq!(warmup.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(warmup.messages.len(), 2);
+        assert_eq!(warmup.messages[0].role, "assistant");
+        assert_eq!(warmup.messages[1].role, "user");
+        assert_eq!(
+            warmup.messages[1].content,
+            vec![ContentBlock::Text {
+                text: "请只回复 OK".to_string(),
+                cache_control: None,
+            }]
+        );
+
+        let wire = build_chat_messages_for_request(&warmup);
+        let system = wire
+            .first()
+            .and_then(|value| value.get("content"))
+            .and_then(Value::as_str)
+            .expect("warmup system prompt");
+        assert!(system.contains("Stable project rules"));
+        assert!(!system.contains("Dynamic relay"));
+        assert!(
+            !wire
+                .iter()
+                .any(|value| value.to_string().contains("Dynamic latest user task")),
+            "warmup must not include the dynamic latest user task"
         );
     }
 
@@ -1281,6 +1922,21 @@ mod tests {
         assert!(
             body.pointer("/chat_template_kwargs/reasoning_effort")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_uses_openai_compatible_shape_for_fireworks() {
+        let mut body = json!({});
+        apply_reasoning_effort(&mut body, Some("max"), ApiProvider::Fireworks);
+
+        assert_eq!(
+            body.get("reasoning_effort").and_then(Value::as_str),
+            Some("max")
+        );
+        assert!(
+            body.get("thinking").is_none(),
+            "Fireworks strict-validates OpenAI-compatible requests and rejects top-level thinking"
         );
     }
 
@@ -1366,6 +2022,80 @@ mod tests {
             Some(true)
         );
         assert!(encoded.get("strict").is_none());
+    }
+
+    #[test]
+    fn deepseek_non_beta_base_url_strips_strict_tool_flag() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "emit_json".to_string(),
+            description: "Emit JSON".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        };
+
+        let encoded = tool_to_chat_for_base_url(&tool, "https://api.deepseek.com/v1");
+
+        assert!(
+            encoded
+                .get("function")
+                .and_then(|function| function.get("strict"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn deepseek_beta_and_custom_base_urls_keep_strict_tool_flag() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "emit_json".to_string(),
+            description: "Emit JSON".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: None,
+            defer_loading: None,
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        };
+
+        for base_url in [
+            "https://api.deepseek.com/beta",
+            "https://example.com/openai/v1",
+        ] {
+            let encoded = tool_to_chat_for_base_url(&tool, base_url);
+            assert_eq!(
+                encoded
+                    .get("function")
+                    .and_then(|function| function.get("strict"))
+                    .and_then(Value::as_bool),
+                Some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn chat_tool_wire_shape_omits_anthropic_only_metadata() {
+        let tool = Tool {
+            tool_type: Some("function".to_string()),
+            name: "mcp_read_resource".to_string(),
+            description: "Read resource".to_string(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            allowed_callers: Some(vec!["direct".to_string()]),
+            defer_loading: Some(false),
+            input_examples: Some(vec![json!({"uri": "file://example"})]),
+            strict: None,
+            cache_control: None,
+        };
+
+        let encoded = tool_to_chat_for_base_url(&tool, "https://api.fireworks.ai/inference/v1");
+
+        assert!(encoded.get("allowed_callers").is_none());
+        assert!(encoded.get("defer_loading").is_none());
+        assert!(encoded.get("input_examples").is_none());
     }
 
     #[test]
@@ -1840,6 +2570,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_usage_derives_completion_tokens_from_total_tokens_when_needed() {
+        let usage = parse_usage(Some(&json!({
+            "prompt_tokens": 100,
+            "total_tokens": 125,
+            "prompt_cache_hit_tokens": 70,
+            "prompt_cache_miss_tokens": 30
+        })));
+
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 25);
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(70));
+        assert_eq!(usage.prompt_cache_miss_tokens, Some(30));
+    }
+
+    #[test]
     fn parse_usage_reads_v4_prompt_tokens_details_cached_tokens() {
         let usage = parse_usage(Some(&json!({
             "prompt_tokens": 4000,
@@ -1884,9 +2629,13 @@ mod tests {
             ]
         });
 
-        let approx_tokens =
-            sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"))
-                .expect("multi-turn thinking-mode conversation should report replay tokens");
+        let approx_tokens = sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Deepseek,
+        )
+        .expect("multi-turn thinking-mode conversation should report replay tokens");
         // ~4 chars/token; 46 bytes of reasoning -> 11 tokens.
         assert_eq!(approx_tokens, 11);
 
@@ -1919,7 +2668,12 @@ mod tests {
                 { "role": "user", "content": "hi" }
             ]
         });
-        let result = sanitize_thinking_mode_messages(&mut body, "deepseek-v4-flash", None);
+        let result = sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-flash",
+            None,
+            ApiProvider::Deepseek,
+        );
         // reasoning_effort is None → no thinking injection, result is None
         assert!(result.is_none());
     }
@@ -1942,11 +2696,86 @@ mod tests {
             ]
         });
 
-        sanitize_thinking_mode_messages(&mut body, "deepseek-v4-pro", Some("max"));
+        sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Deepseek,
+        );
 
         let chars = count_reasoning_replay_chars(&body);
         // "(reasoning omitted)" is 19 bytes.
         assert_eq!(chars, 19);
+    }
+
+    #[test]
+    fn sanitize_thinking_mode_skips_generic_openai_provider() {
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [
+                { "role": "user", "content": "hi" },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{ "id": "1", "type": "function" }]
+                }
+            ]
+        });
+
+        let result = sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Openai,
+        );
+
+        assert!(result.is_none());
+        let assistant = body["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .find(|message| message["role"] == "assistant")
+            })
+            .expect("assistant message");
+        assert!(
+            assistant.get("reasoning_content").is_none(),
+            "generic OpenAI-compatible provider payload must not get reasoning_content (#1542)"
+        );
+    }
+
+    #[test]
+    fn sanitize_thinking_mode_keeps_tool_call_placeholder_after_new_user_turn() {
+        let mut body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [
+                { "role": "user", "content": "step 1" },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{ "id": "1", "type": "function" }]
+                },
+                { "role": "tool", "tool_call_id": "1", "content": "ok" },
+                { "role": "user", "content": "step 2" }
+            ]
+        });
+
+        sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("max"),
+            ApiProvider::Deepseek,
+        );
+
+        let messages = body["messages"].as_array().unwrap();
+        let assistant = messages
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("assistant tool-call message");
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("(reasoning omitted)")
+        );
     }
 
     #[test]

@@ -1,17 +1,14 @@
 //! Secret storage for DeepSeek API keys.
 //!
 //! Provides a small abstraction (`KeyringStore`) plus a default
-//! implementation backed by the OS keyring (`DefaultKeyringStore`),
-//! a file-based fallback for headless Linux (`FileKeyringStore`), and
-//! an in-memory store for tests (`InMemoryKeyringStore`).
+//! file-based implementation (`FileKeyringStore`), an opt-in OS keyring
+//! implementation (`DefaultKeyringStore`), and an in-memory store for tests
+//! (`InMemoryKeyringStore`).
 //!
-//! Higher-level lookup goes through [`Secrets::resolve`], which checks
-//! the keyring first and falls back to environment variables. The
-//! caller (typically the config crate) then falls back to plaintext
-//! TOML if both are empty — that final layer lives outside this crate
-//! so the precedence is explicit at the call site.
-//!
-//! Hard rule: **keyring → env → config-file**. Never swap.
+//! Higher-level lookup through [`Secrets::resolve`] checks the secret store first
+//! and falls back to environment variables. Config-file precedence lives in the
+//! config crate so user-facing commands can keep `config -> secret store -> env`
+//! explicit at the call site.
 #![deny(missing_docs)]
 
 use std::collections::HashMap;
@@ -25,6 +22,9 @@ use thiserror::Error;
 /// Default OS keychain service name. macOS users can verify entries with
 /// `security find-generic-password -s deepseek -a <provider>`.
 pub const DEFAULT_SERVICE: &str = "deepseek";
+/// Select the secret storage backend. Supported values are `file` (default)
+/// and `system`/`keyring` for the OS credential store.
+pub const SECRET_BACKEND_ENV: &str = "DEEPSEEK_SECRET_BACKEND";
 
 /// Errors that may arise from a [`KeyringStore`] backend.
 #[derive(Debug, Error)]
@@ -63,7 +63,10 @@ pub trait KeyringStore: Send + Sync {
 }
 
 /// OS keyring backend (macOS Keychain, Windows Credential Manager,
-/// Linux Secret Service / kwallet).
+/// Linux Secret Service / kwallet). This backend is opt-in through
+/// [`SECRET_BACKEND_ENV`]. On platforms without a configured native
+/// keyring dependency, probing this backend returns an unsupported error so
+/// [`Secrets::auto_detect`] can fall back to [`FileKeyringStore`].
 #[derive(Debug, Clone)]
 pub struct DefaultKeyringStore {
     /// Keyring service name (defaults to [`DEFAULT_SERVICE`]).
@@ -88,62 +91,99 @@ impl DefaultKeyringStore {
     /// Probe the OS keyring without writing anything. Returns `Ok(())` if
     /// a backend is reachable, otherwise an error describing why not.
     pub fn probe(&self) -> Result<(), SecretsError> {
-        // `Entry::new` is enough to validate the native macOS/Windows
-        // backend path. Avoid a dummy read there because it can trigger
-        // a second user-visible Keychain/Credential Manager access before
-        // the real provider key lookup.
-        let entry = keyring::Entry::new(&self.service, "__probe__")
-            .map_err(|err| SecretsError::Keyring(err.to_string()))?;
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         {
-            let _ = entry;
-            Ok(())
+            // `Entry::new` is enough to validate the native macOS/Windows
+            // backend path. Avoid a dummy read there because it can trigger
+            // a second user-visible Keychain/Credential Manager access before
+            // the real provider key lookup.
+            let entry = keyring::Entry::new(&self.service, "__probe__")
+                .map_err(|err| SecretsError::Keyring(err.to_string()))?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            {
+                let _ = entry;
+                Ok(())
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            match entry.get_password() {
+                Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(keyring::Error::PlatformFailure(err)) => {
+                    Err(SecretsError::Keyring(format!("platform failure: {err}")))
+                }
+                Err(keyring::Error::NoStorageAccess(err)) => {
+                    Err(SecretsError::Keyring(format!("no storage access: {err}")))
+                }
+                Err(other) => Err(SecretsError::Keyring(other.to_string())),
+            }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        match entry.get_password() {
-            Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(keyring::Error::PlatformFailure(err)) => {
-                Err(SecretsError::Keyring(format!("platform failure: {err}")))
-            }
-            Err(keyring::Error::NoStorageAccess(err)) => {
-                Err(SecretsError::Keyring(format!("no storage access: {err}")))
-            }
-            Err(other) => Err(SecretsError::Keyring(other.to_string())),
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = &self.service;
+            Err(SecretsError::Keyring(unsupported_keyring_message()))
         }
     }
 }
 
 impl KeyringStore for DefaultKeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>, SecretsError> {
-        let entry = keyring::Entry::new(&self.service, key)
-            .map_err(|err| SecretsError::Keyring(err.to_string()))?;
-        match entry.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => Err(SecretsError::Keyring(err.to_string())),
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let entry = keyring::Entry::new(&self.service, key)
+                .map_err(|err| SecretsError::Keyring(err.to_string()))?;
+            match entry.get_password() {
+                Ok(value) => Ok(Some(value)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(err) => Err(SecretsError::Keyring(err.to_string())),
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = key;
+            Err(SecretsError::Keyring(unsupported_keyring_message()))
         }
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), SecretsError> {
-        let entry = keyring::Entry::new(&self.service, key)
-            .map_err(|err| SecretsError::Keyring(err.to_string()))?;
-        entry
-            .set_password(value)
-            .map_err(|err| SecretsError::Keyring(err.to_string()))
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let entry = keyring::Entry::new(&self.service, key)
+                .map_err(|err| SecretsError::Keyring(err.to_string()))?;
+            entry
+                .set_password(value)
+                .map_err(|err| SecretsError::Keyring(err.to_string()))
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = (key, value);
+            Err(SecretsError::Keyring(unsupported_keyring_message()))
+        }
     }
 
     fn delete(&self, key: &str) -> Result<(), SecretsError> {
-        let entry = keyring::Entry::new(&self.service, key)
-            .map_err(|err| SecretsError::Keyring(err.to_string()))?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(SecretsError::Keyring(err.to_string())),
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        {
+            let entry = keyring::Entry::new(&self.service, key)
+                .map_err(|err| SecretsError::Keyring(err.to_string()))?;
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(err) => Err(SecretsError::Keyring(err.to_string())),
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+        {
+            let _ = key;
+            Err(SecretsError::Keyring(unsupported_keyring_message()))
         }
     }
 
     fn backend_name(&self) -> &'static str {
         "system keyring"
     }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn unsupported_keyring_message() -> String {
+    "system keyring backend is unsupported on this platform".to_string()
 }
 
 /// In-memory keyring (tests only).
@@ -162,19 +202,25 @@ impl InMemoryKeyringStore {
 
 impl KeyringStore for InMemoryKeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>, SecretsError> {
-        Ok(self.entries.lock().unwrap().get(key).cloned())
+        let guard = self.entries.lock().map_err(|e| {
+            SecretsError::Keyring(format!("InMemoryKeyringStore mutex poisoned: {e}"))
+        })?;
+        Ok(guard.get(key).cloned())
     }
 
     fn set(&self, key: &str, value: &str) -> Result<(), SecretsError> {
-        self.entries
-            .lock()
-            .unwrap()
-            .insert(key.to_string(), value.to_string());
+        let mut guard = self.entries.lock().map_err(|e| {
+            SecretsError::Keyring(format!("InMemoryKeyringStore mutex poisoned: {e}"))
+        })?;
+        guard.insert(key.to_string(), value.to_string());
         Ok(())
     }
 
     fn delete(&self, key: &str) -> Result<(), SecretsError> {
-        self.entries.lock().unwrap().remove(key);
+        let mut guard = self.entries.lock().map_err(|e| {
+            SecretsError::Keyring(format!("InMemoryKeyringStore mutex poisoned: {e}"))
+        })?;
+        guard.remove(key);
         Ok(())
     }
 
@@ -312,17 +358,35 @@ impl KeyringStore for FileKeyringStore {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretBackendSelection {
+    File,
+    System,
+    Unknown,
+}
+
+fn secret_backend_selection(value: Option<&str>) -> SecretBackendSelection {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => SecretBackendSelection::File,
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "file" | "local" | "json" => SecretBackendSelection::File,
+            "system" | "keyring" | "os" | "os-keyring" => SecretBackendSelection::System,
+            _ => SecretBackendSelection::Unknown,
+        },
+    }
+}
+
 /// High-level façade combining a [`KeyringStore`] with environment
 /// variable fallbacks.
 ///
-/// Lookup precedence: **keyring → env → none**. Callers that also have
+/// Lookup precedence: **secret store → env → none**. Callers that also have
 /// a TOML config layer must wire that themselves at the very end of
 /// the chain.
 #[derive(Clone)]
 pub struct Secrets {
     /// Underlying secret store.
     pub store: Arc<dyn KeyringStore>,
-    /// Owner identifier within the keyring (typically "deepseek"); the
+    /// Owner identifier within the secret store (typically "deepseek"); the
     /// `key` parameter passed to `resolve` is mapped to a slot in the
     /// store as-is, while envs are looked up by canonical name.
     service: String,
@@ -331,7 +395,7 @@ pub struct Secrets {
 /// Source layer that provided a resolved secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretSource {
-    /// The configured keyring backend returned the secret.
+    /// The configured secret-store backend returned the secret.
     Keyring,
     /// A process environment variable returned the secret.
     Env,
@@ -356,11 +420,50 @@ impl Secrets {
         }
     }
 
-    /// Construct the platform-appropriate default backend. On platforms
-    /// where an OS keyring backend is reachable this returns
-    /// [`DefaultKeyringStore`]; otherwise it falls back to
-    /// [`FileKeyringStore`] under `~/.deepseek/secrets/`.
+    /// Construct the default backend. The prompt-free default is
+    /// [`FileKeyringStore`] under `~/.deepseek/secrets/`. Set
+    /// [`SECRET_BACKEND_ENV`] to `system` or `keyring` to opt into the OS
+    /// credential store.
     pub fn auto_detect() -> Self {
+        match secret_backend_selection(std::env::var(SECRET_BACKEND_ENV).ok().as_deref()) {
+            SecretBackendSelection::File => Self::file_backed_default(),
+            SecretBackendSelection::Unknown => {
+                tracing::warn!(
+                    "{SECRET_BACKEND_ENV} has an unsupported value; using file-backed secret store"
+                );
+                Self::file_backed_default()
+            }
+            SecretBackendSelection::System => {
+                let default_store = DefaultKeyringStore::default();
+                match default_store.probe() {
+                    Ok(()) => Self::new(Arc::new(default_store)),
+                    Err(err) => {
+                        tracing::warn!(
+                            "OS keyring unavailable ({err}); falling back to file-backed secret store"
+                        );
+                        Self::file_backed_default()
+                    }
+                }
+            }
+        }
+    }
+
+    fn file_backed_default() -> Self {
+        let path = FileKeyringStore::default_path()
+            .unwrap_or_else(|_| PathBuf::from(".deepseek-secrets.json"));
+        Self::new(Arc::new(FileKeyringStore::new(path)))
+    }
+
+    /// Construct the file-backed default backend directly.
+    #[must_use]
+    pub fn file_backed() -> Self {
+        Self::file_backed_default()
+    }
+
+    /// Construct the opt-in OS credential backend, falling back to the
+    /// file-backed store when the platform backend is unavailable.
+    #[must_use]
+    pub fn system_keyring() -> Self {
         let default_store = DefaultKeyringStore::default();
         match default_store.probe() {
             Ok(()) => Self::new(Arc::new(default_store)),
@@ -368,9 +471,7 @@ impl Secrets {
                 tracing::warn!(
                     "OS keyring unavailable ({err}); falling back to file-backed secret store"
                 );
-                let path = FileKeyringStore::default_path()
-                    .unwrap_or_else(|_| PathBuf::from(".deepseek-secrets.json"));
-                Self::new(Arc::new(FileKeyringStore::new(path)))
+                Self::file_backed_default()
             }
         }
     }
@@ -381,10 +482,11 @@ impl Secrets {
         self.store.backend_name()
     }
 
-    /// Resolve a secret with `keyring → env → none` precedence.
+    /// Resolve a secret with `secret store → env → none` precedence.
     ///
     /// `name` is the canonical provider name (`"deepseek"`,
-    /// `"openrouter"`, `"novita"`, `"nvidia"`/`"nvidia-nim"`, `"openai"`).
+    /// `"openrouter"`, `"novita"`, `"nvidia"`/`"nvidia-nim"`, `"openai"`,
+    /// or `"atlascloud"`).
     /// Empty strings on either layer are treated as "not set".
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<String> {
@@ -437,6 +539,7 @@ pub fn env_for(name: &str) -> Option<String> {
         "vllm" | "v-llm" => &["VLLM_API_KEY"],
         "ollama" | "ollama-local" => &["OLLAMA_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
+        "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => &["ATLASCLOUD_API_KEY"],
         _ => return None,
     };
     for var in candidates {
@@ -475,11 +578,66 @@ mod tests {
             "VLLM_API_KEY",
             "OLLAMA_API_KEY",
             "OPENAI_API_KEY",
+            "ATLASCLOUD_API_KEY",
+            SECRET_BACKEND_ENV,
         ] {
             // Safety: tests serialise on env_lock(); the broader
             // workspace has the same pattern in `crates/config`.
             unsafe { std::env::remove_var(var) };
         }
+    }
+
+    #[test]
+    fn backend_selection_defaults_to_file() {
+        assert_eq!(secret_backend_selection(None), SecretBackendSelection::File);
+        assert_eq!(
+            secret_backend_selection(Some("")),
+            SecretBackendSelection::File
+        );
+        assert_eq!(
+            secret_backend_selection(Some("  file  ")),
+            SecretBackendSelection::File
+        );
+    }
+
+    #[test]
+    fn backend_selection_accepts_explicit_system_keyring() {
+        assert_eq!(
+            secret_backend_selection(Some("system")),
+            SecretBackendSelection::System
+        );
+        assert_eq!(
+            secret_backend_selection(Some("keyring")),
+            SecretBackendSelection::System
+        );
+        assert_eq!(
+            secret_backend_selection(Some("os-keyring")),
+            SecretBackendSelection::System
+        );
+    }
+
+    #[test]
+    fn auto_detect_is_file_backed_by_default() {
+        let _lock = env_lock();
+        clear_known_envs();
+
+        let secrets = Secrets::auto_detect();
+
+        assert_eq!(secrets.backend_name(), "file-based (~/.deepseek/secrets/)");
+    }
+
+    #[test]
+    fn auto_detect_honors_explicit_file_backend() {
+        let _lock = env_lock();
+        clear_known_envs();
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::set_var(SECRET_BACKEND_ENV, "local") };
+
+        let secrets = Secrets::auto_detect();
+
+        assert_eq!(secrets.backend_name(), "file-based (~/.deepseek/secrets/)");
+        // Safety: env mutation guarded by env_lock().
+        unsafe { std::env::remove_var(SECRET_BACKEND_ENV) };
     }
 
     #[test]
@@ -570,6 +728,19 @@ mod tests {
         assert_eq!(secrets.resolve("nvidia").as_deref(), Some("nim-key"));
         // Safety: env mutation guarded by env_lock().
         unsafe { std::env::remove_var("NVIDIA_NIM_API_KEY") };
+    }
+
+    #[test]
+    fn atlascloud_env_aliases_resolve() {
+        let _guard = env_lock();
+        clear_known_envs();
+        unsafe { std::env::set_var("ATLASCLOUD_API_KEY", "atlas-key") };
+
+        assert_eq!(env_for("atlascloud").as_deref(), Some("atlas-key"));
+        assert_eq!(env_for("atlas").as_deref(), Some("atlas-key"));
+        assert_eq!(env_for("atlas-cloud").as_deref(), Some("atlas-key"));
+
+        clear_known_envs();
     }
 
     #[test]

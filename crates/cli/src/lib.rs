@@ -26,6 +26,7 @@ enum ProviderArg {
     Deepseek,
     NvidiaNim,
     Openai,
+    Atlascloud,
     Openrouter,
     Novita,
     Fireworks,
@@ -41,6 +42,7 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Deepseek => ProviderKind::Deepseek,
             ProviderArg::NvidiaNim => ProviderKind::NvidiaNim,
             ProviderArg::Openai => ProviderKind::Openai,
+            ProviderArg::Atlascloud => ProviderKind::Atlascloud,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
@@ -55,7 +57,7 @@ impl From<ProviderArg> for ProviderKind {
 #[derive(Debug, Parser)]
 #[command(
     name = "deepseek",
-    version,
+    version = env!("DEEPSEEK_BUILD_VERSION"),
     bin_name = "deepseek",
     override_usage = "deepseek [OPTIONS] [PROMPT]\n       deepseek [OPTIONS] <COMMAND> [ARGS]"
 )]
@@ -86,7 +88,7 @@ struct Cli {
     api_key: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
-    #[arg(long = "no-alt-screen")]
+    #[arg(long = "no-alt-screen", hide = true)]
     no_alt_screen: bool,
     #[arg(long = "mouse-capture", conflicts_with = "no_mouse_capture")]
     mouse_capture: bool,
@@ -94,15 +96,17 @@ struct Cli {
     no_mouse_capture: bool,
     #[arg(long = "skip-onboarding")]
     skip_onboarding: bool,
-    #[arg(
-        short = 'p',
-        long = "prompt",
-        value_name = "PROMPT",
-        conflicts_with = "prompt"
-    )]
+    /// YOLO mode: auto-approve all tools
+    #[arg(long)]
+    yolo: bool,
+    #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
-    #[arg(value_name = "PROMPT")]
-    prompt: Option<String>,
+    #[arg(
+        value_name = "PROMPT",
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    prompt: Vec<String>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -126,6 +130,15 @@ enum Commands {
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
     /// Run the DeepSeek TUI non-interactive agent command.
+    #[command(after_help = "\
+Common forwarded flags:
+  --auto                           Enable agentic mode with tool access
+  --json                           Emit summary JSON
+  --resume <SESSION_ID>            Resume a previous session by ID or prefix
+  --session-id <SESSION_ID>        Resume a previous session by ID or prefix
+  --continue                       Continue the most recent session for this workspace
+  --output-format <FORMAT>         Output format: text or stream-json
+")]
     Exec(TuiPassthroughArgs),
     /// Run a DeepSeek-powered code review over a git diff.
     Review(TuiPassthroughArgs),
@@ -259,7 +272,7 @@ enum AuthCommand {
         #[arg(long, value_enum)]
         provider: ProviderArg,
     },
-    /// Delete a provider's key from config and keyring storage.
+    /// Delete a provider's key from config and secret-store storage.
     Clear {
         #[arg(long, value_enum)]
         provider: ProviderArg,
@@ -428,6 +441,7 @@ fn run() -> Result<()> {
         telemetry: cli.telemetry,
         approval_policy: cli.approval_policy.clone(),
         sandbox_mode: cli.sandbox_mode.clone(),
+        yolo: Some(cli.yolo),
     };
     let command = cli.command.take();
 
@@ -515,7 +529,17 @@ fn run() -> Result<()> {
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let mut forwarded = Vec::new();
-            if let Some(prompt) = cli.prompt_flag.clone().or_else(|| cli.prompt.clone()) {
+            let prompt = cli.prompt_flag.iter().chain(cli.prompt.iter()).fold(
+                String::new(),
+                |mut acc, part| {
+                    if !acc.is_empty() {
+                        acc.push(' ');
+                    }
+                    acc.push_str(part);
+                    acc
+                },
+            );
+            if !prompt.is_empty() {
                 forwarded.push("--prompt".to_string());
                 forwarded.push(prompt);
             }
@@ -549,14 +573,14 @@ fn resolve_runtime_for_dispatch_with_secrets(
         match store.save() {
             Ok(()) => {
                 eprintln!(
-                    "info: recovered API key from OS keyring and saved it to {}",
+                    "info: recovered API key from secret store and saved it to {}",
                     store.path().display()
                 );
                 resolved.api_key_source = Some(RuntimeApiKeySource::ConfigFile);
             }
             Err(err) => {
                 eprintln!(
-                    "warning: recovered API key from OS keyring but failed to save {}: {err}",
+                    "warning: recovered API key from secret store but failed to save {}: {err}",
                     store.path().display()
                 );
             }
@@ -662,6 +686,7 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Deepseek => "deepseek",
         ProviderKind::NvidiaNim => "nvidia-nim",
         ProviderKind::Openai => "openai",
+        ProviderKind::Atlascloud => "atlascloud",
         ProviderKind::Openrouter => "openrouter",
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
@@ -673,16 +698,17 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 10] = [
+const PROVIDER_LIST: [ProviderKind; 11] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
+    ProviderKind::Openai,
+    ProviderKind::Atlascloud,
     ProviderKind::Openrouter,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
     ProviderKind::Sglang,
     ProviderKind::Vllm,
     ProviderKind::Ollama,
-    ProviderKind::Openai,
     ProviderKind::ShengSuanYun,
 ];
 
@@ -725,28 +751,61 @@ fn clear_provider_api_key_from_config(store: &mut ConfigStore, provider: Provide
 }
 
 fn provider_env_set(provider: ProviderKind) -> bool {
-    deepseek_secrets::env_for(provider_slot(provider)).is_some()
+    provider_env_value(provider).is_some()
 }
 
-fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
+fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
+    match provider {
+        ProviderKind::Deepseek => &["DEEPSEEK_API_KEY"],
+        ProviderKind::Openrouter => &["OPENROUTER_API_KEY"],
+        ProviderKind::Novita => &["NOVITA_API_KEY"],
+        ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"],
+        ProviderKind::Fireworks => &["FIREWORKS_API_KEY"],
+        ProviderKind::Sglang => &["SGLANG_API_KEY"],
+        ProviderKind::Vllm => &["VLLM_API_KEY"],
+        ProviderKind::Ollama => &["OLLAMA_API_KEY"],
+        ProviderKind::Openai => &["OPENAI_API_KEY"],
+        ProviderKind::Atlascloud => &["ATLASCLOUD_API_KEY"],
+        ProviderKind::ShengSuanYun => &["SHENGSUANYUN_API_KEY"],
+    }
+}
+
+fn provider_env_value(provider: ProviderKind) -> Option<(&'static str, String)> {
+    provider_env_vars(provider).iter().find_map(|var| {
+        std::env::var(var)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| (*var, value))
+    })
+}
+
+fn provider_config_api_key(store: &ConfigStore, provider: ProviderKind) -> Option<&str> {
     let slot = store
         .config
         .providers
         .for_provider(provider)
         .api_key
-        .as_ref();
+        .as_deref();
     let root = (provider == ProviderKind::Deepseek)
-        .then_some(store.config.api_key.as_ref())
+        .then_some(store.config.api_key.as_deref())
         .flatten();
-    slot.or(root).is_some_and(|v| !v.trim().is_empty())
+    slot.or(root).filter(|v| !v.trim().is_empty())
 }
 
-fn provider_keyring_set(secrets: &Secrets, provider: ProviderKind) -> bool {
+fn provider_config_set(store: &ConfigStore, provider: ProviderKind) -> bool {
+    provider_config_api_key(store, provider).is_some()
+}
+
+fn provider_keyring_api_key(secrets: &Secrets, provider: ProviderKind) -> Option<String> {
     secrets
         .get(provider_slot(provider))
         .ok()
         .flatten()
-        .is_some_and(|v| !v.trim().is_empty())
+        .filter(|v| !v.trim().is_empty())
+}
+
+fn provider_keyring_set(secrets: &Secrets, provider: ProviderKind) -> bool {
+    provider_keyring_api_key(secrets, provider).is_some()
 }
 
 fn write_provider_api_key_to_keyring(
@@ -761,6 +820,72 @@ fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind
     let _ = secrets.delete(provider_slot(provider));
 }
 
+fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
+    let provider = store.config.provider;
+    let config_key = provider_config_api_key(store, provider);
+    let keyring_key = provider_keyring_api_key(secrets, provider);
+    let env_key = provider_env_value(provider);
+
+    let active_source = if config_key.is_some() {
+        "config"
+    } else if keyring_key.is_some() {
+        "secret store"
+    } else if env_key.is_some() {
+        "env"
+    } else {
+        "missing"
+    };
+    let active_last4 = config_key
+        .map(last4_label)
+        .or_else(|| keyring_key.as_deref().map(last4_label))
+        .or_else(|| env_key.as_ref().map(|(_, value)| last4_label(value)));
+    let active_label = active_last4
+        .map(|last4| format!("{active_source} (last4: {last4})"))
+        .unwrap_or_else(|| active_source.to_string());
+
+    let env_var_label = env_key
+        .as_ref()
+        .map(|(name, _)| (*name).to_string())
+        .unwrap_or_else(|| provider_env_vars(provider).join("/"));
+    let env_status = env_key
+        .as_ref()
+        .map(|(_, value)| format!("set, last4: {}", last4_label(value)))
+        .unwrap_or_else(|| "unset".to_string());
+
+    vec![
+        format!("provider: {}", provider.as_str()),
+        format!("active source: {active_label}"),
+        "lookup order: config -> secret store -> env".to_string(),
+        format!(
+            "config file: {} ({})",
+            store.path().display(),
+            source_status(config_key, "missing")
+        ),
+        format!(
+            "secret store: {} ({})",
+            secrets.backend_name(),
+            source_status(keyring_key.as_deref(), "missing")
+        ),
+        format!("env var: {env_var_label} ({env_status})"),
+    ]
+}
+
+fn source_status(value: Option<&str>, missing_label: &str) -> String {
+    value
+        .map(|v| format!("set, last4: {}", last4_label(v)))
+        .unwrap_or_else(|| missing_label.to_string())
+}
+
+fn last4_label(value: &str) -> String {
+    let trimmed = value.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 4 {
+        return "<redacted>".to_string();
+    }
+    let last4: String = chars[chars.len() - 4..].iter().collect();
+    format!("...{last4}")
+}
+
 fn run_auth_command(store: &mut ConfigStore, command: AuthCommand) -> Result<()> {
     run_auth_command_with_secrets(store, command, &Secrets::auto_detect())
 }
@@ -772,28 +897,9 @@ fn run_auth_command_with_secrets(
 ) -> Result<()> {
     match command {
         AuthCommand::Status => {
-            let provider = store.config.provider;
-            println!("provider: {}", provider.as_str());
-            println!("credential precedence: config -> keyring -> env");
-            let slot = provider_slot(provider);
-            let file_set = provider_config_set(store, provider);
-            let keyring_set = (!file_set).then(|| provider_keyring_set(secrets, provider));
-            let env_set = provider_env_set(provider);
-            let active = if file_set {
-                "config"
-            } else if keyring_set == Some(true) {
-                "keyring"
-            } else if env_set {
-                "env"
-            } else {
-                "missing"
-            };
-            println!(
-                "{slot} auth: config={}, keyring={}, env={}, active={active}",
-                file_set,
-                keyring_status_short(keyring_set),
-                env_set
-            );
+            for line in auth_status_lines(store, secrets) {
+                println!("{line}");
+            }
             Ok(())
         }
         AuthCommand::Set {
@@ -846,7 +952,7 @@ fn run_auth_command_with_secrets(
             let source = if in_file {
                 Some("config-file")
             } else if in_keyring {
-                Some("keyring")
+                Some("secret-store")
             } else if in_env {
                 Some("env")
             } else {
@@ -864,11 +970,11 @@ fn run_auth_command_with_secrets(
             clear_provider_api_key_from_config(store, provider);
             clear_provider_api_key_from_keyring(secrets, provider);
             store.save()?;
-            println!("cleared API key for {slot} from config and keyring");
+            println!("cleared API key for {slot} from config and secret store");
             Ok(())
         }
         AuthCommand::List => {
-            println!("provider     config keyring env  active");
+            println!("provider     config store env  active");
             let active_provider = store.config.provider;
             for provider in PROVIDER_LIST {
                 let slot = provider_slot(provider);
@@ -879,7 +985,7 @@ fn run_auth_command_with_secrets(
                 let active = if file {
                     "config"
                 } else if keyring == Some(true) {
-                    "keyring"
+                    "store"
                 } else if env {
                     "env"
                 } else {
@@ -929,8 +1035,8 @@ fn prompt_api_key(slot: &str) -> Result<String> {
     Ok(key)
 }
 
-/// Move plaintext keys from config.toml into an explicit platform credential
-/// store. Hidden in v0.8.8 because the normal setup path is config/env only.
+/// Move plaintext keys from config.toml into the configured secret store.
+/// Hidden in v0.8.8 because the normal setup path is config/env only.
 fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -> Result<()> {
     let mut migrated: Vec<(ProviderKind, &'static str)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -959,7 +1065,9 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
             migrated.push((provider, slot));
             continue;
         } else if let Err(err) = secrets.set(slot, &value) {
-            warnings.push(format!("skipped {slot}: failed to write to keyring: {err}"));
+            warnings.push(format!(
+                "skipped {slot}: failed to write to secret store: {err}"
+            ));
             continue;
         }
         if !dry_run {
@@ -977,7 +1085,7 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
             .context("failed to write updated config.toml")?;
     }
 
-    println!("keyring backend: {}", secrets.backend_name());
+    println!("secret store backend: {}", secrets.backend_name());
     if migrated.is_empty() {
         println!("nothing to migrate (config.toml has no plaintext api_key entries)");
     } else {
@@ -1005,7 +1113,7 @@ fn run_auth_migrate(store: &mut ConfigStore, secrets: &Secrets, dry_run: bool) -
 fn run_config_command(store: &mut ConfigStore, command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Get { key } => {
-            if let Some(value) = store.config.get_value(&key) {
+            if let Some(value) = store.config.get_display_value(&key) {
                 println!("{value}");
                 return Ok(());
             }
@@ -1282,9 +1390,9 @@ fn build_tui_command(
     if let Some(profile) = cli.profile.as_ref() {
         cmd.arg("--profile").arg(profile);
     }
-    if cli.no_alt_screen {
-        cmd.arg("--no-alt-screen");
-    }
+    // Accepted for older scripts, but no longer forwarded: the interactive TUI
+    // always owns the alternate screen to avoid host scrollback hijacking.
+    let _ = cli.no_alt_screen;
     if cli.mouse_capture {
         cmd.arg("--mouse-capture");
     }
@@ -1300,6 +1408,8 @@ fn build_tui_command(
         resolved_runtime.provider,
         ProviderKind::Deepseek
             | ProviderKind::NvidiaNim
+            | ProviderKind::Openai
+            | ProviderKind::Atlascloud
             | ProviderKind::Openrouter
             | ProviderKind::Novita
             | ProviderKind::Fireworks
@@ -1309,7 +1419,7 @@ fn build_tui_command(
             | ProviderKind::ShengSuanYun
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, NVIDIA NIM, OpenRouter, Novita, Fireworks, SGLang, vLLM, Ollama, and ShengSuanYun providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports ShengSuanYun, DeepSeek, NVIDIA NIM, OpenAI-compatible, AtlasCloud, OpenRouter, Novita, Fireworks, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1328,6 +1438,12 @@ fn build_tui_command(
     }
     if let Some(api_key) = resolved_runtime.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
+        if resolved_runtime.provider == ProviderKind::Openai {
+            cmd.env("OPENAI_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Atlascloud {
+            cmd.env("ATLASCLOUD_API_KEY", api_key);
+        }
         let source = resolved_runtime
             .api_key_source
             .unwrap_or(RuntimeApiKeySource::Env)
@@ -1353,8 +1469,17 @@ fn build_tui_command(
     if let Some(mode) = cli.sandbox_mode.as_ref() {
         cmd.env("DEEPSEEK_SANDBOX_MODE", mode);
     }
+    if cli.yolo {
+        cmd.env("DEEPSEEK_YOLO", "true");
+    }
     if let Some(api_key) = cli.api_key.as_ref() {
         cmd.env("DEEPSEEK_API_KEY", api_key);
+        if resolved_runtime.provider == ProviderKind::Openai {
+            cmd.env("OPENAI_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Atlascloud {
+            cmd.env("ATLASCLOUD_API_KEY", api_key);
+        }
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }
     if let Some(base_url) = cli.base_url.as_ref() {
@@ -1496,6 +1621,8 @@ fn read_api_key_from_stdin() -> Result<String> {
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
 
     fn parse_ok(argv: &[&str]) -> Cli {
         Cli::try_parse_from(argv).unwrap_or_else(|err| panic!("parse failed for {argv:?}: {err}"))
@@ -1505,6 +1632,52 @@ mod tests {
         let err = Cli::try_parse_from(argv).expect_err("expected --help to short-circuit parsing");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
         err.to_string()
+    }
+
+    fn command_env(cmd: &Command, name: &str) -> Option<String> {
+        let name = std::ffi::OsStr::new(name);
+        cmd.get_envs().find_map(|(key, value)| {
+            if key == name {
+                value.map(|v| v.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    struct ScopedEnvVar {
+        name: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(name: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(name);
+            // Safety: tests using this helper serialize with env_lock() and
+            // restore the original value in Drop.
+            unsafe { std::env::set_var(name, value) };
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            // Safety: tests using this helper serialize with env_lock().
+            unsafe {
+                if let Some(previous) = self.previous.take() {
+                    std::env::set_var(self.name, previous);
+                } else {
+                    std::env::remove_var(self.name);
+                }
+            }
+        }
     }
 
     #[test]
@@ -2111,6 +2284,44 @@ mod tests {
     }
 
     #[test]
+    fn auth_status_reports_all_active_provider_sources_with_last4() {
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use std::sync::Arc;
+
+        let _lock = env_lock();
+        let _env = ScopedEnvVar::set("DEEPSEEK_API_KEY", "sk-env-1111");
+
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-auth-status-table-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.provider = ProviderKind::Deepseek;
+        store.config.api_key = Some("sk-config-3333".to_string());
+        store.config.providers.deepseek.api_key = Some("sk-config-3333".to_string());
+
+        let inner = Arc::new(InMemoryKeyringStore::new());
+        inner.set("deepseek", "sk-keyring-2222").unwrap();
+        let secrets = Secrets::new(inner);
+
+        let output = auth_status_lines(&store, &secrets).join("\n");
+
+        assert!(output.contains("provider: deepseek"));
+        assert!(output.contains("active source: config (last4: ...3333)"));
+        assert!(output.contains("lookup order: config -> secret store -> env"));
+        assert!(output.contains("config file: "));
+        assert!(output.contains("set, last4: ...3333"));
+        assert!(output.contains("secret store: in-memory (test) (set, last4: ...2222)"));
+        assert!(output.contains("env var: DEEPSEEK_API_KEY (set, last4: ...1111)"));
+        assert!(!output.contains("sk-config-3333"));
+        assert!(!output.contains("sk-keyring-2222"));
+        assert!(!output.contains("sk-env-1111"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn dispatch_keyring_recovery_self_heals_into_config_file() {
         use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
@@ -2309,11 +2520,90 @@ mod tests {
     }
 
     #[test]
+    fn build_tui_command_allows_openai_and_forwards_provider_key() {
+        let _lock = env_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let custom = dir
+            .path()
+            .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&custom, b"").unwrap();
+        let custom_str = custom.to_string_lossy().into_owned();
+        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
+
+        let cli = parse_ok(&["deepseek", "--provider", "openai"]);
+        let resolved = ResolvedRuntimeOptions {
+            provider: ProviderKind::Openai,
+            model: "glm-5".to_string(),
+            api_key: Some("resolved-openai-key".to_string()),
+            api_key_source: Some(RuntimeApiKeySource::Keyring),
+            base_url: "https://openai-compatible.example/v4".to_string(),
+            auth_mode: Some("api_key".to_string()),
+            output_mode: None,
+            log_level: None,
+            telemetry: false,
+            approval_policy: None,
+            sandbox_mode: None,
+            yolo: None,
+            http_headers: std::collections::BTreeMap::new(),
+        };
+
+        let cmd = build_tui_command(&cli, &resolved, Vec::new()).expect("command");
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_PROVIDER").as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_MODEL").as_deref(),
+            Some("glm-5")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_BASE_URL").as_deref(),
+            Some("https://openai-compatible.example/v4")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_API_KEY").as_deref(),
+            Some("resolved-openai-key")
+        );
+        assert_eq!(
+            command_env(&cmd, "OPENAI_API_KEY").as_deref(),
+            Some("resolved-openai-key")
+        );
+        assert_eq!(
+            command_env(&cmd, "DEEPSEEK_API_KEY_SOURCE").as_deref(),
+            Some("keyring")
+        );
+    }
+
+    #[test]
     fn parses_top_level_prompt_flag_for_canonical_one_shot() {
         let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
-        assert_eq!(cli.prompt, None);
+        assert!(cli.prompt.is_empty());
+    }
+
+    #[test]
+    fn parses_split_top_level_prompt_words_for_windows_cmd_shims() {
+        let cli = parse_ok(&["deepseek", "hello", "world"]);
+
+        assert_eq!(cli.prompt, vec!["hello", "world"]);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn prompt_flag_keeps_split_tail_words_for_windows_cmd_shims() {
+        let cli = parse_ok(&["deepseek", "-p", "hello", "world"]);
+
+        assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
+        assert_eq!(cli.prompt, vec!["world"]);
+    }
+
+    #[test]
+    fn known_subcommands_still_parse_before_prompt_tail() {
+        let cli = parse_ok(&["deepseek", "doctor"]);
+
+        assert!(cli.prompt.is_empty());
+        assert!(matches!(cli.command, Some(Commands::Doctor(_))));
     }
 
     #[test]
@@ -2349,7 +2639,6 @@ mod tests {
             "--api-key",
             "--approval-policy",
             "--sandbox-mode",
-            "--no-alt-screen",
             "--mouse-capture",
             "--no-mouse-capture",
             "--skip-onboarding",
@@ -2380,6 +2669,18 @@ mod tests {
                 ],
             ),
             ("sandbox", vec!["check"]),
+            (
+                "exec",
+                vec![
+                    "--auto",
+                    "--json",
+                    "--resume",
+                    "--session-id",
+                    "--continue",
+                    "--output-format",
+                    "stream-json",
+                ],
+            ),
             (
                 "app-server",
                 vec!["--host", "--port", "--config", "--stdio"],
@@ -2472,25 +2773,14 @@ mod tests {
     /// custom Windows install layouts and CI test rigs.
     #[test]
     fn locate_sibling_tui_binary_honours_env_override() {
+        let _lock = env_lock();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let custom = dir
             .path()
             .join(format!("custom-tui{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&custom, b"").unwrap();
-
-        // Use a guard so even on test failure the env var clears.
-        struct EnvGuard;
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                // SAFETY: tests own this env key for the duration of the
-                // guard; clearing on drop matches the documented teardown
-                // pattern for `std::env::set_var` in single-threaded tests.
-                unsafe { std::env::remove_var("DEEPSEEK_TUI_BIN") };
-            }
-        }
-        let _g = EnvGuard;
-        // SAFETY: same single-threaded scope contract as the guard above.
-        unsafe { std::env::set_var("DEEPSEEK_TUI_BIN", &custom) };
+        let custom_str = custom.to_string_lossy().into_owned();
+        let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
 
         let resolved = locate_sibling_tui_binary().expect("override must resolve");
         assert_eq!(resolved, custom);

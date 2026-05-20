@@ -1,3 +1,18 @@
+function assertSupportedNode() {
+  const version = process.versions && process.versions.node ? process.versions.node : "unknown";
+  const major = Number.parseInt(String(version).split(".")[0], 10);
+  if (Number.isNaN(major) || major < 18) {
+    process.stderr.write(
+      "deepseek-tui: Node.js 18 or newer is required for npm installation. " +
+      `Current Node.js version is ${version}. ` +
+      "Please upgrade Node.js and rerun `npm install -g deepseek-tui`.\n",
+    );
+    process.exit(1);
+  }
+}
+
+assertSupportedNode();
+
 const fs = require("fs");
 const https = require("https");
 const http = require("http");
@@ -20,14 +35,19 @@ const pkg = require("../package.json");
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 minutes per attempt
 const DEFAULT_STALL_MS = 30_000; // abort if no bytes for 30s
+const OPTIONAL_TIMEOUT_MS = 15_000; // fail fast during optional npm postinstall
+const OPTIONAL_STALL_MS = 5_000; // avoid long hangs when install can recover on first run
 const MAX_ATTEMPTS = 5;
+const OPTIONAL_MAX_ATTEMPTS = 1; // runtime keeps the full retry budget on first launch
 const BASE_BACKOFF_MS = 1_000;
 
 const RETRYABLE_NET_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
+  "EDOWNLOADTIMEOUT",
   "ETIMEDOUT",
   "EAI_AGAIN",
+  "ENOTFOUND",
   "ENETUNREACH",
   "EHOSTUNREACH",
   "EPIPE",
@@ -71,6 +91,50 @@ function resolveRepo() {
   return process.env.DEEPSEEK_TUI_GITHUB_REPO || process.env.DEEPSEEK_GITHUB_REPO || "Hmbown/DeepSeek-TUI";
 }
 
+function isOptionalInstall(argv = process.argv.slice(2), env = process.env) {
+  return (
+    argv.includes("--optional") ||
+    env.DEEPSEEK_TUI_OPTIONAL_INSTALL === "1" ||
+    env.DEEPSEEK_OPTIONAL_INSTALL === "1"
+  );
+}
+
+function isInstallContext(context) {
+  return context === "install";
+}
+
+function isPnpmUserAgent(env = process.env) {
+  return String(env.npm_config_user_agent || "").toLowerCase().includes("pnpm/");
+}
+
+function shouldSkipOptionalPostinstall(
+  context,
+  argv = process.argv.slice(2),
+  env = process.env,
+) {
+  return isInstallContext(context) && isOptionalInstall(argv, env) && isPnpmUserAgent(env);
+}
+
+// Optional install only relaxes npm postinstall behavior. Runtime downloads
+// keep the normal retry/timeout budget so first-run recovery stays resilient.
+function defaultTimeoutMs(context = "runtime", env = process.env) {
+  return isInstallContext(context) && isOptionalInstall(undefined, env)
+    ? OPTIONAL_TIMEOUT_MS
+    : DEFAULT_TIMEOUT_MS;
+}
+
+function defaultStallMs(context = "runtime", env = process.env) {
+  return isInstallContext(context) && isOptionalInstall(undefined, env)
+    ? OPTIONAL_STALL_MS
+    : DEFAULT_STALL_MS;
+}
+
+function maxAttempts(context = "runtime", env = process.env) {
+  return isInstallContext(context) && isOptionalInstall(undefined, env)
+    ? OPTIONAL_MAX_ATTEMPTS
+    : MAX_ATTEMPTS;
+}
+
 function binaryPaths() {
   const { deepseek, tui } = detectBinaryNames();
   const releaseDir = releaseBinaryDirectory();
@@ -105,6 +169,48 @@ function logInfo(message) {
   process.stderr.write(`deepseek-tui: ${message}\n`);
 }
 
+function installFailureHint(error) {
+  const message = error && error.message ? String(error.message) : "";
+  const code = error && error.code ? String(error.code) : "";
+  const releaseBase =
+    process.env.DEEPSEEK_TUI_RELEASE_BASE_URL ||
+    process.env.DEEPSEEK_RELEASE_BASE_URL;
+  const networkMarkers = [
+    "github.com",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "ENETUNREACH",
+    "EHOSTUNREACH",
+    "EDOWNLOADTIMEOUT",
+  ];
+  const looksLikeNetworkDownloadFailure = networkMarkers.some(
+    (marker) => message.includes(marker) || code === marker,
+  );
+  if (!looksLikeNetworkDownloadFailure) {
+    return "";
+  }
+
+  if (releaseBase) {
+    return [
+      "deepseek-tui install hint:",
+      `  DEEPSEEK_TUI_RELEASE_BASE_URL is set to ${releaseBase}`,
+      "  Verify that this directory contains deepseek-artifacts-sha256.txt",
+      "  plus the deepseek/deepseek-tui binary assets for your platform.",
+    ].join("\n");
+  }
+
+  return [
+    "deepseek-tui install hint:",
+    "  The npm package downloads prebuilt binaries from GitHub Releases.",
+    "  If GitHub is unavailable on this network, mirror the release assets and set:",
+    "    DEEPSEEK_TUI_RELEASE_BASE_URL=https://<mirror>/<release-asset-directory>/",
+    "  The directory must contain deepseek-artifacts-sha256.txt and the platform binaries.",
+    "  See docs/INSTALL.md#npm-binary-download-times-out.",
+  ].join("\n");
+}
+
 function envInt(name, fallback) {
   const raw = process.env[name];
   if (!raw) {
@@ -117,17 +223,17 @@ function envInt(name, fallback) {
   return parsed;
 }
 
-function downloadTimeoutMs() {
+function downloadTimeoutMs(context = "runtime") {
   return envInt(
     "DEEPSEEK_TUI_DOWNLOAD_TIMEOUT_MS",
-    envInt("DEEPSEEK_DOWNLOAD_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
+    envInt("DEEPSEEK_DOWNLOAD_TIMEOUT_MS", defaultTimeoutMs(context)),
   );
 }
 
-function downloadStallMs() {
+function downloadStallMs(context = "runtime") {
   return envInt(
     "DEEPSEEK_TUI_DOWNLOAD_STALL_MS",
-    envInt("DEEPSEEK_DOWNLOAD_STALL_MS", DEFAULT_STALL_MS),
+    envInt("DEEPSEEK_DOWNLOAD_STALL_MS", defaultStallMs(context)),
   );
 }
 
@@ -355,8 +461,16 @@ function connectThroughProxy(proxy, targetHost, targetPort, timeoutMs) {
 // ────────────────────────────────────────────────────────────────────────────
 
 function httpRequest(rawUrl, opts = {}) {
-  const totalTimeoutMs = opts.totalTimeoutMs ?? downloadTimeoutMs();
-  const stallMs = opts.stallMs ?? downloadStallMs();
+  const context =
+    opts.context === undefined || opts.context === null ? "runtime" : opts.context;
+  const totalTimeoutMs =
+    opts.totalTimeoutMs === undefined || opts.totalTimeoutMs === null
+      ? downloadTimeoutMs(context)
+      : opts.totalTimeoutMs;
+  const stallMs =
+    opts.stallMs === undefined || opts.stallMs === null
+      ? downloadStallMs(context)
+      : opts.stallMs;
 
   return new Promise((resolve, reject) => {
     let url;
@@ -645,7 +759,12 @@ function isRetryable(err) {
   if (err.nonRetryable) return false;
   if (err instanceof NonRetryableError) return false;
   if (err instanceof DownloadTimeoutError) return true;
-  if (err instanceof HttpStatusError) {
+  // withRetry() rethrows a plain Error while preserving name/status, so wrapped
+  // HTTP 5xx failures still classify as retryable during optional postinstall.
+  if (
+    (err instanceof HttpStatusError || err.name === "HttpStatusError") &&
+    typeof err.status === "number"
+  ) {
     return err.status >= 500;
   }
   if (err.code && RETRYABLE_NET_CODES.has(err.code)) return true;
@@ -668,27 +787,48 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function withRetry(label, fn) {
+async function withRetry(label, fn, context = "runtime") {
   let lastErr;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  const attemptLimit = maxAttempts(context);
+  for (let attempt = 1; attempt <= attemptLimit; attempt++) {
     try {
       return await fn(attempt);
     } catch (err) {
       lastErr = err;
-      if (!isRetryable(err) || attempt === MAX_ATTEMPTS) {
+      if (!isRetryable(err) || attempt === attemptLimit) {
         break;
       }
       const wait = backoffDelay(attempt);
       logInfo(
-        `${label} failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${err.message}; retrying in ${wait} ms`,
+        `${label} failed (attempt ${attempt}/${attemptLimit}): ${err.message}; retrying in ${wait} ms`,
       );
+      if (attempt === 1) {
+        const hint = installFailureHint(err);
+        if (hint) {
+          process.stderr.write(`${hint}\n`);
+        }
+      }
       await sleep(wait);
     }
   }
   const msg = lastErr && lastErr.message ? lastErr.message : String(lastErr);
   const wrapped = new Error(
-    `${label} failed after ${MAX_ATTEMPTS} attempt(s): ${msg}`,
+    `${label} failed after ${attemptLimit} attempt(s): ${msg}`,
   );
+  // Preserve retry classification metadata because the install entrypoint uses
+  // the wrapped error to decide whether optional postinstall may ignore it.
+  if (lastErr && lastErr.code) {
+    wrapped.code = lastErr.code;
+  }
+  if (lastErr && lastErr.name) {
+    wrapped.name = lastErr.name;
+  }
+  if (lastErr && typeof lastErr.status === "number") {
+    wrapped.status = lastErr.status;
+  }
+  if (lastErr && lastErr.nonRetryable) {
+    wrapped.nonRetryable = true;
+  }
   if (lastErr && lastErr.stack) {
     wrapped.cause = lastErr;
   }
@@ -699,7 +839,7 @@ async function withRetry(label, fn) {
 // Public download primitives (now retry + progress aware)
 // ────────────────────────────────────────────────────────────────────────────
 
-async function followRedirects(url, opts) {
+async function followRedirects(url, opts = {}) {
   const maxRedirects = 10;
   let current = url;
   for (let hop = 0; hop < maxRedirects; hop++) {
@@ -744,17 +884,21 @@ function streamToFile(response, destination, progress) {
 async function download(url, destination, options = {}) {
   await mkdir(path.dirname(destination), { recursive: true });
   const assetName = options.assetName || path.basename(destination);
+  const context =
+    options.context === undefined || options.context === null ? "runtime" : options.context;
+  const attemptLimit = maxAttempts(context);
   await withRetry(`download ${assetName}`, async (attempt) => {
     const result = await followRedirects(url, {
-      totalTimeoutMs: downloadTimeoutMs(),
-      stallMs: downloadStallMs(),
+      context,
+      totalTimeoutMs: downloadTimeoutMs(context),
+      stallMs: downloadStallMs(context),
     });
     const response = result.response;
     const lenHeader = response.headers["content-length"];
     const total = lenHeader ? Number.parseInt(lenHeader, 10) : 0;
     const progress = createProgressReporter(assetName, Number.isFinite(total) ? total : 0);
     if (attempt > 1) {
-      logInfo(`retry attempt ${attempt}/${MAX_ATTEMPTS} for ${assetName}`);
+      logInfo(`retry attempt ${attempt}/${attemptLimit} for ${assetName}`);
     }
     try {
       await streamToFile(response, destination, progress);
@@ -768,14 +912,17 @@ async function download(url, destination, options = {}) {
       throw err;
     }
     progress.finish();
-  });
+  }, context);
 }
 
-async function downloadText(url) {
+async function downloadText(url, options = {}) {
+  const context =
+    options.context === undefined || options.context === null ? "runtime" : options.context;
   return withRetry(`fetch ${url}`, async () => {
     const result = await followRedirects(url, {
-      totalTimeoutMs: downloadTimeoutMs(),
-      stallMs: downloadStallMs(),
+      context,
+      totalTimeoutMs: downloadTimeoutMs(context),
+      stallMs: downloadStallMs(context),
     });
     const response = result.response;
     response.setEncoding("utf8");
@@ -798,7 +945,7 @@ async function downloadText(url) {
       });
       response.on("error", reject);
     });
-  });
+  }, context);
 }
 
 async function readLocalVersion(file) {
@@ -850,11 +997,58 @@ async function verifyChecksum(filePath, assetName, checksums) {
   }
 }
 
-async function loadChecksums(version, repo) {
-  return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo)));
+async function checksumMatches(filePath, assetName, checksums) {
+  const expected = checksums.get(assetName);
+  if (!expected) {
+    throw new NonRetryableError(`Checksum manifest is missing ${assetName}`);
+  }
+  const actual = await sha256File(filePath);
+  return actual === expected;
 }
 
-async function ensureBinary(targetPath, assetName, version, repo, getChecksums) {
+async function loadChecksums(version, repo, options = {}) {
+  return parseChecksumManifest(await downloadText(checksumManifestUrl(version, repo), options));
+}
+
+function existingBinaryCandidates(targetPath, assetName) {
+  const candidates = [targetPath];
+  const assetPath = path.join(path.dirname(targetPath), assetName);
+  if (assetPath !== targetPath) {
+    candidates.push(assetPath);
+  }
+  return candidates;
+}
+
+async function adoptExistingBinaryIfValid(targetPath, assetName, version, getChecksums, marker) {
+  const candidates = [];
+  for (const candidate of existingBinaryCandidates(targetPath, assetName)) {
+    if (await fileExists(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  if (candidates.length === 0) {
+    return false;
+  }
+
+  const checksums = await getChecksums();
+  for (const candidate of candidates) {
+    if (!(await checksumMatches(candidate, assetName, checksums))) {
+      continue;
+    }
+    preflightGlibc(candidate);
+    if (candidate !== targetPath) {
+      await rename(candidate, targetPath);
+    }
+    if (process.platform !== "win32") {
+      await chmod(targetPath, 0o755);
+    }
+    await writeFile(marker, String(version), "utf8");
+    return true;
+  }
+  return false;
+}
+
+async function ensureBinary(targetPath, assetName, version, repo, getChecksums, options = {}) {
   const marker = `${targetPath}.version`;
   const downloadIfNeeded =
     process.env.DEEPSEEK_TUI_FORCE_DOWNLOAD === "1" || process.env.DEEPSEEK_FORCE_DOWNLOAD === "1";
@@ -866,11 +1060,14 @@ async function ensureBinary(targetPath, assetName, version, repo, getChecksums) 
         return targetPath;
       }
     }
+    if (await adoptExistingBinaryIfValid(targetPath, assetName, version, getChecksums, marker)) {
+      return targetPath;
+    }
   }
   const checksums = await getChecksums();
   const url = releaseAssetUrl(assetName, version, repo);
   const destination = `${targetPath}.${process.pid}.${Date.now()}.download`;
-  await download(url, destination, { assetName });
+  await download(url, destination, { assetName, context: options.context });
   try {
     await verifyChecksum(destination, assetName, checksums);
     preflightGlibc(destination);
@@ -886,8 +1083,28 @@ async function ensureBinary(targetPath, assetName, version, repo, getChecksums) 
   return targetPath;
 }
 
-async function run() {
+// Optional install may only downgrade retryable download failures to warnings.
+// Unsupported platforms, checksum mismatches, glibc compatibility errors, and
+// malformed release metadata must still fail with actionable diagnostics.
+function shouldIgnoreInstallFailure(
+  context,
+  error,
+  argv = process.argv.slice(2),
+  env = process.env,
+) {
+  return isInstallContext(context) && isOptionalInstall(argv, env) && isRetryable(error);
+}
+
+async function run(options = {}) {
+  const context =
+    options.context === undefined || options.context === null ? "runtime" : options.context;
   if (process.env.DEEPSEEK_TUI_DISABLE_INSTALL === "1" || process.env.DEEPSEEK_DISABLE_INSTALL === "1") {
+    return;
+  }
+  if (shouldSkipOptionalPostinstall(context)) {
+    logInfo(
+      "pnpm optional postinstall detected; skipping install-time download. The binary will be checked on first run.",
+    );
     return;
   }
   const version = resolvePackageVersion();
@@ -899,19 +1116,19 @@ async function run() {
   let checksumsPromise;
   const getChecksums = () => {
     if (!checksumsPromise) {
-      checksumsPromise = loadChecksums(version, repo);
+      checksumsPromise = loadChecksums(version, repo, { context });
     }
     return checksumsPromise;
   };
 
   await Promise.all([
-    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo, getChecksums),
-    ensureBinary(paths.tui.target, paths.tui.asset, version, repo, getChecksums),
+    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo, getChecksums, { context }),
+    ensureBinary(paths.tui.target, paths.tui.asset, version, repo, getChecksums, { context }),
   ]);
 }
 
 async function getBinaryPath(name) {
-  await run();
+  await run({ context: "runtime" });
   const paths = binaryPaths();
   if (name === "deepseek") {
     return paths.deepseek.target;
@@ -924,15 +1141,31 @@ async function getBinaryPath(name) {
 
 module.exports = {
   getBinaryPath,
+  installFailureHint,
   run,
+  _internal: {
+    isOptionalInstall,
+    adoptExistingBinaryIfValid,
+    shouldIgnoreInstallFailure,
+    shouldSkipOptionalPostinstall,
+    defaultTimeoutMs,
+    defaultStallMs,
+    ensureBinary,
+    maxAttempts,
+    withRetry,
+  },
 };
 
 if (require.main === module) {
-  run().catch((error) => {
+  run({ context: "install" }).catch((error) => {
     console.error("deepseek-tui install failed:", error.message);
-    if (process.env.DEEPSEEK_TUI_OPTIONAL_INSTALL === "1") {
+    const hint = installFailureHint(error);
+    if (hint) {
+      console.error(hint);
+    }
+    if (shouldIgnoreInstallFailure("install", error)) {
       console.error(
-        "DEEPSEEK_TUI_OPTIONAL_INSTALL=1 set; continuing without a usable binary.",
+        "Optional install enabled; continuing without a usable binary. The download will be retried on first run.",
       );
       process.exit(0);
     }

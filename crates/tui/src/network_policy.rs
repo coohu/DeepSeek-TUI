@@ -3,6 +3,10 @@
 // approval-modal hook that v0.7.x adds incrementally. Dead-code warnings
 // would otherwise be noisy until those call sites land.
 #![allow(dead_code)]
+// Audit-write failure must route through `tracing::*`, not raw stderr —
+// see `runtime_log` for the scroll-demon rationale.
+#![deny(clippy::print_stdout)]
+#![deny(clippy::print_stderr)]
 
 //! Per-domain network policy for outbound network calls (#135).
 //!
@@ -33,7 +37,7 @@
 //! # Audit-log format
 //!
 //! ```text
-//! <RFC3339-timestamp> network <host> <tool> <Allow|Deny|Prompt-Approved|Prompt-Denied>
+//! <RFC3339-timestamp> network <host> <tool> <Allow|Deny|Prompt-Approved|Prompt-Denied|TrustedProxyFakeIp-Allow>
 //! ```
 //!
 //! Plaintext, one line per call, appended to `<audit_path>` (defaults to
@@ -98,6 +102,10 @@ pub struct NetworkPolicy {
     /// Hosts that should always be denied.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
+    /// explicitly trusted proxy setup. This does not affect literal IP URLs.
+    #[serde(default)]
+    pub proxy: Vec<String>,
     /// Whether to record one audit-log line per network call. Defaults to true.
     #[serde(default = "default_audit")]
     pub audit: bool,
@@ -117,6 +125,7 @@ impl Default for NetworkPolicy {
             default: DecisionToml::Prompt,
             allow: Vec::new(),
             deny: Vec::new(),
+            proxy: Vec::new(),
             audit: true,
         }
     }
@@ -205,6 +214,26 @@ impl NetworkPolicy {
     pub fn audit_enabled(&self) -> bool {
         self.audit
     }
+
+    /// Whether `host` is explicitly trusted to resolve through a local
+    /// fake-IP proxy. Deny entries still win over this list.
+    #[must_use]
+    pub fn trusts_proxy_fakeip_host(&self, host: &str) -> bool {
+        let normalized = normalize_host(host);
+        if normalized.is_empty() {
+            return false;
+        }
+        if self
+            .deny
+            .iter()
+            .any(|entry| host_matches(entry, &normalized))
+        {
+            return false;
+        }
+        self.proxy
+            .iter()
+            .any(|entry| host_matches(entry, &normalized))
+    }
 }
 
 /// Normalize a host for matching: lowercase, trim whitespace, strip a single
@@ -265,7 +294,11 @@ impl NetworkAuditor {
             return;
         }
         if let Err(err) = self.try_record(host, tool, decision_label) {
-            eprintln!("network audit write failed: {err}");
+            // Routed through tracing so it lands in
+            // `~/.deepseek/logs/tui-YYYY-MM-DD.log` rather than the
+            // alt-screen — see `runtime_log` for the scroll-demon
+            // rationale.
+            tracing::warn!(target: "network_policy", ?err, host, tool, "network audit write failed");
         }
     }
 
@@ -471,6 +504,19 @@ impl NetworkPolicyDecider {
         &self.policy
     }
 
+    /// Whether this host is explicitly configured for trusted proxy fake-IP
+    /// DNS handling.
+    #[must_use]
+    pub fn trusts_proxy_fakeip_host(&self, host: &str) -> bool {
+        self.policy.trusts_proxy_fakeip_host(host)
+    }
+
+    /// Record that a restricted DNS result was allowed because the host is in
+    /// the trusted proxy fake-IP list.
+    pub fn record_trusted_proxy_fakeip_allow(&self, host: &str, tool: &str) {
+        self.audit_record(host, tool, "TrustedProxyFakeIp-Allow");
+    }
+
     fn audit_record(&self, host: &str, tool: &str, label: &str) {
         if let Some(auditor) = self.auditor.as_ref() {
             auditor.record(host, tool, label);
@@ -496,6 +542,7 @@ mod tests {
             default: default.into(),
             allow: allow.iter().map(|s| (*s).to_string()).collect(),
             deny: deny.iter().map(|s| (*s).to_string()).collect(),
+            proxy: Vec::new(),
             audit: false,
         }
     }
@@ -571,6 +618,29 @@ mod tests {
         p.add_allow("example.com");
         assert_eq!(p.allow.len(), 1);
         assert_eq!(p.allow[0], "example.com");
+    }
+
+    #[test]
+    fn trusted_proxy_fakeip_hosts_match_exact_and_subdomains() {
+        let mut p = mk(Decision::Deny, &[], &[]);
+        p.proxy = vec![
+            "github.com".to_string(),
+            ".githubusercontent.com".to_string(),
+        ];
+
+        assert!(p.trusts_proxy_fakeip_host("github.com"));
+        assert!(p.trusts_proxy_fakeip_host("raw.githubusercontent.com"));
+        assert!(!p.trusts_proxy_fakeip_host("githubusercontent.com"));
+        assert!(!p.trusts_proxy_fakeip_host("example.com"));
+    }
+
+    #[test]
+    fn trusted_proxy_fakeip_hosts_respect_deny_precedence() {
+        let mut p = mk(Decision::Allow, &[], &["raw.githubusercontent.com"]);
+        p.proxy = vec![".githubusercontent.com".to_string()];
+
+        assert!(!p.trusts_proxy_fakeip_host("raw.githubusercontent.com"));
+        assert!(p.trusts_proxy_fakeip_host("avatars.githubusercontent.com"));
     }
 
     #[test]
