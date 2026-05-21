@@ -14,7 +14,7 @@
 # 1. npm —— 已装 Node 的最方便方式。npm 包只是一个下载器，
 #    会从 GitHub Releases 拉取对应平台的预编译二进制，
 #    并不会让 deepseek 本身依赖 Node 运行时。
-npm install -g -g @coohu/deepseek-tui
+npm install -g @coohu/deepseek-tui
 
 # 2. Cargo —— 无需 Node。
 cargo install deepseek-tui-cli --locked   # `deepseek` 入口
