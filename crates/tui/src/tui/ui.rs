@@ -2234,12 +2234,11 @@ async fn run_event_loop(
                             }
                             _ => (current_idx + 1) % options.len(),
                         };
-                        if let Some((_, provider_id, _, _)) = options.get(new_idx) {
-                            if let Some(provider) = ApiProvider::parse(provider_id) {
+                        if let Some((_, provider_id, _, _)) = options.get(new_idx)
+                            && let Some(provider) = ApiProvider::parse(provider_id) {
                                 app.onboarding_api_provider = provider;
                                 app.needs_redraw = true;
                             }
-                        }
                     }
                     // Digit hotkeys immediately select a provider and advance to key entry.
                     KeyCode::Char(c)

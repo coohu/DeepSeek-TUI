@@ -31,13 +31,8 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
         ));
     };
 
-    let model = match model_arg {
-        None => None,
-        Some(raw) => Some(
-            normalize_model_name(&expand_model_alias(raw))
-                .unwrap_or_else(|| raw.trim().to_string()),
-        ),
-    };
+    let model = model_arg.map(|raw| normalize_model_name(&expand_model_alias(raw))
+        .unwrap_or_else(|| raw.trim().to_string()));
 
     if target == app.api_provider && model.is_none() {
         return CommandResult::message(format!("Already on provider: {}", target.as_str()));
