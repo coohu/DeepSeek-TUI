@@ -55,6 +55,7 @@ pub const DEFAULT_SHENGSUANYUN_BASE_URL: &str = "https://router.shengsuanyun.com
 /// heuristics for backward compatibility.
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 const API_KEYRING_SENTINEL: &str = "__KEYRING__";
+#[allow(dead_code)]
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",
     "deepseek-v4-flash",

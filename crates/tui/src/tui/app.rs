@@ -1706,6 +1706,7 @@ impl App {
     /// language. `App` doesn't keep `Settings` resident — it loads on entry
     /// and rewrites on exit, mirroring the pattern used by the `/config`
     /// surface.
+    #[allow(dead_code)]
     pub fn set_locale_from_onboarding(&mut self, tag: &str) -> anyhow::Result<()> {
         let mut settings = Settings::load().unwrap_or_else(|_| Settings::default());
         settings.set("locale", tag)?;

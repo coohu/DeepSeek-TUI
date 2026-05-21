@@ -16,6 +16,7 @@ use crate::tui::app::App;
 /// Each entry is `(hotkey, settings_tag, native_name, english_label)`.
 /// `settings_tag` is what `Settings::set("locale", …)` accepts and what
 /// `localization::Locale` resolves on next read.
+#[allow(dead_code)]
 pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('1', "auto", "Auto-detect", "(LC_ALL / LANG)"),
     ('2', "en", "English", ""),
@@ -24,7 +25,7 @@ pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('5', "zh-Hant", "繁體中文", "(Traditional Chinese)"),
     ('6', "pt-BR", "Português (Brasil)", "(Brazilian Portuguese)"),
 ];
-
+#[allow(dead_code)]
 pub fn lines(app: &App) -> Vec<Line<'static>> {
     let current_owned = app.current_locale_tag();
     let current = current_owned.as_str();

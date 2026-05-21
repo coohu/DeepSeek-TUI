@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::palette;
-
+#[allow(dead_code)]
 pub fn lines() -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(

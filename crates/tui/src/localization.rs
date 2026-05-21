@@ -787,7 +787,7 @@ pub fn resolve_locale(setting: &str) -> Locale {
     }
     Locale::En
 }
-
+#[allow(dead_code)]
 pub fn resolve_locale_with_env<F>(setting: &str, env: F) -> Locale
 where
     F: Fn(&str) -> Option<String>,
