@@ -1964,6 +1964,9 @@ impl RuntimeThreadManager {
                 rlm_sessions: crate::rlm::session::new_shared_rlm_session_store(),
             },
             subagent_model_overrides: self.config.subagent_model_overrides(),
+            subagent_api_timeout: std::time::Duration::from_secs(
+                self.config.subagent_api_timeout_secs(),
+            ),
             memory_enabled: self.config.memory_enabled(),
             memory_path: self.config.memory_path(),
             vision_config: self.config.vision_model_config(),

@@ -1089,7 +1089,8 @@ fn grayscale_bg_from_luma(luma: u8) -> Color {
 }
 
 fn luma(r: u8, g: u8, b: u8) -> u8 {
-    (((u16::from(r) * 299) + (u16::from(g) * 587) + (u16::from(b) * 114)) / 1000) as u8
+    let weighted = u32::from(r) * 299 + u32::from(g) * 587 + u32::from(b) * 114;
+    (weighted / 1000) as u8
 }
 // === Color depth + brightness helpers (v0.6.6 UI redesign) ===
 
@@ -1355,7 +1356,7 @@ mod tests {
         LIGHT_SURFACE, LIGHT_TEXT_BODY, LIGHT_TEXT_HINT, LIGHT_UI_THEME, PaletteMode,
         SURFACE_REASONING, SURFACE_REASONING_TINT, TEXT_BODY, TEXT_HINT, TEXT_REASONING,
         TEXT_TOOL_OUTPUT, UI_THEME, adapt_bg, adapt_bg_for_palette_mode, adapt_color,
-        adapt_fg_for_palette_mode, blend, nearest_ansi16, normalize_hex_rgb_color,
+        adapt_fg_for_palette_mode, blend, luma, nearest_ansi16, normalize_hex_rgb_color,
         normalize_theme_name, parse_hex_rgb_color, pulse_brightness, reasoning_surface_tint,
         rgb_to_ansi256, theme_label_for_mode, ui_theme_from_settings,
     };
@@ -1537,6 +1538,19 @@ mod tests {
         assert_eq!(
             adapt_fg_for_palette_mode(TEXT_HINT, GRAYSCALE_SURFACE, PaletteMode::Grayscale),
             GRAYSCALE_TEXT_HINT
+        );
+    }
+
+    #[test]
+    fn grayscale_luma_handles_bright_rgb_without_overflow() {
+        assert_eq!(luma(255, 255, 255), 255);
+        assert_eq!(
+            adapt_fg_for_palette_mode(
+                Color::Rgb(255, 255, 255),
+                GRAYSCALE_SURFACE,
+                PaletteMode::Grayscale
+            ),
+            GRAYSCALE_TEXT_BODY
         );
     }
 

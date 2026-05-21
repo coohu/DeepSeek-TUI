@@ -5,7 +5,174 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.40] - 2026-05-17
+## [0.8.40] - 2026-05-21
+
+### Added
+
+- **Configurable sub-agent per-step API timeout.** A new
+  `[subagents] api_timeout_secs` setting in `~/.deepseek/config.toml`
+  controls how long each sub-agent step will wait on a DeepSeek
+  `create_message` response before falling back. The value is clamped to
+  `1..=1800`; `0` or unset preserves the legacy 120-second default, so
+  existing installs see no behavior change. Long-thinking children (e.g.
+  heavy plan or review work behind `agent_open`) can extend the timeout
+  without recompiling (#1806, #1808).
+- **Delegated file-write permissions for write-capable sub-agent roles.**
+  `implementer` and `custom` sub-agents may now run `Suggest`-level write
+  tools (`write_file`, `edit_file`, `apply_patch`) without the parent
+  runtime being auto-approved. Read-only stances (`explore`, `plan`,
+  `review`, `verifier`) and the default `general` role still bounce
+  approval-gated tools so they can't quietly mutate the workspace, and
+  `Required`-level tools (shell, etc.) still need parent auto-approve
+  regardless of role. Pick `implementer` (or pass an explicit `custom`
+  allowlist) when the delegated task needs to land file changes
+  (#1828, #1833).
+- **Experimental Fin fast-lane tool agents.** `tool_agent` opens a durable
+  child session on DeepSeek V4 Flash with thinking forced off for simple
+  tool-bound work such as OCR, file/search lookups, fetches, and command
+  probes. It uses the existing `agent_eval` / `agent_close` lifecycle and
+  mailbox token-usage stream, so sub-agent cost accounting stays on the same
+  path as normal `agent_open` sessions.
+
+### Fixed
+
+- **WSL2 and headless Linux startup no longer blocks on clipboard init.** The
+  TUI now defers clipboard initialization so machines without an X server can
+  reach the first frame instead of hanging on a blank screen (#1773, #1772).
+- **Windows alt-screen output stays clean when `RUST_LOG` is set.** Runtime
+  tracing is routed away from the interactive buffer so logs no longer leak
+  into the TUI display (#1774, #1776).
+- **OpenAI-compatible custom model names are preserved.** Non-DeepSeek
+  providers now pass explicit model names through instead of rewriting them to
+  a DeepSeek default (#1714, #1740).
+- **Wanjie Ark is a first-class provider.** `--provider wanjie-ark`, the TUI
+  provider picker, `deepseek auth`, doctor, and config files now target
+  Wanjie's OpenAI-compatible MaaS endpoint with pass-through model IDs and
+  Wanjie-specific env vars.
+- **DeepSeek reasoning replay works through OpenAI-compatible endpoints.**
+  DeepSeek models selected under the generic `openai` provider now replay
+  prior `reasoning_content` consistently and classify streamed reasoning the
+  same way the replay path does (#1694, #1739, #1743).
+- **Thinking-only turns no longer disappear.** If a clean turn ends with
+  thinking but no final answer text, the UI now surfaces a clear status instead
+  of silently ending the turn (#1727, #1742).
+- **Windows `cmd /C` preserves quoted shell arguments.** Commands such as
+  `git commit -m "feat: complete sub-pages"` now round-trip through the Windows
+  shell wrapper without losing the quoted message (#1691, #1744).
+- **Home/End are line-local inside multiline composer drafts.** The keys now
+  jump to the current input line boundary before falling back to transcript
+  navigation (#1748, #1749).
+- **Ctrl+C restores the canceled prompt reliably.** Canceling a streaming turn
+  puts the submitted prompt back in the composer and suppresses late stream
+  events from drawing stale output (#1757, #1764).
+- **Compaction recovers from cache-aligned summary context overflow.** When a
+  cache-preserving summary request itself exceeds the provider context window,
+  compaction retries with the bounded formatted summary path instead of failing
+  with a 400 "compression command failed" style error.
+- **Terminal sub-agent sessions expose full transcript handles.** Completed
+  and canceled child agents now store the full child message transcript behind
+  `transcript_handle`, so the parent can inspect details with `handle_read`
+  instead of relying only on a lossy summary (#1738).
+- **Forked saved sessions now keep visible lineage.** `deepseek fork` records
+  the parent session id and fork-time message count in additive metadata, and
+  session listings mark forked paths with their source id. This gives users a
+  bounded branchable-conversation workflow while the larger visual tree browser
+  stays scoped for a future release.
+- **Repeated shell wait rows collapse in the Tasks sidebar.** Multiple live
+  `task_shell_wait` polls for the same background job now render as one row
+  with an explicit collapsed-wait count, reducing the stuck-task appearance
+  tracked for v0.8.40 (#1737).
+- **Leaked mouse scroll reports no longer erase composer draft suffixes.** If
+  a terminal delivers raw SGR mouse bytes into the input stream, the sanitizer
+  now strips only the mouse report and adjacent coordinate fragments instead
+  of deleting legitimate draft text such as `commit -m` or numeric prompts
+  (#1778).
+- **TUI runtime logs are separated per process and pruned on startup.** Each
+  session now writes `~/.deepseek/logs/tui-YYYY-MM-DD-PID.log`, and startup
+  removes stale TUI logs older than seven days by default. Set
+  `DEEPSEEK_LOG_RETENTION_DAYS` to a positive day count to adjust retention
+  (#1782, #1784).
+- **The offline eval harness preserves quoted Windows shell payloads.** Its
+  `exec_shell` step now uses the same single-payload shape as the runtime shell
+  path, with raw `cmd /C` arguments on Windows so quoted commands remain intact
+  (#1779).
+- **The Feishu/Lark bridge recovers better after restarts.** It now reattaches
+  to persisted active turns after the long-connection client starts, and text
+  chunking no longer splits emoji or other multi-code-unit characters.
+- **RLM survives non-UTF-8 stdout.** `rlm_eval` now decodes REPL stdout
+  lossily instead of treating a single invalid byte as a fatal crash, so
+  binary-adjacent diagnostics can still return a bounded result (#1815,
+  #1819).
+- **Small UI/review reliability fixes landed with the stability branch.**
+  `/clear` now resets all displayed cost state, grayscale theme previews avoid
+  luma overflow, `/theme` picker arrow navigation wraps at the list edges, and
+  encoded JSON review output is parsed before display.
+- **New-file writes execute on the first Agent-mode call.** `write_file` now
+  stays preloaded in Agent mode, so creating a file no longer stops at the
+  deferred-tool schema hydration message before the normal approval/execution
+  path (#1825, #1841).
+- **Saved sessions keep the selected model mode.** Changing from `auto` to a
+  concrete model now updates existing session metadata, and resumed sessions
+  recompute the `auto` flag from the saved model instead of falling back to the
+  startup default.
+- **The `/model` picker persists thinking effort across restarts.** Selecting
+  Pro/Flash plus `high`/`max`/`auto` now writes both `default_model` and
+  `reasoning_effort` to `settings.toml`, and startup restores the saved effort
+  before falling back to `config.toml`.
+- **The footer water strip is visible by default again.** `fancy_animations`
+  now defaults to `true`, while `NO_ANIMATIONS`, SSH/Termius, VS Code, Ghostty,
+  and legacy terminal overrides still disable the animated strip where it is
+  known to flicker.
+- **Screenshots are readable without extra setup on macOS.** `image_ocr` now
+  uses the native Vision framework on macOS when Tesseract is absent, and
+  `read_file` routes screenshot/image reads through the same OCR path. Pasted
+  clipboard screenshots saved under `~/.deepseek/clipboard-images` are trusted
+  automatically for read-only tools.
+- **Auto-routing context no longer leaks hidden thinking.** The model/router
+  context summary now excludes `ContentBlock::Thinking`, so prior internal
+  reasoning is not reintroduced as if it were visible user or assistant text.
+
+### Changed
+
+- **Slash-command autocomplete ranks exact alias matches first.** Typing
+  `/q` now surfaces `/exit` (whose alias `q` is an exact match) above
+  `/clear` (which only matches by the longer pinyin alias `qingping`).
+  Within each rank tier the menu still falls back to alphabetical name
+  order for deterministic display (#1811).
+- **CNB mirror preflight covers stability-release branches.** The CNB sync
+  path now recognizes the v0.8.40 stability branch shape before release tags
+  exist, making the Tencent Lighthouse/Lark deployment path easier to verify
+  before publishing.
+
+### Thanks
+
+Thanks to **jayzhu ([@zlh124](https://github.com/zlh124))** for the WSL2
+startup report and clipboard-init fix in #1772/#1773. Thanks to **Paulo Aboim
+Pinto ([@aboimpinto](https://github.com/aboimpinto))** for the Windows
+alt-screen logging report and fix in #1774/#1776, and for the Home/End
+composer work in #1748/#1749, plus the per-process log filename follow-up in
+#1782/#1783. Thanks to **Zhongyue Lin
+([@LeoLin990405](https://github.com/LeoLin990405))** for the provider model
+passthrough, reasoning replay, thinking-only turn, and Windows quoting fixes
+in #1740, #1743, #1742, and #1744. Thanks to **Nightt
+([@nightt5879](https://github.com/nightt5879))** for the Ctrl+C prompt restore
+fix in #1764. Thanks to **Ling ([@LING71671](https://github.com/LING71671);
+commits as `www17 <ivonrust@gmail.com>`)** for the configurable sub-agent API
+timeout in #1808 and the Agent-mode `write_file` preload fix in #1841,
+harvested with `1..=1800` clamping and a fail-fast guard so a stray
+`api_timeout_secs = 0` keeps the legacy 120-second default.
+Thanks to **[@knqiufan](https://github.com/knqiufan)** for the sub-agent
+file-write delegation work in #1833, harvested with structured approval-
+gate semantics (`Implementer` and `Custom` only, never `Required`-level
+tools) so write-capable children can actually land code without bypassing
+the `Required` approval class. Thanks to **[@IIzzaya](https://github.com/IIzzaya)**
+for the exact-alias-first slash-completion ordering idea in #1811, landed
+with a focused regression test. Thanks to **Bevis** and the community reports
+that surfaced the compaction failure mode addressed in this release. Thanks to
+**Reid ([@reidliu41](https://github.com/reidliu41))** for the grayscale theme
+overflow report and `/theme` picker edge-wrapping patch in #1814.
+
+## [0.8.39] - 2026-05-17
 
 ### Fixed
 
@@ -4364,6 +4531,7 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
+<<<<<<< HEAD
 [Unreleased]: https://github.com/coohu/DeepSeek-TUI/compare/v0.8.40...HEAD
 [0.8.40]: https://github.com/coohu/DeepSeek-TUI/compare/v0.8.38...v0.8.40
 [0.8.38]: https://github.com/coohu/DeepSeek-TUI/compare/v0.8.37...v0.8.38
@@ -4442,3 +4610,84 @@ Welcome — and thank you.
 [0.1.6]: https://github.com/coohu/DeepSeek-TUI/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/coohu/DeepSeek-TUI/compare/v0.1.0...v0.1.5
 [0.1.0]: https://github.com/coohu/DeepSeek-TUI/releases/tag/v0.1.0
+=======
+[Unreleased]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.40...HEAD
+[0.8.40]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.39...v0.8.40
+[0.8.39]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.38...v0.8.39
+[0.8.38]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.37...v0.8.38
+[0.8.37]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.36...v0.8.37
+[0.8.36]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.35...v0.8.36
+[0.8.35]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.34...v0.8.35
+[0.8.34]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.33...v0.8.34
+[0.8.33]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.32...v0.8.33
+[0.8.32]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.31...v0.8.32
+[0.8.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.30...v0.8.31
+[0.8.30]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.29...v0.8.30
+[0.8.29]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.28...v0.8.29
+[0.8.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.27...v0.8.28
+[0.8.27]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.26...v0.8.27
+[0.8.26]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.25...v0.8.26
+[0.8.25]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.24...v0.8.25
+[0.8.24]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.23...v0.8.24
+[0.8.23]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.22...v0.8.23
+[0.8.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.21...v0.8.22
+[0.8.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.20...v0.8.21
+[0.8.20]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.19...v0.8.20
+[0.8.19]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.18...v0.8.19
+[0.8.18]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.17...v0.8.18
+[0.8.17]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.16...v0.8.17
+[0.8.16]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.15...v0.8.16
+[0.8.15]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.13...v0.8.15
+[0.8.13]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.12...v0.8.13
+[0.8.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.11...v0.8.12
+[0.8.11]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.10...v0.8.11
+[0.8.10]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.8...v0.8.10
+[0.8.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.7...v0.8.8
+[0.8.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.6...v0.8.7
+[0.8.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.9...v0.8.0
+[0.7.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.7...v0.7.8
+[0.7.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.6...v0.7.7
+[0.7.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.7.5...v0.7.6
+[0.6.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.9...v0.6.0
+[0.4.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.4.8...v0.4.9
+[0.4.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.33...v0.4.8
+[0.3.33]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.32...v0.3.33
+[0.3.32]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.31...v0.3.32
+[0.3.31]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.28...v0.3.31
+[0.3.28]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.27...v0.3.28
+[0.3.23]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.22...v0.3.23
+[0.3.22]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.21...v0.3.22
+[0.3.21]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.17...v0.3.21
+[0.3.17]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.16...v0.3.17
+[0.3.16]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.14...v0.3.16
+[0.3.14]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.13...v0.3.14
+[0.3.13]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.12...v0.3.13
+[0.3.12]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.11...v0.3.12
+[0.3.11]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.10...v0.3.11
+[0.3.10]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.6...v0.3.10
+[0.3.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.2.0...v0.2.2
+[0.2.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.2.0
+[0.0.2]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.2
+[0.0.1]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.0.1
+[0.1.9]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Hmbown/DeepSeek-TUI/compare/v0.1.0...v0.1.5
+[0.1.0]: https://github.com/Hmbown/DeepSeek-TUI/releases/tag/v0.1.0
+>>>>>>> 1ca495f5a348b441f085a727edc2d6643be1d167

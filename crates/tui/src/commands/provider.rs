@@ -27,7 +27,7 @@ pub fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
 
     let Some(target) = ApiProvider::parse(name) else {
         return CommandResult::error(format!(
-            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openai, atlascloud, openrouter, novita, fireworks, sglang, vllm, or ollama."
+            "Unknown provider '{name}'. Expected: deepseek, nvidia-nim, openai, atlascloud, wanjie-ark, openrouter, novita, fireworks, sglang, vllm, or ollama."
         ));
     };
 
@@ -128,6 +128,19 @@ mod tests {
             Some(AppAction::SwitchProvider { provider, model }) => {
                 assert_eq!(provider, ApiProvider::Atlascloud);
                 assert_eq!(model, None);
+            }
+            other => panic!("expected SwitchProvider, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn switch_to_wanjie_ark_preserves_model_id() {
+        let mut app = create_test_app();
+        let result = provider(&mut app, Some("ark-wanjie account-model-id"));
+        match result.action {
+            Some(AppAction::SwitchProvider { provider, model }) => {
+                assert_eq!(provider, ApiProvider::WanjieArk);
+                assert_eq!(model.as_deref(), Some("account-model-id"));
             }
             other => panic!("expected SwitchProvider, got {other:?}"),
         }

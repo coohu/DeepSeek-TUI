@@ -10,8 +10,13 @@ test("ThreadStore is initialized before bridge startup opens it", async () => {
   const source = await fs.readFile(path.join(__dirname, "../src/index.mjs"), "utf8");
   const declaration = source.indexOf("class ThreadStore");
   const startupUse = source.indexOf("await ThreadStore.open");
+  const wsStart = source.indexOf("wsClient.start");
+  const reattachCall = source.indexOf("reattachActiveTurns().catch");
 
   assert.notEqual(declaration, -1);
   assert.notEqual(startupUse, -1);
+  assert.notEqual(wsStart, -1);
+  assert.notEqual(reattachCall, -1);
   assert.ok(declaration < startupUse);
+  assert.ok(wsStart < reattachCall);
 });

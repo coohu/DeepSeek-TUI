@@ -1155,7 +1155,20 @@ async fn create_summary(
         build_formatted_summary_request(model, messages, limits)
     };
 
-    let response = client.create_message(request).await?;
+    let mut telemetry_cache_aligned = used_cache_aligned;
+    let response = match client.create_message(request).await {
+        Ok(response) => response,
+        Err(err) if used_cache_aligned && is_context_window_error(&err) => {
+            logging::warn(format!(
+                "Cache-aligned compaction summary exceeded the model context window ({err}); \
+                 retrying with bounded formatted summary input"
+            ));
+            telemetry_cache_aligned = false;
+            let fallback_request = build_formatted_summary_request(model, messages, limits);
+            client.create_message(fallback_request).await?
+        }
+        Err(err) => return Err(err),
+    };
     // Compaction summary calls are billed by DeepSeek; route the
     // tokens through the side-channel so the dashboard total
     // matches the website (#526).
@@ -1168,7 +1181,7 @@ async fn create_summary(
     // `RUST_LOG=compaction=debug` (the module-path form
     // `deepseek_tui::compaction=debug` does NOT match — `EnvFilter`
     // matches the explicit target string when one is set).
-    log_summary_cache_telemetry(used_cache_aligned, &response.usage);
+    log_summary_cache_telemetry(telemetry_cache_aligned, &response.usage);
 
     // Extract text from response
     let summary = response
@@ -1182,6 +1195,22 @@ async fn create_summary(
         .join("\n");
 
     Ok(summary)
+}
+
+fn is_context_window_error(e: &anyhow::Error) -> bool {
+    let text = e.to_string();
+    if crate::error_taxonomy::classify_error_message(&text)
+        != crate::error_taxonomy::ErrorCategory::InvalidInput
+    {
+        return false;
+    }
+
+    let lower = text.to_lowercase();
+    lower.contains("context")
+        || lower.contains("token")
+        || lower.contains("prompt is too long")
+        || lower.contains("requested")
+        || lower.contains("maximum")
 }
 
 /// Cache-hit percentage for a compaction summary call.
@@ -1804,6 +1833,50 @@ mod tests {
         // divide-by-zero.
         assert!((summary_cache_hit_percent(0, 0) - 0.0).abs() < f64::EPSILON);
         assert!((summary_cache_hit_percent(50, 0) - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn context_window_errors_are_detected_for_summary_fallback() {
+        for msg in [
+            "HTTP 400 Bad Request: maximum context length is 1000000 tokens",
+            "invalid_request_error: prompt is too long for the current model",
+            "You requested 1000001 tokens but the maximum is 1000000",
+            "request exceeds context window",
+        ] {
+            assert!(
+                is_context_window_error(&anyhow::anyhow!(msg)),
+                "expected context-window detection for `{msg}`",
+            );
+        }
+
+        assert!(!is_context_window_error(&anyhow::anyhow!(
+            "Invalid request: missing required field"
+        )));
+        assert!(!is_context_window_error(&anyhow::anyhow!(
+            "503 Service Unavailable"
+        )));
+    }
+
+    #[test]
+    fn formatted_summary_request_bounds_large_input() {
+        let messages = (0..90)
+            .map(|idx| {
+                msg(
+                    "user",
+                    &format!("turn {idx}: {}", "中文上下文 ".repeat(1_000)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let limits = summary_input_limits_for_model("deepseek-v4-pro");
+
+        let request = build_formatted_summary_request("deepseek-v4-pro", &messages, limits);
+
+        assert_eq!(request.messages.len(), 1);
+        let ContentBlock::Text { text, .. } = &request.messages[0].content[0] else {
+            panic!("expected summary text request");
+        };
+        assert!(text.contains("characters omitted before summary"));
+        assert!(text.chars().count() <= limits.input_max_chars + 2_000);
     }
 
     #[test]
