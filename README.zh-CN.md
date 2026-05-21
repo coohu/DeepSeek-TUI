@@ -17,12 +17,12 @@
 npm install -g -g @coohu/deepseek-tui
 
 # 2. Cargo —— 无需 Node。
-cargo install -g @coohu/deepseek-tui-cli --locked   # `deepseek` 入口
-cargo install -g @coohu/deepseek-tui     --locked   # `deepseek-tui` TUI 二进制
+cargo install deepseek-tui-cli --locked   # `deepseek` 入口
+cargo install deepseek-tui     --locked   # `deepseek-tui` TUI 二进制
 
 # 3. Homebrew —— macOS 包管理器。
-brew tap coohu/-g @coohu/deepseek-tui
-brew install -g @coohu/deepseek-tui
+brew tap coohu/deepseek-tui
+brew install deepseek-tui
 
 # 4. 直接下载 —— 无需任何工具链。
 #    https://github.com/coohu/DeepSeek-TUI/releases
@@ -50,10 +50,10 @@ docker run --rm -it \
 
 ```bash
 deepseek update                         # release 二进制更新器
-npm install -g -g @coohu/deepseek-tui@latest      # npm 包装器
-brew update && brew upgrade -g @coohu/deepseek-tui
-cargo install -g @coohu/deepseek-tui-cli --locked --force
-cargo install -g @coohu/deepseek-tui     --locked --force
+npm install -g @coohu/deepseek-tui@latest      # npm 包装器
+brew update && brew upgrade deepseek-tui
+cargo install deepseek-tui-cli --locked --force
+cargo install deepseek-tui     --locked --force
 ```
 
 [![CI](https://github.com/coohu/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/coohu/DeepSeek-TUI/actions/workflows/ci.yml)

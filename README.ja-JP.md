@@ -13,15 +13,15 @@
 # 1. npm — すでに Node を使っているなら最も簡単。npm パッケージは
 #    GitHub Releases から対応するビルド済みバイナリをダウンロードする
 #    薄いインストーラーであり、deepseek 本体に Node ランタイム依存を加えるものではありません。
-npm install -g -g @coohu/deepseek-tui
+npm install -g @coohu/deepseek-tui
 
 # 2. Cargo — Node 不要。
-cargo install @coohu/deepseek-tui-cli --locked   # `deepseek` (エントリーポイント)
-cargo install @coohu/deepseek-tui     --locked   # `deepseek-tui` (TUI バイナリ)
+cargo install deepseek-tui-cli --locked   # `deepseek` (エントリーポイント)
+cargo install deepseek-tui     --locked   # `deepseek-tui` (TUI バイナリ)
 
 # 3. Homebrew — macOS パッケージマネージャ。
-brew tap coohu/@coohu/deepseek-tui
-brew install @coohu/deepseek-tui
+brew tap coohu/deepseek-tui
+brew install deepseek-tui
 
 # 4. 直接ダウンロード — Node もツールチェーンも不要。
 #    https://github.com/coohu/DeepSeek-TUI/releases
@@ -43,10 +43,10 @@ docker run --rm -it \
 
 ```bash
 deepseek update
-npm install -g -g @coohu/deepseek-tui@latest
-brew update && brew upgrade @coohu/deepseek-tui
-cargo install @coohu/deepseek-tui-cli --locked --force
-cargo install @coohu/deepseek-tui     --locked --force
+npm install -g @coohu/deepseek-tui@latest
+brew update && brew upgrade deepseek-tui
+cargo install deepseek-tui-cli --locked --force
+cargo install deepseek-tui     --locked --force
 ```
 
 [![CI](https://github.com/coohu/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/coohu/DeepSeek-TUI/actions/workflows/ci.yml)
