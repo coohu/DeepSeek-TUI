@@ -47,11 +47,6 @@ use crate::tui::views::ViewStack;
 /// State machine for onboarding new users.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
-    Welcome,
-    /// Pick the UI locale before any other config decisions (#566).
-    /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
-    /// land in `~/.deepseek/settings.toml` via `Settings::set("locale", …)`.
-    Language,
     /// Pick the API provider (DeepSeek or ShengSuanYun) before entering key.
     ApiKeyProviderSelect,
     ApiKey,
@@ -106,12 +101,13 @@ fn initial_onboarding_state(
         return OnboardingState::None;
     }
 
-    if was_onboarded && needs_api_key {
+    if needs_api_key {
         OnboardingState::ApiKeyProviderSelect
-    } else if was_onboarded && needs_workspace_trust {
+    } else if needs_workspace_trust {
         OnboardingState::TrustDirectory
     } else {
-        OnboardingState::Welcome
+        // First run with no API key or trust needed — show tips.
+        OnboardingState::Tips
     }
 }
 
@@ -4422,7 +4418,7 @@ mod tests {
 
     // initial_onboarding_state tests
     // These pin the logic that decides whether the TUI shows the
-    // onboarding flow (Welcome → Language → ApiKey → …) or goes
+    // onboarding flow (ApiKeyProviderSelect → ApiKey → …) or goes
     // straight to the chat view.  Getting this wrong either locks
     // first-run users out of the API-key prompt or nags returning
     // users whose key is already configured.
@@ -4461,18 +4457,21 @@ mod tests {
     }
 
     #[test]
-    fn first_run_user_always_starts_at_welcome() {
+    fn first_run_user_routes_directly_to_relevant_step() {
+        // No API key, no trust needed — show tips immediately.
         assert_eq!(
             initial_onboarding_state(false, false, false, false),
-            OnboardingState::Welcome
+            OnboardingState::Tips
         );
+        // Needs API key — go to provider select.
         assert_eq!(
             initial_onboarding_state(false, false, true, false),
-            OnboardingState::Welcome
+            OnboardingState::ApiKeyProviderSelect
         );
+        // Needs trust, no API key — go to trust prompt.
         assert_eq!(
             initial_onboarding_state(false, false, false, true),
-            OnboardingState::Welcome
+            OnboardingState::TrustDirectory
         );
     }
 

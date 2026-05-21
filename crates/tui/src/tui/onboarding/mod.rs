@@ -33,8 +33,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let lines = match app.onboarding {
-        OnboardingState::Welcome => welcome::lines(),
-        OnboardingState::Language => language::lines(app),
         OnboardingState::ApiKeyProviderSelect => provider_select::lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
@@ -72,8 +70,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
 fn onboarding_step(app: &App) -> (usize, usize) {
     let needs_trust = !app.trust_mode && needs_trust(&app.workspace);
-    // Welcome + Language + Tips are always shown.
-    let mut total = 3;
+    // Tips is always shown.
+    let mut total = 1;
     if app.onboarding_needs_api_key {
         // Provider select + key input = 2 steps
         total += 2;
@@ -83,16 +81,12 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     }
 
     let step = match app.onboarding {
-        OnboardingState::Welcome => 1,
-        OnboardingState::Language => 2,
-        OnboardingState::ApiKeyProviderSelect => 3,
+        OnboardingState::ApiKeyProviderSelect => 1,
         OnboardingState::ApiKey => {
-            // Welcome (1) + Language (2) + ApiKeyProviderSelect (3)
-            if app.onboarding_needs_api_key { 4 } else { 3 }
+            if app.onboarding_needs_api_key { 2 } else { 1 }
         }
         OnboardingState::TrustDirectory => {
-            // Welcome (1) + Language (2) + optional ApiKeyProviderSelect + ApiKey
-            if app.onboarding_needs_api_key { 5 } else { 3 }
+            if app.onboarding_needs_api_key { 3 } else { 1 }
         }
         OnboardingState::Tips => total,
         OnboardingState::None => total,
@@ -214,19 +208,11 @@ pub fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
     ApiKeyValidation::Accept { warning: None }
 }
 
-/// Welcome → Language transition. Clears the status message bar.
-pub fn advance_onboarding_from_welcome(app: &mut App) {
+/// Advance onboarding after API key submission. Routes to TrustDirectory
+/// when the workspace is untrusted, otherwise to Tips.
+pub fn advance_onboarding_after_api_key(app: &mut App) {
     app.status_message = None;
-    app.onboarding = OnboardingState::Language;
-}
-
-/// Language → next step. Routes to ApiKey when the session lacks a key,
-/// to TrustDirectory when the workspace is untrusted, otherwise to Tips.
-pub fn advance_onboarding_after_language(app: &mut App) {
-    app.status_message = None;
-    if app.onboarding_needs_api_key {
-        app.onboarding = OnboardingState::ApiKeyProviderSelect;
-    } else if !app.trust_mode && needs_trust(&app.workspace) {
+    if !app.trust_mode && needs_trust(&app.workspace) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else {
         app.onboarding = OnboardingState::Tips;

@@ -769,7 +769,23 @@ pub fn normalize_configured_locale(input: &str) -> Option<&'static str> {
 }
 
 pub fn resolve_locale(setting: &str) -> Locale {
-    resolve_locale_with_env(setting, |key| std::env::var(key).ok())
+    let normalized = normalize_locale_input(setting);
+    if !matches!(normalized.as_str(), "" | "auto" | "system") {
+        return parse_locale(&normalized).unwrap_or(Locale::En);
+    }
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Some(value) = std::env::var(key).ok()
+            && let Some(locale) = parse_locale(&normalize_locale_input(&value))
+        {
+            return locale;
+        }
+    }
+    if let Some(sys_tag) = sys_locale::get_locale()
+        && let Some(locale) = parse_locale(&normalize_locale_input(&sys_tag))
+    {
+        return locale;
+    }
+    Locale::En
 }
 
 pub fn resolve_locale_with_env<F>(setting: &str, env: F) -> Locale

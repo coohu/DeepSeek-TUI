@@ -3028,7 +3028,7 @@ fn onboarding_after_api_key_save_does_not_repeat_language_step() {
     app.trust_mode = true;
     app.status_message = Some("saved".to_string());
 
-    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
+    crate::tui::onboarding::advance_onboarding_after_api_key(&mut app);
 
     assert_eq!(app.onboarding, OnboardingState::Tips);
     assert_eq!(app.status_message, None);
@@ -3043,7 +3043,7 @@ fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
     app.onboarding_needs_api_key = false;
     app.trust_mode = false;
 
-    crate::tui::onboarding::advance_onboarding_after_language(&mut app);
+    crate::tui::onboarding::advance_onboarding_after_api_key(&mut app);
 
     assert_eq!(app.onboarding, OnboardingState::TrustDirectory);
 }

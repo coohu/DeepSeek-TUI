@@ -2213,44 +2213,37 @@ async fn run_event_loop(
                         app.api_key_cursor = 0;
                         app.status_message = None;
                     }
-                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKeyProviderSelect => {
-                        app.onboarding = OnboardingState::Language;
-                        app.status_message = None;
-                    }
-                    KeyCode::Esc if app.onboarding == OnboardingState::Language => {
-                        app.onboarding = OnboardingState::Welcome;
-                        app.status_message = None;
-                    }
-                    // Language picker hotkeys select + persist (#566).
-                    //
-                    // Note: this used to be a single match-guard with `&& let`,
-                    // but `if_let_guard` is a nightly-only feature on Rust
-                    // before 1.94. Rewriting as a plain guard + nested `if let`
-                    // keeps `cargo install` working on stable.
-                    KeyCode::Char(c)
-                        if app.onboarding == OnboardingState::Language && c.is_ascii_digit() =>
+                    // Provider picker hotkeys select provider and advance to key entry.
+                    // Arrow keys cycle selection without advancing.
+                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+                        if app.onboarding == OnboardingState::ApiKeyProviderSelect =>
                     {
-                        if let Some((_, tag, _, _)) = onboarding::language::LANGUAGE_OPTIONS
+                        use crate::config::ApiProvider;
+                        let options = onboarding::provider_select::PROVIDER_OPTIONS;
+                        let current_idx = options
                             .iter()
-                            .find(|(hotkey, _, _, _)| *hotkey == c)
-                        {
-                            match app.set_locale_from_onboarding(tag) {
-                                Ok(()) => {
-                                    app.push_status_toast(
-                                        format!("Language set to {tag}"),
-                                        StatusToastLevel::Info,
-                                        Some(2_500),
-                                    );
-                                    onboarding::advance_onboarding_after_language(app);
+                            .position(|(_, id, _, _)| {
+                                *id == app.onboarding_api_provider.as_str()
+                            })
+                            .unwrap_or(0);
+                        let new_idx = match key.code {
+                            KeyCode::Up | KeyCode::Left => {
+                                if current_idx == 0 {
+                                    options.len() - 1
+                                } else {
+                                    current_idx - 1
                                 }
-                                Err(err) => {
-                                    app.status_message =
-                                        Some(format!("Failed to save locale: {err}"));
-                                }
+                            }
+                            _ => (current_idx + 1) % options.len(),
+                        };
+                        if let Some((_, provider_id, _, _)) = options.get(new_idx) {
+                            if let Some(provider) = ApiProvider::parse(provider_id) {
+                                app.onboarding_api_provider = provider;
+                                app.needs_redraw = true;
                             }
                         }
                     }
-                    // Provider picker hotkeys select provider and advance to key entry.
+                    // Digit hotkeys immediately select a provider and advance to key entry.
                     KeyCode::Char(c)
                         if app.onboarding == OnboardingState::ApiKeyProviderSelect
                             && c.is_ascii_digit() =>
@@ -2271,14 +2264,6 @@ async fn run_event_loop(
                         }
                     }
                     KeyCode::Enter => match app.onboarding {
-                        OnboardingState::Welcome => {
-                            onboarding::advance_onboarding_from_welcome(app);
-                        }
-                        OnboardingState::Language => {
-                            // Enter without a digit pick keeps the existing
-                            // setting (which defaults to "auto").
-                            onboarding::advance_onboarding_after_language(app);
-                        }
                         OnboardingState::ApiKeyProviderSelect => {
                             // Enter with no digit pressed keeps the current
                             // provider selection and advances to key entry.
@@ -2362,7 +2347,7 @@ async fn run_event_loop(
                                             .await;
                                     }
 
-                                    onboarding::advance_onboarding_after_language(app);
+                                    onboarding::advance_onboarding_after_api_key(app);
                                 }
                                 Err(e) => {
                                     app.status_message = Some(e.to_string());

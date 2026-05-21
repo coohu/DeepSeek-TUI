@@ -1,17 +1,9 @@
-//! API key provider selection screen for onboarding.
-//!
-//! Shown before the API key input step. The user picks either the DeepSeek
-//! platform or ShengSuanYun (胜算云) as their API provider.
-
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-
 use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::App;
 
-/// Provider options shown in the picker.
-/// Each entry is `(hotkey, provider_id, display_name, hint)`.
 pub const PROVIDER_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('1', "deepseek", "DeepSeek", "(platform.deepseek.com)"),
     ('2', "shengsuanyun", "胜算云 (ShengSuanYun)", "(router.shengsuanyun.com)"),
@@ -47,9 +39,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
             Span::styled(format!("  {bullet}  "), Style::default().fg(bullet_color)),
             Span::styled(
                 format!("[{hotkey}] "),
-                Style::default()
-                    .fg(palette::TEXT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(palette::TEXT_PRIMARY).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 name.to_string(),
