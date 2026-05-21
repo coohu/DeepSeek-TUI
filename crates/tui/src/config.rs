@@ -410,9 +410,10 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::Vllm => vec![DEFAULT_VLLM_MODEL, DEFAULT_VLLM_FLASH_MODEL],
         ApiProvider::Openai | ApiProvider::Atlascloud | ApiProvider::Ollama => {
             OFFICIAL_DEEPSEEK_MODELS.to_vec()
-        },
-        ApiProvider::ShengSuanYun => 
+        }
+        ApiProvider::ShengSuanYun => {
             vec![DEFAULT_SHENGSUANYUN_MODEL, DEFAULT_SHENGSUANYUN_FLASH_MODEL]
+        }
     }
 }
 
@@ -2721,8 +2722,12 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
         (ApiProvider::Sglang, "deepseek-v4-flash") => DEFAULT_SGLANG_FLASH_MODEL.to_string(),
         (ApiProvider::Vllm, "deepseek-v4-pro") => DEFAULT_VLLM_MODEL.to_string(),
         (ApiProvider::Vllm, "deepseek-v4-flash") => DEFAULT_VLLM_FLASH_MODEL.to_string(),
-        (ApiProvider::ShengSuanYun, "deepseek/deepseek-v4-pro") => DEFAULT_SHENGSUANYUN_MODEL.to_string(),
-        (ApiProvider::ShengSuanYun, "deepseek/deepseek-v4-flash") => DEFAULT_SHENGSUANYUN_FLASH_MODEL.to_string(),
+        (ApiProvider::ShengSuanYun, "deepseek/deepseek-v4-pro") => {
+            DEFAULT_SHENGSUANYUN_MODEL.to_string()
+        }
+        (ApiProvider::ShengSuanYun, "deepseek/deepseek-v4-flash") => {
+            DEFAULT_SHENGSUANYUN_FLASH_MODEL.to_string()
+        }
         _ => normalized,
     }
 }

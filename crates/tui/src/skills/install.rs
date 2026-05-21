@@ -1426,10 +1426,7 @@ mod tests {
     #[test]
     fn parse_github_source() {
         let s = InstallSource::parse("github:coohu/test-skill").unwrap();
-        assert_eq!(
-            s,
-            InstallSource::GitHubRepo("coohu/test-skill".to_string())
-        );
+        assert_eq!(s, InstallSource::GitHubRepo("coohu/test-skill".to_string()));
     }
 
     #[test]

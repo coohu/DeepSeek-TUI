@@ -2222,9 +2222,7 @@ async fn run_event_loop(
                         let options = onboarding::provider_select::PROVIDER_OPTIONS;
                         let current_idx = options
                             .iter()
-                            .position(|(_, id, _, _)| {
-                                *id == app.onboarding_api_provider.as_str()
-                            })
+                            .position(|(_, id, _, _)| *id == app.onboarding_api_provider.as_str())
                             .unwrap_or(0);
                         let new_idx = match key.code {
                             KeyCode::Up | KeyCode::Left => {

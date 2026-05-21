@@ -1172,7 +1172,7 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Sglang => DEFAULT_SGLANG_MODEL,
         ProviderKind::Vllm => DEFAULT_VLLM_MODEL,
         ProviderKind::Ollama => DEFAULT_OLLAMA_MODEL,
-        ProviderKind::ShengSuanYun => DEFAULT_SHENGSUANYUN_MODEL
+        ProviderKind::ShengSuanYun => DEFAULT_SHENGSUANYUN_MODEL,
     }
 }
 
@@ -1188,7 +1188,7 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Sglang => DEFAULT_SGLANG_BASE_URL,
         ProviderKind::Vllm => DEFAULT_VLLM_BASE_URL,
         ProviderKind::Ollama => DEFAULT_OLLAMA_BASE_URL,
-        ProviderKind::ShengSuanYun => DEFAULT_SHENGSUANYUN_BASE_URL
+        ProviderKind::ShengSuanYun => DEFAULT_SHENGSUANYUN_BASE_URL,
     }
 }
 

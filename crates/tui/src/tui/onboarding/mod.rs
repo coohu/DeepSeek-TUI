@@ -83,10 +83,18 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     let step = match app.onboarding {
         OnboardingState::ApiKeyProviderSelect => 1,
         OnboardingState::ApiKey => {
-            if app.onboarding_needs_api_key { 2 } else { 1 }
+            if app.onboarding_needs_api_key {
+                2
+            } else {
+                1
+            }
         }
         OnboardingState::TrustDirectory => {
-            if app.onboarding_needs_api_key { 3 } else { 1 }
+            if app.onboarding_needs_api_key {
+                3
+            } else {
+                1
+            }
         }
         OnboardingState::Tips => total,
         OnboardingState::None => total,

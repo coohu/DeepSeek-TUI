@@ -1203,9 +1203,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::OnboardApiKeyFooter => "Press Enter to save, Esc to go back.",
         // Onboarding — provider selection.
         MessageId::OnboardApiKeyProviderTitle => "Choose API Provider",
-        MessageId::OnboardApiKeyProviderBlurb => {
-            "Select the provider for your API key:"
-        }
+        MessageId::OnboardApiKeyProviderBlurb => "Select the provider for your API key:",
         MessageId::OnboardApiKeyProviderFooter => "Press 1 or 2 to select, Esc to go back.",
         // Onboarding — workspace trust.
         MessageId::OnboardTrustTitle => "Trust Workspace",
@@ -2288,7 +2286,9 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         // Onboarding — provider selection.
         MessageId::OnboardApiKeyProviderTitle => "Escolha o provedor de API",
         MessageId::OnboardApiKeyProviderBlurb => "Selecione o provedor da sua chave de API:",
-        MessageId::OnboardApiKeyProviderFooter => "Pressione 1 ou 2 para selecionar, Esc para voltar.",
+        MessageId::OnboardApiKeyProviderFooter => {
+            "Pressione 1 ou 2 para selecionar, Esc para voltar."
+        }
         // Onboarding — workspace trust.
         MessageId::OnboardTrustTitle => "Confiar no diretório",
         MessageId::OnboardTrustQuestion => "Você confia no conteúdo deste diretório?",
@@ -2682,7 +2682,9 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         // Onboarding — provider selection.
         MessageId::OnboardApiKeyProviderTitle => "Elige el proveedor de API",
         MessageId::OnboardApiKeyProviderBlurb => "Selecciona el proveedor de tu clave de API:",
-        MessageId::OnboardApiKeyProviderFooter => "Presiona 1 o 2 para seleccionar, Esc para volver.",
+        MessageId::OnboardApiKeyProviderFooter => {
+            "Presiona 1 o 2 para seleccionar, Esc para volver."
+        }
         MessageId::OnboardTrustTitle => "Confiar en el directorio",
         MessageId::OnboardTrustQuestion => "¿Confías en el contenido de este directorio?",
         MessageId::OnboardTrustLocationPrefix => "Estás en ",

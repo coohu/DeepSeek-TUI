@@ -1,12 +1,17 @@
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::App;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 pub const PROVIDER_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('1', "deepseek", "DeepSeek", "(platform.deepseek.com)"),
-    ('2', "shengsuanyun", "胜算云 (ShengSuanYun)", "(router.shengsuanyun.com)"),
+    (
+        '2',
+        "shengsuanyun",
+        "胜算云 (ShengSuanYun)",
+        "(router.shengsuanyun.com)",
+    ),
 ];
 
 pub fn lines(app: &App) -> Vec<Line<'static>> {
@@ -39,12 +44,11 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
             Span::styled(format!("  {bullet}  "), Style::default().fg(bullet_color)),
             Span::styled(
                 format!("[{hotkey}] "),
-                Style::default().fg(palette::TEXT_PRIMARY).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(palette::TEXT_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                name.to_string(),
-                Style::default().fg(palette::TEXT_PRIMARY),
-            ),
+            Span::styled(name.to_string(), Style::default().fg(palette::TEXT_PRIMARY)),
             Span::styled(
                 format!("  {hint}"),
                 Style::default().fg(palette::TEXT_MUTED),

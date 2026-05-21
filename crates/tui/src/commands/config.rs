@@ -1225,7 +1225,9 @@ pub fn logout(app: &mut App) -> CommandResult {
             app.onboarding_needs_api_key = true;
             app.api_key_input.clear();
             app.api_key_cursor = 0;
-            CommandResult::message("Logged out. Select a provider and enter a new API key to continue.")
+            CommandResult::message(
+                "Logged out. Select a provider and enter a new API key to continue.",
+            )
         }
         Err(e) => CommandResult::error(format!("Failed to clear API key: {e}")),
     }
