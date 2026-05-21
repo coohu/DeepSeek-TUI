@@ -14,7 +14,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
     title: isZh ? "DeepSeek TUI · 终端原生编程智能体" : "DeepSeek TUI · 深度求索 终端",
     description: isZh
       ? "基于 DeepSeek V4 的开源终端编程智能体。支持 100 万 token 上下文、MCP 协议、沙箱执行。"
-      : "Terminal-native coding agent built on DeepSeek V4. Open source. Community site for installation, docs, roadmap, and live activity from the Hmbown/deepseek-tui repo.",
+      : "Terminal-native coding agent built on DeepSeek V4. Open source. Community site for installation, docs, roadmap, and live activity from the coohu/deepseek-tui repo.",
     metadataBase: new URL("https://deepseek-tui.com"),
     openGraph: {
       title: isZh ? "DeepSeek TUI · 终端原生编程智能体" : "DeepSeek TUI",

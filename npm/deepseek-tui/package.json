@@ -1,20 +1,21 @@
 {
-  "name": "deepseek-tui",
-  "version": "0.8.39",
-  "deepseekBinaryVersion": "0.8.39",
+  "name": "@coohu/deepseek-tui",
+  "version": "0.8.40",
+  "deepseekBinaryVersion": "0.8.40",
   "description": "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
-  "author": "Hmbown",
+  "author": "coohu",
   "license": "MIT",
-  "homepage": "https://github.com/Hmbown/DeepSeek-TUI",
+  "homepage": "https://github.com/shengsuan/DeepSeek-TUI",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hmbown/DeepSeek-TUI.git"
+    "url": "git+https://github.com/shengsuan/DeepSeek-TUI.git"
   },
   "bugs": {
-    "url": "https://github.com/Hmbown/DeepSeek-TUI/issues"
+    "url": "https://github.com/shengsuan/DeepSeek-TUI/issues"
   },
   "keywords": [
     "deepseek",
+    "胜算云",
     "cli",
     "tui",
     "rust",

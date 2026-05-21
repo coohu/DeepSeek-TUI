@@ -516,7 +516,7 @@ impl DeepSeekClient {
             .user_agent(concat!(
                 "Mozilla/5.0 (compatible; deepseek-tui/",
                 env!("CARGO_PKG_VERSION"),
-                "; +https://github.com/Hmbown/DeepSeek-TUI)"
+                "; +https://github.com/coohu/DeepSeek-TUI)"
             ))
             .connect_timeout(Duration::from_secs(30))
             .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -556,6 +556,14 @@ fn build_default_headers(
             HeaderValue::from_str(&format!("Bearer {api_key}"))?,
         );
     }
+    headers.insert(
+        HeaderName::from_static("http-referer"),
+        HeaderValue::from_static("https://github.com/shengsuan/DeepSeek-TUI"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-title"),
+        HeaderValue::from_static("DeepSeek TUI"),
+    );
     for (name, value) in extra_headers {
         let name = name.trim();
         let value = value.trim();

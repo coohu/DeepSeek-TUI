@@ -172,7 +172,7 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
             </h1>
             <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-[1.9] tracking-wide">
               已确认的功能、正在权衡的方案、以及已被排除的方向。未列在此页的内容均可在{" "}
-              <Link href="https://github.com/Hmbown/deepseek-tui/discussions/new?category=ideas" className="body-link">
+              <Link href="https://github.com/coohu/deepseek-tui/discussions/new?category=ideas" className="body-link">
                 Discussions
               </Link>{" "}
               中讨论。
@@ -217,13 +217,13 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
               </div>
               <div className="lg:col-span-4 flex flex-col gap-3">
                 <Link
-                  href="https://github.com/Hmbown/deepseek-tui/discussions/new?category=ideas"
+                  href="https://github.com/coohu/deepseek-tui/discussions/new?category=ideas"
                   className="px-5 py-3 bg-indigo text-paper font-mono text-sm uppercase tracking-wider text-center hover:bg-indigo-deep transition-colors"
                 >
                   提交想法 →
                 </Link>
                 <Link
-                  href="https://github.com/Hmbown/deepseek-tui/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
+                  href="https://github.com/coohu/deepseek-tui/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
                   className="px-5 py-3 hairline-t hairline-b hairline-l hairline-r border-paper-deep/30 font-mono text-sm uppercase tracking-wider text-center hover:bg-paper hover:text-ink transition-colors"
                 >
                   Good first issues →
@@ -245,7 +245,7 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
             <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-relaxed">
               What's confirmed, what's being weighed, what's been ruled out. Anything not on this page
               is fair game for{" "}
-              <Link href="https://github.com/Hmbown/deepseek-tui/discussions/new?category=ideas" className="body-link">
+              <Link href="https://github.com/coohu/deepseek-tui/discussions/new?category=ideas" className="body-link">
                 discussion
               </Link>.
             </p>
@@ -290,13 +290,13 @@ export default async function RoadmapPage({ params }: { params: Promise<{ locale
               </div>
               <div className="lg:col-span-4 flex flex-col gap-3">
                 <Link
-                  href="https://github.com/Hmbown/deepseek-tui/discussions/new?category=ideas"
+                  href="https://github.com/coohu/deepseek-tui/discussions/new?category=ideas"
                   className="px-5 py-3 bg-indigo text-paper font-mono text-sm uppercase tracking-wider text-center hover:bg-indigo-deep transition-colors"
                 >
                   Propose an idea →
                 </Link>
                 <Link
-                  href="https://github.com/Hmbown/deepseek-tui/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
+                  href="https://github.com/coohu/deepseek-tui/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"
                   className="px-5 py-3 hairline-t hairline-b hairline-l hairline-r border-paper-deep/30 font-mono text-sm uppercase tracking-wider text-center hover:bg-paper hover:text-ink transition-colors"
                 >
                   Good first issues →

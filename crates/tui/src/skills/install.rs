@@ -59,7 +59,7 @@ pub fn default_cache_skills_dir() -> PathBuf {
 /// Default registry. Falls back to a community-curated `index.json` hosted on
 /// GitHub raw; users can override via `[skills] registry_url` in config.toml.
 pub const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json";
+    "https://raw.githubusercontent.com/coohu/deepseek-skills/main/index.json";
 
 /// Default per-skill size cap (5 MiB). Honored at unpack time so a malicious
 /// gzip bomb can't blow up RAM.
@@ -108,7 +108,7 @@ impl InstallSource {
         if let Some(rest) = trimmed.strip_prefix("github:") {
             let rest = rest.trim();
             // Reject obviously bogus values up front. We intentionally accept
-            // case-insensitive owner/repo so `github:Hmbown/Foo` works.
+            // case-insensitive owner/repo so `github:coohu/Foo` works.
             let (owner, repo) = rest.split_once('/').with_context(|| {
                 format!("github source must be 'github:owner/repo' (got {spec})")
             })?;
@@ -1425,22 +1425,22 @@ mod tests {
 
     #[test]
     fn parse_github_source() {
-        let s = InstallSource::parse("github:Hmbown/test-skill").unwrap();
+        let s = InstallSource::parse("github:coohu/test-skill").unwrap();
         assert_eq!(
             s,
-            InstallSource::GitHubRepo("Hmbown/test-skill".to_string())
+            InstallSource::GitHubRepo("coohu/test-skill".to_string())
         );
     }
 
     #[test]
     fn parse_github_source_rejects_missing_repo() {
-        let err = InstallSource::parse("github:Hmbown").unwrap_err();
+        let err = InstallSource::parse("github:coohu").unwrap_err();
         assert!(err.to_string().contains("github source must"), "got: {err}");
     }
 
     #[test]
     fn parse_github_source_rejects_extra_slashes() {
-        let err = InstallSource::parse("github:Hmbown/repo/extra").unwrap_err();
+        let err = InstallSource::parse("github:coohu/repo/extra").unwrap_err();
         assert!(err.to_string().contains("github source must"), "got: {err}");
     }
 

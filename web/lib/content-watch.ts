@@ -42,17 +42,17 @@ function dsEnv(env: WatchEnv): DeepSeekEnv {
 // Targets to probe daily. For registries that block bot HEAD/GET (npm, crates.io)
 // we hit the public JSON API instead — same upstream, doesn't 403.
 const LINK_TARGETS: { url: string; label: string }[] = [
-  { url: "https://github.com/Hmbown/deepseek-tui", label: "Main repo" },
-  { url: "https://github.com/Hmbown/deepseek-tui/issues", label: "Issues" },
-  { url: "https://github.com/Hmbown/deepseek-tui/pulls", label: "Pull Requests" },
-  { url: "https://github.com/Hmbown/deepseek-tui/discussions", label: "Discussions" },
-  { url: "https://github.com/Hmbown/deepseek-tui/releases", label: "Releases" },
-  { url: "https://github.com/Hmbown/deepseek-tui/blob/main/LICENSE", label: "License file" },
-  { url: "https://github.com/Hmbown/deepseek-tui/blob/main/CODE_OF_CONDUCT.md", label: "Code of Conduct" },
-  { url: "https://github.com/Hmbown/deepseek-tui/blob/main/SECURITY.md", label: "Security policy" },
-  { url: "https://github.com/Hmbown/deepseek-tui/blob/main/CONTRIBUTING.md", label: "Contributing guide" },
-  { url: "https://github.com/Hmbown/deepseek-tui/blob/main/.github/PULL_REQUEST_TEMPLATE.md", label: "PR template" },
-  { url: "https://github.com/Hmbown/homebrew-deepseek-tui", label: "Homebrew tap" },
+  { url: "https://github.com/coohu/deepseek-tui", label: "Main repo" },
+  { url: "https://github.com/coohu/deepseek-tui/issues", label: "Issues" },
+  { url: "https://github.com/coohu/deepseek-tui/pulls", label: "Pull Requests" },
+  { url: "https://github.com/coohu/deepseek-tui/discussions", label: "Discussions" },
+  { url: "https://github.com/coohu/deepseek-tui/releases", label: "Releases" },
+  { url: "https://github.com/coohu/deepseek-tui/blob/main/LICENSE", label: "License file" },
+  { url: "https://github.com/coohu/deepseek-tui/blob/main/CODE_OF_CONDUCT.md", label: "Code of Conduct" },
+  { url: "https://github.com/coohu/deepseek-tui/blob/main/SECURITY.md", label: "Security policy" },
+  { url: "https://github.com/coohu/deepseek-tui/blob/main/CONTRIBUTING.md", label: "Contributing guide" },
+  { url: "https://github.com/coohu/deepseek-tui/blob/main/.github/PULL_REQUEST_TEMPLATE.md", label: "PR template" },
+  { url: "https://github.com/coohu/homebrew-deepseek-tui", label: "Homebrew tap" },
   { url: "https://buymeacoffee.com/hmbown", label: "Support link (BMC)" },
   { url: "https://registry.npmjs.org/deepseek-tui", label: "npm package (registry API)" },
   // crates.io intentionally not in this list — both their HTML and JSON API return 403 to
@@ -228,8 +228,8 @@ export async function runSemanticDrift(env: WatchEnv): Promise<{ ok: boolean; dr
 
   // Fetch CHANGELOG (truncated), recent commits, and live homepage HTML.
   const [changelog, commits, homepageHtml, docsHtml] = await Promise.all([
-    fetch("https://raw.githubusercontent.com/Hmbown/deepseek-tui/main/CHANGELOG.md", { headers: ghHeaders }).then((r) => r.ok ? r.text() : "").catch(() => ""),
-    fetch("https://api.github.com/repos/Hmbown/deepseek-tui/commits?per_page=30", { headers: ghHeaders }).then((r) => r.ok ? r.json() as Promise<{ commit: { message: string }; sha: string }[]> : []).catch(() => []),
+    fetch("https://raw.githubusercontent.com/coohu/deepseek-tui/main/CHANGELOG.md", { headers: ghHeaders }).then((r) => r.ok ? r.text() : "").catch(() => ""),
+    fetch("https://api.github.com/repos/coohu/deepseek-tui/commits?per_page=30", { headers: ghHeaders }).then((r) => r.ok ? r.json() as Promise<{ commit: { message: string }; sha: string }[]> : []).catch(() => []),
     fetch("https://deepseek-tui.com/en", { headers: { "User-Agent": "deepseek-tui-watch" } }).then((r) => r.ok ? r.text() : "").catch(() => ""),
     fetch("https://deepseek-tui.com/en/docs", { headers: { "User-Agent": "deepseek-tui-watch" } }).then((r) => r.ok ? r.text() : "").catch(() => ""),
   ]);

@@ -90,7 +90,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "no target number" }, { status: 400 });
     }
 
-    const repo = env.GITHUB_REPO ?? "Hmbown/deepseek-tui";
+    const repo = env.GITHUB_REPO ?? "coohu/deepseek-tui";
     const commentUrl = `https://api.github.com/repos/${repo}/issues/${draft.targetNumber}/comments`;
 
     const ghRes = await fetch(commentUrl, {

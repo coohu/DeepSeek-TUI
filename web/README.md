@@ -1,6 +1,6 @@
 # deepseek-tui-web
 
-Community site for [deepseek-tui](https://github.com/Hmbown/deepseek-tui) — lives at **deepseek-tui.com**.
+Community site for [deepseek-tui](https://github.com/coohu/deepseek-tui) — lives at **deepseek-tui.com**.
 
 Next.js 15 (App Router) + Tailwind, deployed to Cloudflare Workers via [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare). Curated "Today's Dispatch" content is regenerated every 6 hours by a Cloudflare Cron Trigger that calls `deepseek-v4-flash` to summarise recent repo activity, and stored in Workers KV.
 
@@ -19,7 +19,7 @@ Required env (only for the curator + private-repo rate limits):
 | ------------------- | ------------------------------------------------- | -------------------- |
 | `DEEPSEEK_API_KEY`  | DeepSeek platform key (`sk-...`)                  | only for `/api/cron?task=curate` |
 | `GITHUB_TOKEN`      | Fine-grained PAT, public-repo read scope          | optional (raises rate limit) |
-| `GITHUB_REPO`       | Defaults to `Hmbown/deepseek-tui`                 | optional             |
+| `GITHUB_REPO`       | Defaults to `coohu/deepseek-tui`                 | optional             |
 | `CRON_SECRET`       | Shared secret for manual cron invocation          | optional             |
 
 The site renders fine without any of them — `Today's Dispatch` falls back to a static editorial; the GitHub feed shows "feed not yet loaded".

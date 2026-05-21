@@ -10,16 +10,16 @@ const EN_COLS = [
       { label: "Install", href: "/install" },
       { label: "Documentation", href: "/docs" },
       { label: "Roadmap", href: "/roadmap" },
-      { label: "Releases", href: "https://github.com/Hmbown/deepseek-tui/releases" },
+      { label: "Releases", href: "https://github.com/coohu/deepseek-tui/releases" },
     ],
   },
   {
     title: "Community",
     cn: "社区",
     items: [
-      { label: "Issues", href: "https://github.com/Hmbown/deepseek-tui/issues" },
-      { label: "Pull Requests", href: "https://github.com/Hmbown/deepseek-tui/pulls" },
-      { label: "Discussions", href: "https://github.com/Hmbown/deepseek-tui/discussions" },
+      { label: "Issues", href: "https://github.com/coohu/deepseek-tui/issues" },
+      { label: "Pull Requests", href: "https://github.com/coohu/deepseek-tui/pulls" },
+      { label: "Discussions", href: "https://github.com/coohu/deepseek-tui/discussions" },
       { label: "Contribute", href: "/contribute" },
       { label: "Support DeepSeek TUI", href: "https://buymeacoffee.com/hmbown" },
     ],
@@ -29,9 +29,9 @@ const EN_COLS = [
     cn: "资源",
     items: [
       { label: "Activity Feed", href: "/feed" },
-      { label: "Code of Conduct", href: "https://github.com/Hmbown/deepseek-tui/blob/main/CODE_OF_CONDUCT.md" },
-      { label: "Security", href: "https://github.com/Hmbown/deepseek-tui/blob/main/SECURITY.md" },
-      { label: "License (MIT)", href: "https://github.com/Hmbown/deepseek-tui/blob/main/LICENSE" },
+      { label: "Code of Conduct", href: "https://github.com/coohu/deepseek-tui/blob/main/CODE_OF_CONDUCT.md" },
+      { label: "Security", href: "https://github.com/coohu/deepseek-tui/blob/main/SECURITY.md" },
+      { label: "License (MIT)", href: "https://github.com/coohu/deepseek-tui/blob/main/LICENSE" },
     ],
   },
 ];
@@ -43,15 +43,15 @@ const ZH_COLS = [
       { label: "安装指南", href: "/zh/install" },
       { label: "使用文档", href: "/zh/docs" },
       { label: "路线图", href: "/zh/roadmap" },
-      { label: "版本发布", href: "https://github.com/Hmbown/deepseek-tui/releases" },
+      { label: "版本发布", href: "https://github.com/coohu/deepseek-tui/releases" },
     ],
   },
   {
     title: "社区",
     items: [
-      { label: "议题", href: "https://github.com/Hmbown/deepseek-tui/issues" },
-      { label: "合并请求", href: "https://github.com/Hmbown/deepseek-tui/pulls" },
-      { label: "讨论区", href: "https://github.com/Hmbown/deepseek-tui/discussions" },
+      { label: "议题", href: "https://github.com/coohu/deepseek-tui/issues" },
+      { label: "合并请求", href: "https://github.com/coohu/deepseek-tui/pulls" },
+      { label: "讨论区", href: "https://github.com/coohu/deepseek-tui/discussions" },
       { label: "参与贡献", href: "/zh/contribute" },
       { label: "支持 DeepSeek TUI", href: "https://buymeacoffee.com/hmbown" },
     ],
@@ -60,9 +60,9 @@ const ZH_COLS = [
     title: "资源",
     items: [
       { label: "活动动态", href: "/zh/feed" },
-      { label: "行为准则", href: "https://github.com/Hmbown/deepseek-tui/blob/main/CODE_OF_CONDUCT.md" },
-      { label: "安全策略", href: "https://github.com/Hmbown/deepseek-tui/blob/main/SECURITY.md" },
-      { label: "MIT 许可证", href: "https://github.com/Hmbown/deepseek-tui/blob/main/LICENSE" },
+      { label: "行为准则", href: "https://github.com/coohu/deepseek-tui/blob/main/CODE_OF_CONDUCT.md" },
+      { label: "安全策略", href: "https://github.com/coohu/deepseek-tui/blob/main/SECURITY.md" },
+      { label: "MIT 许可证", href: "https://github.com/coohu/deepseek-tui/blob/main/LICENSE" },
     ],
   },
 ];
@@ -97,7 +97,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
             <div className="pt-2 border-t border-paper-line/20">
               <div className="eyebrow mb-2 text-ink-mute">镜像源 / Mirror</div>
               <div className="flex flex-wrap gap-3 text-xs">
-                {GITEE_ENABLED && <a href="https://gitee.com/Hmbown/deepseek-tui" className="text-indigo hover:underline" target="_blank" rel="noopener">Gitee 镜像</a>}
+                {GITEE_ENABLED && <a href="https://gitee.com/coohu/deepseek-tui" className="text-indigo hover:underline" target="_blank" rel="noopener">Gitee 镜像</a>}
                 <a href="https://cnb.cool/deepseek-tui.com/DeepSeek-TUI" className="text-indigo hover:underline" target="_blank" rel="noopener">CNB 镜像</a>
                 <a href="https://npmmirror.com/package/deepseek-tui" className="text-indigo hover:underline" target="_blank" rel="noopener">npmmirror</a>
                 <a href="https://mirrors.tuna.tsinghua.edu.cn/help/crates.io-index.html" className="text-indigo hover:underline" target="_blank" rel="noopener">Tuna crates.io</a>
@@ -132,7 +132,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
             <a href="mailto:security@deepseek-tui.com" className="font-mono text-ink hover:text-indigo">security@deepseek-tui.com</a>
           </div>
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 font-mono text-[0.7rem] text-ink-mute uppercase tracking-widest">
-            <span>© {new Date().getFullYear()} · DeepSeek TUI · Hmbown</span>
+            <span>© {new Date().getFullYear()} · DeepSeek TUI · coohu</span>
             <span className="font-cjk normal-case tracking-normal">
               {isZh ? "本网站由 DeepSeek V4-Flash 协助维护" : "本网站由 DeepSeek V4-Flash 协同维护"}
             </span>

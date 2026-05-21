@@ -1562,7 +1562,7 @@ The `deepseek` dispatcher delegates interactive sessions to a sibling \
   • npm:    npm install -g deepseek-tui            (downloads both binaries)\n\
   • cargo:  cargo install deepseek-tui-cli deepseek-tui --locked\n\
   • GitHub Releases: download BOTH `deepseek-<platform>` AND \
-`deepseek-tui-<platform>` from https://github.com/Hmbown/DeepSeek-TUI/releases/latest \
+`deepseek-tui-<platform>` from https://github.com/coohu/DeepSeek-TUI/releases/latest \
 and place them in the same directory.\n\
 \n\
 Or set DEEPSEEK_TUI_BIN to the absolute path of an existing `deepseek-tui` binary.",

@@ -1280,7 +1280,7 @@ mod tests {
 
     #[test]
     fn wrapped_osc_8_url_chunks_keep_full_link_target() {
-        let url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json";
+        let url = "https://raw.githubusercontent.com/coohu/deepseek-skills/main/index.json";
         let joined = render_with_osc8_width(true, url, 34);
         let full_target = format!("\x1b]8;;{url}\x1b\\");
 
@@ -1290,7 +1290,7 @@ mod tests {
         );
         assert!(
             !joined.contains(
-                "\x1b]8;;https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/inde\x1b\\"
+                "\x1b]8;;https://raw.githubusercontent.com/coohu/deepseek-skills/main/inde\x1b\\"
             ),
             "wrapped link must not expose a truncated OSC 8 target: {joined:?}"
         );

@@ -74,12 +74,12 @@ function buildFromSourceHint() {
     "",
     "Or build from a checkout:",
     "",
-    "  git clone https://github.com/Hmbown/DeepSeek-TUI.git",
+    "  git clone https://github.com/coohu/DeepSeek-TUI.git",
     "  cd DeepSeek-TUI",
     "  cargo install --path crates/cli --locked",
     "  cargo install --path crates/tui --locked",
     "",
-    "See https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/INSTALL.md",
+    "See https://github.com/coohu/DeepSeek-TUI/blob/main/docs/INSTALL.md",
   ].join("\n");
 }
 

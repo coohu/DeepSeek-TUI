@@ -1552,7 +1552,7 @@ fn active_tool_status_label_strips_shell_wrappers_from_ci_polling() {
     active.push_tool(
         "exec-1",
         HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cd /tmp/repo && sleep 15 && gh pr checks 1611 --repo Hmbown/DeepSeek-TUI"
+            command: "cd /tmp/repo && sleep 15 && gh pr checks 1611 --repo coohu/DeepSeek-TUI"
                 .to_string(),
             status: ToolStatus::Running,
             output: None,

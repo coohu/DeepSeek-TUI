@@ -99,7 +99,7 @@ Use an SSH repo URL instead if you want push access from the VPS. If the CNB
 mirror is unavailable, fall back to:
 
 ```bash
-export DEEPSEEK_REPO_URL=https://github.com/Hmbown/DeepSeek-TUI.git
+export DEEPSEEK_REPO_URL=https://github.com/coohu/DeepSeek-TUI.git
 ```
 
 For stable release docs, confirm the CNB mirror has the branch or tag before

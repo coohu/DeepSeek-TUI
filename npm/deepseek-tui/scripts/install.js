@@ -88,7 +88,7 @@ function resolvePackageVersion() {
 }
 
 function resolveRepo() {
-  return process.env.DEEPSEEK_TUI_GITHUB_REPO || process.env.DEEPSEEK_GITHUB_REPO || "Hmbown/DeepSeek-TUI";
+  return process.env.DEEPSEEK_TUI_GITHUB_REPO || process.env.DEEPSEEK_GITHUB_REPO || "coohu/DeepSeek-TUI";
 }
 
 function isOptionalInstall(argv = process.argv.slice(2), env = process.env) {

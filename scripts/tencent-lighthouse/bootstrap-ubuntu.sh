@@ -9,7 +9,7 @@ fi
 DEEPSEEK_USER="${DEEPSEEK_USER:-deepseek}"
 DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-/opt/deepseek}"
 WHALEBRO_ROOT="${WHALEBRO_ROOT:-/opt/whalebro}"
-REPO_URL="${DEEPSEEK_REPO_URL:-https://github.com/Hmbown/DeepSeek-TUI.git}"
+REPO_URL="${DEEPSEEK_REPO_URL:-https://github.com/coohu/DeepSeek-TUI.git}"
 WHALEBRO_EXTRA_REPOS="${WHALEBRO_EXTRA_REPOS:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"

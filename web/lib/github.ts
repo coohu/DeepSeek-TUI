@@ -1,6 +1,6 @@
 import type { FeedItem, RepoStats } from "./types";
 
-const REPO = process.env.GITHUB_REPO ?? "Hmbown/deepseek-tui";
+const REPO = process.env.GITHUB_REPO ?? "coohu/deepseek-tui";
 const GH = "https://api.github.com";
 const MIN_KNOWN_CONTRIBUTORS = 91;
 

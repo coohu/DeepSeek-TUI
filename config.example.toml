@@ -283,7 +283,7 @@ max_subagents = 10 # optional (1-20)
 # be asked once and can persist) before running it.
 #
 # [skills]
-# registry_url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json"
+# registry_url = "https://raw.githubusercontent.com/coohu/deepseek-skills/main/index.json"
 # max_install_size_bytes = 5_242_880
 
 # ─────────────────────────────────────────────────────────────────────────────────

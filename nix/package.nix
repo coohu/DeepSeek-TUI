@@ -61,7 +61,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   meta = {
     description = "Coding agent for DeepSeek models that runs in your terminal";
-    homepage = "https://github.com/Hmbown/DeepSeek-TUI";
+    homepage = "https://github.com/coohu/DeepSeek-TUI";
     license = lib.licenses.mit;
     mainProgram = "deepseek";
   };

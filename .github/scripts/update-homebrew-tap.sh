@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update the Homebrew tap at Hmbown/homebrew-deepseek-tui after a release.
+# Update the Homebrew tap at coohu/homebrew-deepseek-tui after a release.
 #
 # Expected environment:
 #   TAG       – git tag, e.g. "v0.8.31"
@@ -51,12 +51,12 @@ trap 'rm -rf "${TAP_DIR}" "${FORMULA_FILE}"' EXIT
 
 # --- generate formula --------------------------------------------------
 
-readonly BASE_URL="https://github.com/Hmbown/DeepSeek-TUI/releases/download/${TAG}"
+readonly BASE_URL="https://github.com/coohu/DeepSeek-TUI/releases/download/${TAG}"
 
 cat > "${FORMULA_FILE}" << EOF
 class DeepseekTui < Formula
   desc "Terminal-native coding agent for DeepSeek V4"
-  homepage "https://github.com/Hmbown/DeepSeek-TUI"
+  homepage "https://github.com/coohu/DeepSeek-TUI"
   version "${VERSION}"
   license "MIT"
 

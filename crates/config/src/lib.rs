@@ -61,6 +61,7 @@ pub enum ProviderKind {
     Sglang,
     Vllm,
     Ollama,
+    #[serde(alias = "shengsuanyun")]
     ShengSuanYun,
 }
 
@@ -954,9 +955,7 @@ impl ConfigToml {
         let root_deepseek_base_url = (provider == ProviderKind::Deepseek)
             .then(|| self.base_url.clone())
             .flatten();
-        let root_deepseek_model = (provider == ProviderKind::Deepseek)
-            .then(|| self.default_text_model.clone())
-            .flatten();
+        let root_deepseek_model = self.default_text_model.clone();
         let base_url = cli
             .base_url
             .clone()

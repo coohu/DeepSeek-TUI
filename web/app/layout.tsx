@@ -35,7 +35,7 @@ const cjk = Noto_Serif_SC({
 export const metadata: Metadata = {
   title: "DeepSeek TUI · 深度求索 终端",
   description:
-    "Terminal-native coding agent built on DeepSeek V4. Open source. Community site for installation, docs, roadmap, and live activity from the Hmbown/deepseek-tui repo.",
+    "Terminal-native coding agent built on DeepSeek V4. Open source. Community site for installation, docs, roadmap, and live activity from the coohu/deepseek-tui repo.",
   metadataBase: new URL("https://deepseek-tui.com"),
   openGraph: {
     title: "DeepSeek TUI",

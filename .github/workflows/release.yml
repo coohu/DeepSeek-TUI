@@ -331,7 +331,7 @@ jobs:
 
             ## Changelog
 
-            See [CHANGELOG.md](https://github.com/Hmbown/DeepSeek-TUI/blob/main/CHANGELOG.md) for the full notes for this release.
+            See [CHANGELOG.md](https://github.com/coohu/DeepSeek-TUI/blob/main/CHANGELOG.md) for the full notes for this release.
 
   homebrew:
     needs: [release, resolve]
@@ -371,7 +371,7 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
           MANIFEST: /tmp/deepseek-artifacts-sha256.txt
-          TAP_REPO: Hmbown/homebrew-deepseek-tui
+          TAP_REPO: coohu/homebrew-deepseek-tui
           TOKEN: ${{ secrets.HOMEBREW_TAP_PAT || secrets.RELEASE_TAG_PAT }}
         run: bash .github/scripts/update-homebrew-tap.sh
 

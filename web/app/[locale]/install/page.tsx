@@ -36,10 +36,10 @@ const TUNA_INSTALL = `cargo install deepseek-tui-cli --locked`;
 const NPMMIRROR = `npm config set registry https://registry.npmmirror.com
 npm install -g deepseek-tui`;
 
-const BREW = `brew tap Hmbown/deepseek-tui
+const BREW = `brew tap coohu/deepseek-tui
 brew install deepseek-tui`;
 
-const DOCKER = `git clone https://github.com/Hmbown/deepseek-tui
+const DOCKER = `git clone https://github.com/coohu/deepseek-tui
 cd deepseek-tui
 docker build -t deepseek-tui .
 
@@ -49,7 +49,7 @@ docker run --rm -it \\
   -v "$PWD:/work" -w /work \\
   deepseek-tui`;
 
-const FROM_SOURCE = `git clone https://github.com/Hmbown/deepseek-tui
+const FROM_SOURCE = `git clone https://github.com/coohu/deepseek-tui
 cd deepseek-tui
 cargo build --release --locked
 
@@ -324,14 +324,14 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                 {isZh ? (
                   <>
                     npm 包装器仍会从{" "}
-                    <code className="inline">github.com/Hmbown/deepseek-tui/releases</code>{" "}
+                    <code className="inline">github.com/coohu/deepseek-tui/releases</code>{" "}
                     下载二进制，国内可能较慢。Cargo + Tuna 完全绕开 GitHub。
                     DeepSeek API（<code className="inline">api.deepseek.com</code>）在国内直连，无需代理。
                   </>
                 ) : (
                   <>
                     The npm wrapper still downloads the binary from{" "}
-                    <code className="inline">github.com/Hmbown/deepseek-tui/releases</code>, which can
+                    <code className="inline">github.com/coohu/deepseek-tui/releases</code>, which can
                     be slow over GFW. Cargo + Tuna routes around GitHub entirely. The DeepSeek API
                     at <code className="inline">api.deepseek.com</code> is reachable from mainland
                     China without a proxy.

@@ -7,21 +7,21 @@ type Arch = "macos-arm64" | "macos-x64" | "linux-x64" | "linux-arm64" | "windows
 
 const SNIPPETS: Record<Arch, string> = {
   "macos-arm64": `curl -fsSL -o deepseek \\
-  https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-macos-arm64
+  https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-macos-arm64
 chmod +x deepseek
 xattr -d com.apple.quarantine deepseek 2>/dev/null || true
 sudo mv deepseek /usr/local/bin/`,
   "macos-x64": `curl -fsSL -o deepseek \\
-  https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-macos-x64
+  https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-macos-x64
 chmod +x deepseek
 xattr -d com.apple.quarantine deepseek 2>/dev/null || true
 sudo mv deepseek /usr/local/bin/`,
   "linux-x64": `curl -fsSL -o deepseek \\
-  https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-linux-x64
+  https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-linux-x64
 chmod +x deepseek
 sudo mv deepseek /usr/local/bin/`,
   "linux-arm64": `curl -fsSL -o deepseek \\
-  https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-linux-arm64
+  https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-linux-arm64
 chmod +x deepseek
 sudo mv deepseek /usr/local/bin/`,
   "windows-x64": `# PowerShell
@@ -30,20 +30,20 @@ $dest = "$Env:USERPROFILE\\bin"
 New-Item -ItemType Directory -Force $dest | Out-Null
 
 Invoke-WebRequest \`
-  -Uri https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-windows-x64.exe \`
+  -Uri https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-windows-x64.exe \`
   -OutFile "$dest\\deepseek.exe"
 
 $Env:Path = "$dest;$Env:Path"`,
 };
 
 const VERIFY: Record<Arch, string> = {
-  "macos-arm64": `curl -fsSL -O https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
+  "macos-arm64": `curl -fsSL -O https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
 shasum -a 256 -c deepseek-artifacts-sha256.txt --ignore-missing`,
-  "macos-x64": `curl -fsSL -O https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
+  "macos-x64": `curl -fsSL -O https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
 shasum -a 256 -c deepseek-artifacts-sha256.txt --ignore-missing`,
-  "linux-x64": `curl -fsSL -O https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
+  "linux-x64": `curl -fsSL -O https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
 sha256sum -c deepseek-artifacts-sha256.txt --ignore-missing`,
-  "linux-arm64": `curl -fsSL -O https://github.com/Hmbown/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
+  "linux-arm64": `curl -fsSL -O https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
 sha256sum -c deepseek-artifacts-sha256.txt --ignore-missing`,
   "windows-x64": `# PowerShell
 Get-FileHash "$Env:USERPROFILE\\bin\\deepseek.exe" -Algorithm SHA256`,

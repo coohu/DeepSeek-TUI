@@ -16,20 +16,20 @@ agent runtime itself.
 ```bash
 # 1. npm — easiest if you already use Node. The package downloads the
 #    matching prebuilt Rust binaries from GitHub Releases.
-npm install -g deepseek-tui
+npm install -g @coohu/deepseek-tui
 
 # 2. Cargo — no Node needed. Requires Rust 1.88+ (the crates use the
 #    2024 edition; older toolchains fail with "feature `edition2024` is
 #    required"). Run `rustup update` first, or use a non-Cargo path below.
-cargo install deepseek-tui-cli --locked   # `deepseek` (entry point)
-cargo install deepseek-tui     --locked   # `deepseek-tui` (TUI binary)
+cargo install d-@coohu/eepseek-tui-cli --locked   # `deepseek` (entry point)
+cargo install @coohu/deepseek-tui     --locked   # `deepseek-tui` (TUI binary)
 
 # 3. Homebrew — macOS package manager.
-brew tap Hmbown/deepseek-tui
+brew tap coohu/deepseek-tui
 brew install deepseek-tui
 
 # 4. Direct download — no package manager or toolchain.
-#    https://github.com/Hmbown/DeepSeek-TUI/releases
+#    https://github.com/coohu/DeepSeek-TUI/releases
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 
 # 5. Docker — prebuilt release image.
@@ -47,7 +47,7 @@ docker run --rm -it \
 > [Cargo mirror](#china--mirror-friendly-installation) below.
 >
 > Download safety: official release binaries live under
-> `https://github.com/Hmbown/DeepSeek-TUI/releases`. For manual downloads,
+> `https://github.com/coohu/DeepSeek-TUI/releases`. For manual downloads,
 > verify the SHA-256 manifest and avoid look-alike repositories or search-result
 > mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
 
@@ -55,16 +55,16 @@ Already installed? Use the updater that matches the install path:
 
 ```bash
 deepseek update                         # release-binary updater
-npm install -g deepseek-tui@latest      # npm wrapper
-brew update && brew upgrade deepseek-tui
-cargo install deepseek-tui-cli --locked --force
-cargo install deepseek-tui     --locked --force
+npm install -g -g @coohu/deepseek-tui@latest      # npm wrapper
+brew update && brew upgrade -g @coohu/deepseek-tui
+cargo install -g @coohu/deepseek-tui-cli --locked --force
+cargo install -g @coohu/deepseek-tui     --locked --force
 ```
 
-[![CI](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/DeepSeek-TUI/actions/workflows/ci.yml)
+[![CI](https://github.com/coohu/DeepSeek-TUI/actions/workflows/ci.yml/badge.svg)](https://github.com/coohu/DeepSeek-TUI/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/deepseek-tui)](https://www.npmjs.com/package/deepseek-tui)
 [![crates.io](https://img.shields.io/crates/v/deepseek-tui-cli?label=crates.io)](https://crates.io/crates/deepseek-tui-cli)
-[DeepWiki project index](https://deepwiki.com/Hmbown/DeepSeek-TUI)
+[DeepWiki project index](https://deepwiki.com/coohu/DeepSeek-TUI)
 
 ![DeepSeek TUI screenshot](assets/screenshot.png)
 
@@ -181,7 +181,7 @@ Use a fixed model or fixed thinking level when you want repeatable benchmarking,
 
 ### Linux ARM64 (Raspberry Pi, Asahi, Graviton, HarmonyOS PC)
 
-`npm i -g deepseek-tui` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/Hmbown/DeepSeek-TUI/releases) and place them side by side on your `PATH`.
+`npm i -g deepseek-tui` works on glibc-based ARM64 Linux from v0.8.8 onward. You can also download prebuilt binaries from the [Releases page](https://github.com/coohu/DeepSeek-TUI/releases) and place them side by side on your `PATH`.
 
 ### China / Mirror-friendly Installation
 
@@ -204,7 +204,7 @@ cargo install deepseek-tui     --locked   # provides `deepseek-tui`
 deepseek --version
 ```
 
-Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
+Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/coohu/DeepSeek-TUI/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
 
 ### Windows (Scoop)
 
@@ -233,7 +233,7 @@ Works on any Tier-1 Rust target — including musl, riscv64, FreeBSD, and older 
 #   sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 #   sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
 
-git clone https://github.com/Hmbown/DeepSeek-TUI.git
+git clone https://github.com/coohu/DeepSeek-TUI.git
 cd DeepSeek-TUI
 
 cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `deepseek`
@@ -572,7 +572,7 @@ This project ships with help from a growing community of contributors:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/Hmbown/DeepSeek-TUI/issues) for good first contributions.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Pull requests welcome — check the [open issues](https://github.com/coohu/DeepSeek-TUI/issues) for good first contributions.
 
 Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
@@ -585,4 +585,4 @@ Support: [Buy me a coffee](https://www.buymeacoffee.com/hmbown).
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/DeepSeek-TUI&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FDeepSeek-TUI&type=date&logscale=&legend=top-left)
+[![Star History Chart](https://api.star-history.com/chart?repos=coohu/DeepSeek-TUI&type=date&legend=top-left)](https://www.star-history.com/?repos=coohu%2FDeepSeek-TUI&type=date&logscale=&legend=top-left)

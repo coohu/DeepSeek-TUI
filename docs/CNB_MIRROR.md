@@ -56,7 +56,7 @@ git ls-remote https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git \
     refs/tags/vX.Y.Z
 
 # Quick check: is CNB's main at the same commit as origin/main?
-gh_main=$(git ls-remote https://github.com/Hmbown/DeepSeek-TUI.git refs/heads/main | awk '{print $1}')
+gh_main=$(git ls-remote https://github.com/coohu/DeepSeek-TUI.git refs/heads/main | awk '{print $1}')
 cnb_main=$(git ls-remote https://cnb.cool/deepseek-tui.com/DeepSeek-TUI.git refs/heads/main | awk '{print $1}')
 test "$gh_main" = "$cnb_main" && echo "in sync" || echo "DIVERGED: gh=$gh_main cnb=$cnb_main"
 ```
@@ -64,7 +64,7 @@ test "$gh_main" = "$cnb_main" && echo "in sync" || echo "DIVERGED: gh=$gh_main c
 Or check the workflow run directly:
 
 ```bash
-gh run list --workflow=sync-cnb.yml --repo Hmbown/DeepSeek-TUI --limit 5
+gh run list --workflow=sync-cnb.yml --repo coohu/DeepSeek-TUI --limit 5
 ```
 
 If the most recent run for the release tag is `success`, the mirror
@@ -111,7 +111,7 @@ If the workflow is healthy but happened to fail on the release run
 without pushing anything:
 
 ```bash
-gh workflow run sync-cnb.yml --repo Hmbown/DeepSeek-TUI
+gh workflow run sync-cnb.yml --repo coohu/DeepSeek-TUI
 ```
 
 `workflow_dispatch` runs against the workflow's default branch
@@ -127,11 +127,11 @@ expired:
    with `repo` (push) scope.
 2. Update the `CNB_GIT_TOKEN` repository secret:
    ```bash
-   gh secret set CNB_GIT_TOKEN --repo Hmbown/DeepSeek-TUI
+   gh secret set CNB_GIT_TOKEN --repo coohu/DeepSeek-TUI
    ```
 3. Re-trigger the workflow on a recent commit:
    ```bash
-   gh workflow run sync-cnb.yml --repo Hmbown/DeepSeek-TUI
+   gh workflow run sync-cnb.yml --repo coohu/DeepSeek-TUI
    ```
 4. Confirm the run succeeds via `gh run list --workflow=sync-cnb.yml`.
 

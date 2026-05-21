@@ -73,7 +73,7 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
         <div className="flex items-center gap-2 sm:gap-3">
           <LocaleSwitcher current={locale} />
           <Link
-            href="https://github.com/Hmbown/deepseek-tui"
+            href="https://github.com/coohu/deepseek-tui"
             className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 hairline-t hairline-b hairline-l hairline-r font-mono text-[0.7rem] uppercase tracking-wider hover:bg-paper-deep transition-colors"
           >
             <span>★ GitHub</span>

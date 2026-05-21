@@ -34,7 +34,7 @@ docker run --rm -it \
 ```
 
 Replace `vX.Y.Z` with a tag from
-[GitHub Releases](https://github.com/Hmbown/DeepSeek-TUI/releases).
+[GitHub Releases](https://github.com/coohu/DeepSeek-TUI/releases).
 
 ## Local build
 
