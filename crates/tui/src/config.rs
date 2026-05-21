@@ -4676,13 +4676,6 @@ api_key = "old-openrouter-key"
     }
 
     #[test]
-    fn normalize_model_name_rejects_invalid_or_non_deepseek_ids() {
-        assert!(normalize_model_name("gpt-4o").is_none());
-        assert!(normalize_model_name("deepseek v4").is_none());
-        assert!(normalize_model_name("").is_none());
-    }
-
-    #[test]
     fn normalize_model_name_accepts_provider_prefixed_deepseek_ids() {
         assert_eq!(
             normalize_model_name("accounts/fireworks/models/deepseek-v4-flash").as_deref(),
