@@ -5,16 +5,16 @@ Install and run the `deepseek` and `deepseek-tui` binaries from GitHub release a
 ## Install
 
 ```bash
-npm install -g deepseek-tui
+npm install -g @coohu/deepseek-tui
 # or
-pnpm add -g deepseek-tui
+pnpm add -g @coohu/deepseek-tui
 ```
 
 For project-local usage:
 
 ```bash
-npm install deepseek-tui
-npx deepseek-tui --help
+npm install @coohu/deepseek-tui
+npx @coohu/deepseek-tui --help
 ```
 
 `postinstall` tries to download platform binaries into `bin/downloads/` and

@@ -279,7 +279,7 @@ jobs:
             ### Recommended — npm (one command, both binaries)
 
             ```bash
-            npm install -g deepseek-tui
+            npm install -g @coohu/deepseek-tui
             ```
 
             The wrapper downloads both binaries from this Release and places them in the same directory.
@@ -356,7 +356,7 @@ jobs:
       - uses: actions/checkout@v4
         if: steps.homebrew-token.outputs.available == 'true'
         with:
-          ref: main
+          ref: pub
       - name: Download checksum manifest
         if: steps.homebrew-token.outputs.available == 'true'
         env:

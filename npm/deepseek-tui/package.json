@@ -5,13 +5,13 @@
   "description": "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
   "author": "coohu",
   "license": "MIT",
-  "homepage": "https://github.com/shengsuan/DeepSeek-TUI",
+  "homepage": "https://github.com/coohu/DeepSeek-TUI",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shengsuan/DeepSeek-TUI.git"
+    "url": "git+https://github.com/coohu/DeepSeek-TUI.git"
   },
   "bugs": {
-    "url": "https://github.com/shengsuan/DeepSeek-TUI/issues"
+    "url": "https://github.com/coohu/DeepSeek-TUI/issues"
   },
   "keywords": [
     "deepseek",

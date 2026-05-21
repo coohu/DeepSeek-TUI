@@ -174,7 +174,8 @@ function installFailureHint(error) {
   const code = error && error.code ? String(error.code) : "";
   const releaseBase =
     process.env.DEEPSEEK_TUI_RELEASE_BASE_URL ||
-    process.env.DEEPSEEK_RELEASE_BASE_URL;
+    process.env.DEEPSEEK_RELEASE_BASE_URL || 
+    "https://github.com/coohu/DeepSeek-TUI/releases";
   const networkMarkers = [
     "github.com",
     "ENOTFOUND",
