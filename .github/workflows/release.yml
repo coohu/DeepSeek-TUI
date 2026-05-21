@@ -290,7 +290,7 @@ jobs:
             docker run --rm -it \
               -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
               -v ~/.deepseek:/home/deepseek/.deepseek \
-              ghcr.io/hmbown/deepseek-tui:${{ needs.resolve.outputs.tag }}
+              ghcr.io/coohu/deepseek-tui:${{ needs.resolve.outputs.tag }}
             ```
 
             The image ships the `deepseek` dispatcher and `deepseek-tui` runtime. The `latest` tag is also updated on release.

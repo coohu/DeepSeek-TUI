@@ -2207,6 +2207,10 @@ async fn run_event_loop(
                         let _ = engine_handle.send(Op::Shutdown).await;
                         return Ok(());
                     }
+                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKeyProviderSelect => {
+                        let _ = engine_handle.send(Op::Shutdown).await;
+                        return Ok(());
+                    }
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
                         app.onboarding = OnboardingState::ApiKeyProviderSelect;
                         app.api_key_input.clear();
