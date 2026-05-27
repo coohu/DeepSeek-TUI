@@ -1655,10 +1655,10 @@ async fn run_event_loop(
                             let api_key = config.deepseek_api_key().unwrap_or_default();
                             if !api_key.is_empty() {
                                 tokio::spawn(async move {
-                                    if let Some(info) = fetch_deepseek_balance(&api_key).await {
-                                        if let Ok(mut guard) = cell.lock() {
-                                            *guard = Some(info);
-                                        }
+                                    if let Some(info) = fetch_deepseek_balance(&api_key).await
+                                        && let Ok(mut guard) = cell.lock()
+                                    {
+                                        *guard = Some(info);
                                     }
                                 });
                             }

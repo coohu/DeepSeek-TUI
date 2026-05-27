@@ -278,11 +278,8 @@ pub enum StatusItemValue {
     GitBranch,
     LastToolElapsed,
     RateLimit,
-<<<<<<< HEAD
     Tokens,
-=======
     Balance,
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
 }
 
 pub fn parse_mode(arg: Option<&str>) -> Result<ConfigUiMode, String> {
@@ -1005,11 +1002,8 @@ impl From<StatusItem> for StatusItemValue {
             StatusItem::GitBranch => Self::GitBranch,
             StatusItem::LastToolElapsed => Self::LastToolElapsed,
             StatusItem::RateLimit => Self::RateLimit,
-<<<<<<< HEAD
             StatusItem::Tokens => Self::Tokens,
-=======
             StatusItem::Balance => Self::Balance,
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 }
@@ -1030,11 +1024,8 @@ impl From<StatusItemValue> for StatusItem {
             StatusItemValue::GitBranch => Self::GitBranch,
             StatusItemValue::LastToolElapsed => Self::LastToolElapsed,
             StatusItemValue::RateLimit => Self::RateLimit,
-<<<<<<< HEAD
             StatusItemValue::Tokens => Self::Tokens,
-=======
             StatusItemValue::Balance => Self::Balance,
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
         }
     }
 }

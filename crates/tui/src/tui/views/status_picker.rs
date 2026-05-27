@@ -248,19 +248,12 @@ impl ModalView for StatusPickerView {
         )));
         lines.push(Line::from(""));
 
-<<<<<<< HEAD
-        for (idx, item) in self.rows.iter().enumerate() {
-            let checked = *self.selected.get(idx).unwrap_or(&false);
-            let is_cursor = idx == self.cursor;
-            let mark = if checked { "[✓]" } else { "[ ]" };
-=======
         let end = (offset + visible).min(self.rows.len());
         for (idx, item) in self.rows[offset..end].iter().enumerate() {
             let real_idx = offset + idx;
             let checked = *self.selected.get(real_idx).unwrap_or(&false);
             let is_cursor = real_idx == self.cursor;
             let mark = if checked { "[x]" } else { "[ ]" };
->>>>>>> 4bc823e6 (feat: add account balance status bar item)
 
             let row_style = if is_cursor {
                 Style::default()
