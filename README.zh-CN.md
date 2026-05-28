@@ -35,7 +35,7 @@ docker run --rm -it \
   -v deepseek-tui-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/deepseek-tui:latest
+  ghcr.io/coohu/deepseek-tui:latest
 ```
 
 > 中国大陆访问较慢时，npm 可加 `--registry=https://registry.npmmirror.com`，
