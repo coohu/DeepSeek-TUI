@@ -132,6 +132,11 @@ pub struct SessionMetadata {
     /// current saved sessions are linear JSON files, not per-entry trees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from_message_count: Option<usize>,
+    /// Cumulative turn duration in seconds (sum of completed turn elapsed
+    /// times). Persisted so the footer "worked" chip survives restarts
+    /// (#2038).
+    #[serde(default)]
+    pub cumulative_turn_secs: u64,
 }
 
 /// Cost and high-water-mark fields persisted with each session.
@@ -242,16 +247,24 @@ impl SessionManager {
         Ok(Self { sessions_dir })
     }
 
-    /// Create a `SessionManager` using the default location (~/.deepseek/sessions)
+    /// Create a `SessionManager` using the default location.
     pub fn default_location() -> std::io::Result<Self> {
         Self::new(default_sessions_dir()?)
+    }
+
+    /// Return the resolved sessions directory path.
+    pub fn sessions_dir(&self) -> &Path {
+        &self.sessions_dir
     }
 
     /// Save a session to disk using atomic write (temp file + fsync + rename).
     pub fn save_session(&self, session: &SavedSession) -> std::io::Result<PathBuf> {
         let path = self.validated_session_path(&session.metadata.id)?;
 
-        let content = serde_json::to_string_pretty(session)
+        let mut persisted = session.clone();
+        compact_session_tool_outputs(&mut persisted);
+
+        let content = serde_json::to_string_pretty(&persisted)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         // Atomic write via write_atomic (NamedTempFile + fsync + persist)
@@ -268,7 +281,9 @@ impl SessionManager {
         let checkpoints = self.sessions_dir.join("checkpoints");
         fs::create_dir_all(&checkpoints)?;
         let path = checkpoints.join("latest.json");
-        let content = serde_json::to_string_pretty(session)
+        let mut persisted = session.clone();
+        compact_session_tool_outputs(&mut persisted);
+        let content = serde_json::to_string_pretty(&persisted)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         write_atomic(&path, content.as_bytes())?;
         Ok(path)
@@ -281,7 +296,7 @@ impl SessionManager {
             return Ok(None);
         }
         let content = fs::read_to_string(&path)?;
-        let session: SavedSession = serde_json::from_str(&content)
+        let mut session: SavedSession = serde_json::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
             return Err(std::io::Error::new(
@@ -292,6 +307,7 @@ impl SessionManager {
                 ),
             ));
         }
+        compact_session_tool_outputs(&mut session);
         Ok(Some(session))
     }
 
@@ -362,7 +378,7 @@ impl SessionManager {
         let path = self.validated_session_path(id)?;
 
         let content = fs::read_to_string(&path)?;
-        let session: SavedSession = serde_json::from_str(&content)
+        let mut session: SavedSession = serde_json::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if session.schema_version > CURRENT_SESSION_SCHEMA_VERSION {
             return Err(std::io::Error::new(
@@ -374,6 +390,7 @@ impl SessionManager {
             ));
         }
 
+        compact_session_tool_outputs(&mut session);
         Ok(session)
     }
 
@@ -478,8 +495,8 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Clean up old sessions to stay within `MAX_SESSIONS` limit
-    fn cleanup_old_sessions(&self) -> std::io::Result<()> {
+    /// Clean up old sessions to stay within `MAX_SESSIONS` limit.
+    pub fn cleanup_old_sessions(&self) -> std::io::Result<()> {
         let sessions = self.list_sessions()?;
 
         if sessions.len() > MAX_SESSIONS {
@@ -607,12 +624,13 @@ fn is_git_metadata_entry(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Resolve the default session directory path (`~/.deepseek/sessions`).
+/// Resolve the default session directory path.
+///
+/// v0.8.44: prefers `~/.codewhale/sessions`, falls back to
+/// `~/.deepseek/sessions` for existing installs.
 pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found")
-    })?;
-    Ok(home.join(".deepseek").join("sessions"))
+    codewhale_config::resolve_state_dir("sessions")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
 }
 
 /// Prune snapshots older than `max_age` for `workspace`.
@@ -717,6 +735,7 @@ pub fn create_saved_session_with_id_and_mode(
             cost: SessionCostSnapshot::default(),
             parent_session_id: None,
             forked_from_message_count: None,
+            cumulative_turn_secs: 0,
         },
         messages: capped_messages,
         system_prompt: merge_truncation_note(
@@ -746,6 +765,17 @@ pub fn update_session(
         truncation_note,
     );
     session
+}
+
+pub(crate) fn compact_session_tool_outputs(
+    session: &mut SavedSession,
+) -> crate::tool_output_receipts::ToolOutputReceiptStats {
+    let (messages, stats) = crate::tool_output_receipts::compact_messages_for_persistence(
+        &session.messages,
+        &session.artifacts,
+    );
+    session.messages = messages;
+    stats
 }
 
 /// Cap messages to [`MAX_PERSISTED_MESSAGES`], keeping the most recent.
@@ -1039,6 +1069,7 @@ mod tests {
                 cost: SessionCostSnapshot::default(),
                 parent_session_id: None,
                 forked_from_message_count: None,
+                cumulative_turn_secs: 0,
             },
             system_prompt: None,
             context_references: Vec::new(),
@@ -1069,6 +1100,7 @@ mod tests {
                 cost: SessionCostSnapshot::default(),
                 parent_session_id: None,
                 forked_from_message_count: None,
+                cumulative_turn_secs: 0,
             },
             system_prompt: None,
             context_references: Vec::new(),
@@ -1103,6 +1135,119 @@ mod tests {
         let loaded = manager.load_session(&session_id).expect("load");
         assert_eq!(loaded.metadata.id, session_id);
         assert_eq!(loaded.messages.len(), 2);
+    }
+
+    #[test]
+    fn save_session_compacts_large_tool_outputs_to_artifact_receipts() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let raw = "RAW_SESSION_SENTINEL\n".repeat(2_000);
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-big".to_string(),
+                    name: "exec_shell".to_string(),
+                    input: serde_json::json!({"command": "cargo test -p deepseek-tui"}),
+                    caller: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-big".to_string(),
+                    content: raw.clone(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let mut session = create_saved_session(&messages, "test-model", tmp.path(), 100, None);
+        session.artifacts.push(crate::artifacts::ArtifactRecord {
+            id: "art_call-big".to_string(),
+            kind: crate::artifacts::ArtifactKind::ToolOutput,
+            session_id: session.metadata.id.clone(),
+            tool_call_id: "call-big".to_string(),
+            tool_name: "exec_shell".to_string(),
+            created_at: Utc::now(),
+            byte_size: raw.len() as u64,
+            preview: "checking crate ... error[E0425]".to_string(),
+            storage_path: PathBuf::from("artifacts/art_call-big.txt"),
+        });
+
+        let path = manager.save_session(&session).expect("save");
+        let persisted_json = fs::read_to_string(path).expect("read persisted session");
+        assert!(!persisted_json.contains("RAW_SESSION_SENTINEL"));
+
+        let loaded = manager.load_session(&session.metadata.id).expect("load");
+        let ContentBlock::ToolResult { content, .. } = &loaded.messages[1].content[0] else {
+            panic!("expected loaded tool result");
+        };
+        assert!(!content.contains("RAW_SESSION_SENTINEL"));
+        assert!(content.contains("[TOOL_OUTPUT_RECEIPT]"));
+        assert!(content.contains("detail_handle: art_call-big"));
+        assert!(content.contains("retrieve: retrieve_tool_result ref=art_call-big"));
+    }
+
+    #[test]
+    fn load_session_compacts_legacy_large_tool_outputs_before_resume() {
+        let tmp = tempdir().expect("tempdir");
+        let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
+        let raw = "RAW_LEGACY_RESUME_SENTINEL\n".repeat(2_000);
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-legacy".to_string(),
+                    name: "exec_shell".to_string(),
+                    input: serde_json::json!({"command": "cargo check"}),
+                    caller: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-legacy".to_string(),
+                    content: raw.clone(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let mut session = create_saved_session(&messages, "test-model", tmp.path(), 100, None);
+        session.artifacts.push(crate::artifacts::ArtifactRecord {
+            id: "art_call-legacy".to_string(),
+            kind: crate::artifacts::ArtifactKind::ToolOutput,
+            session_id: session.metadata.id.clone(),
+            tool_call_id: "call-legacy".to_string(),
+            tool_name: "exec_shell".to_string(),
+            created_at: Utc::now(),
+            byte_size: raw.len() as u64,
+            preview: "cargo check output".to_string(),
+            storage_path: PathBuf::from("artifacts/art_call-legacy.txt"),
+        });
+        let path = manager
+            .validated_session_path(&session.metadata.id)
+            .expect("path");
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&session).expect("serialize legacy session"),
+        )
+        .expect("write legacy raw session");
+        assert!(
+            fs::read_to_string(&path)
+                .expect("read legacy raw")
+                .contains("RAW_LEGACY_RESUME_SENTINEL")
+        );
+
+        let loaded = manager.load_session(&session.metadata.id).expect("load");
+        let ContentBlock::ToolResult { content, .. } = &loaded.messages[1].content[0] else {
+            panic!("expected loaded tool result");
+        };
+        assert!(!content.contains("RAW_LEGACY_RESUME_SENTINEL"));
+        assert!(content.contains("[TOOL_OUTPUT_RECEIPT]"));
+        assert!(content.contains("detail_handle: art_call-legacy"));
+        assert!(content.contains("retrieve: retrieve_tool_result ref=art_call-legacy"));
     }
 
     #[test]
@@ -1656,10 +1801,9 @@ mod tests {
                     "workspace": "/tmp"
                 }},
                 "messages": [
-                    {{ "role": "user", "content": [ {{ "Text": {{ "text": {body:?} }} }} ] }}
+                    {{ "role": "user", "content": [ {{ "Text": {{ "text": {big_text:?} }} }} ] }}
                 ]
-            }}"#,
-            body = big_text
+            }}"#
         );
 
         let extracted =

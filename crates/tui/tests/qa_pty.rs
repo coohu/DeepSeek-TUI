@@ -1,6 +1,6 @@
 //! End-to-end TUI scenarios driven through a real pseudo-terminal.
 //!
-//! Each scenario boots `deepseek-tui` in a sealed workspace + sealed `$HOME`,
+//! Each scenario boots `` in a sealed workspace + sealed `$HOME`,
 //! sends scripted input through the PTY, and asserts on the parsed terminal
 //! frame and on the workspace filesystem. See `support/qa_harness/README.md`
 //! for design + how-to.

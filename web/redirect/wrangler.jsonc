@@ -1,0 +1,11 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "-web",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-01",
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": ".com", "custom_domain": true },
+    { "pattern": "www..com", "custom_domain": true }
+  ]
+}

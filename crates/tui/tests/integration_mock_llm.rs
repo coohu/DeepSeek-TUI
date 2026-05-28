@@ -273,7 +273,7 @@ async fn tool_call_round_trip_streams_args_then_continues() {
     let turn2 = vec![
         canned::message_start("rt2"),
         canned::text_block_start(0),
-        canned::text_delta(0, "README starts with: # deepseek-tui"),
+        canned::text_delta(0, "README starts with: # "),
         canned::block_stop(0),
         canned::message_delta("end_turn", None),
         canned::message_stop(),
@@ -319,10 +319,10 @@ async fn tool_call_round_trip_streams_args_then_continues() {
             "read_file",
             serde_json::json!({ "path": "README.md" }),
         ),
-        tool_result_message("call_x", "# deepseek-tui\n..."),
+        tool_result_message("call_x", "# \n..."),
     ]);
     let (text, stop) = drain_stream_text(&mock, req2).await;
-    assert!(text.contains("# deepseek-tui"));
+    assert!(text.contains("# "));
     assert_eq!(stop.as_deref(), Some("end_turn"));
 }
 

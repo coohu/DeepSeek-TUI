@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::{ApiProvider, Config};
+use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL};
 use crate::config_ui::{self, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::mock_engine_handle;
 use crate::tui::active_cell::ActiveCell;
@@ -116,7 +116,7 @@ impl Drop for SettingsHomeGuard {
 fn resume_hint_uses_canonical_resume_command() {
     assert_eq!(
         resume_hint_text(),
-        "To continue this session, execute deepseek run --continue"
+        "To continue this session, execute codewhale run --continue"
     );
     assert!(should_show_resume_hint(Some(
         "019dd9d6-4f44-7c83-9863-59674a12b827"
@@ -294,6 +294,21 @@ fn word_cursor_modifier_accepts_control_and_alt() {
     assert!(!is_word_cursor_modifier(KeyModifiers::SHIFT));
 }
 
+fn select_full_transcript(app: &mut App) {
+    app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
+        line_index: 0,
+        column: 0,
+    });
+    app.viewport.transcript_selection.head = Some(TranscriptSelectionPoint {
+        line_index: app
+            .viewport
+            .transcript_cache
+            .total_lines()
+            .saturating_sub(1),
+        column: 80,
+    });
+}
+
 #[test]
 fn selection_point_from_position_ignores_top_padding() {
     let area = Rect {
@@ -376,6 +391,90 @@ fn selection_to_text_handles_multiline_and_reversed_endpoints() {
 }
 
 #[test]
+fn selection_to_text_removes_visual_wrap_breaks_from_paragraphs() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "alpha beta gamma delta epsilon".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        14,
+        app.transcript_render_options(),
+    );
+    select_full_transcript(&mut app);
+
+    let selected = selection_to_text(&app).expect("selection text");
+    assert!(
+        !selected.contains('\n'),
+        "soft-wrapped paragraph copied with visual newlines: {selected:?}"
+    );
+    assert!(selected.contains("alpha beta gamma delta epsilon"));
+}
+
+#[test]
+fn selection_to_text_preserves_wrapped_long_words() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "abcdefghijklmnop".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        10,
+        app.transcript_render_options(),
+    );
+    select_full_transcript(&mut app);
+
+    let selected = selection_to_text(&app).expect("selection text");
+    assert_eq!(selected, "abcdefghijklmnop");
+}
+
+#[test]
+fn selection_to_text_strips_code_block_visual_wrap_prefixes() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "```\nlet example = abcdefghijklmnop;\n```".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        14,
+        app.transcript_render_options(),
+    );
+    select_full_transcript(&mut app);
+
+    let selected = selection_to_text(&app).expect("selection text");
+    assert_eq!(selected, "let example = abcdefghijklmnop;");
+}
+
+#[test]
+fn selection_to_text_strips_list_continuation_prefixes() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::Assistant {
+        content: "- alpha beta gamma delta epsilon".to_string(),
+        streaming: false,
+    }];
+    app.resync_history_revisions();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &app.history_revisions,
+        14,
+        app.transcript_render_options(),
+    );
+    select_full_transcript(&mut app);
+
+    let selected = selection_to_text(&app).expect("selection text");
+    assert_eq!(selected, "- alpha beta gamma delta epsilon");
+}
+
+#[test]
 fn selection_to_text_copies_rendered_transcript_block() {
     let mut app = create_test_app();
     app.history = vec![
@@ -429,13 +528,17 @@ fn selection_to_text_copies_rendered_transcript_block() {
     let selected = selection_to_text(&app).expect("selection text");
     assert!(selected.contains("Note copy system"), "{selected:?}");
     assert!(selected.contains("copy user"), "{selected:?}");
+    // Short completed thinking now renders inline (v0.8.42 thinking-preview
+    // change); it should be selectable/copyable as visible transcript text.
     assert!(
-        !selected.contains("copy thinking"),
-        "raw completed thinking should stay out of live selection text: {selected:?}"
+        selected.contains("copy thinking"),
+        "short completed thinking should be visible inline: {selected:?}"
     );
+    // Short thinking that fits entirely inline doesn't need the Ctrl+O
+    // affordance; only truncated or explicit-summary thinking shows it.
     assert!(
-        selected.contains("Ctrl+O"),
-        "selection should keep the reasoning detail affordance: {selected:?}"
+        !selected.contains("Ctrl+O"),
+        "short completed thinking should not show the detail affordance: {selected:?}"
     );
     assert!(selected.contains("tool output line"), "{selected:?}");
     assert!(selected.contains("copy assistant"), "{selected:?}");
@@ -1102,7 +1205,7 @@ fn plan_choice_from_option_maps_expected_values() {
 
 #[test]
 fn plan_prompt_view_escape_emits_dismiss_event() {
-    let mut view = PlanPromptView::new();
+    let mut view = PlanPromptView::new(None);
 
     let action = view.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
@@ -1282,6 +1385,7 @@ fn saved_session_with_messages(messages: Vec<Message>) -> SavedSession {
             cost: crate::session_manager::SessionCostSnapshot::default(),
             parent_session_id: None,
             forked_from_message_count: None,
+            cumulative_turn_secs: 0,
         },
         messages,
         system_prompt: None,
@@ -1320,6 +1424,24 @@ fn apply_loaded_session_restores_dangling_user_tail_as_retry_draft() {
             .is_some_and(|msg| msg.contains("Recovered interrupted prompt")),
         "status was {:?}",
         app.status_message
+    );
+}
+
+#[test]
+fn apply_loaded_session_does_not_restore_slash_command_tail_as_retry_draft() {
+    let mut app = create_test_app();
+    let session = saved_session_with_messages(vec![text_message("user", "/sessions")]);
+
+    let recovered = apply_loaded_session(&mut app, &Config::default(), &session);
+
+    assert!(!recovered);
+    assert_eq!(app.input, "");
+    assert!(app.queued_draft.is_none());
+    assert_eq!(app.api_messages.len(), 1);
+    assert!(
+        app.history
+            .iter()
+            .any(|cell| matches!(cell, HistoryCell::User { .. }))
     );
 }
 
@@ -1952,7 +2074,7 @@ fn init_git_repo() -> TempDir {
     let commit = Command::new("git")
         .args([
             "-c",
-            "user.name=DeepSeek TUI Tests",
+            "user.name=codewhale Tests",
             "-c",
             "user.email=tests@example.com",
             "commit",
@@ -2218,6 +2340,34 @@ fn event_poll_timeout_has_nonzero_floor() {
         clamp_event_poll_timeout(Duration::from_millis(24)),
         Duration::from_millis(24)
     );
+}
+
+#[test]
+#[cfg(any(unix, windows))]
+fn external_url_launcher_does_not_wait_for_browser_process() {
+    let command = slow_external_url_command();
+    let start = Instant::now();
+
+    spawn_external_url_command(command).expect("spawn external URL command");
+
+    assert!(
+        start.elapsed() < Duration::from_millis(750),
+        "opening a feedback URL must not wait for the browser command to exit"
+    );
+}
+
+#[cfg(unix)]
+fn slow_external_url_command() -> Command {
+    let mut command = Command::new("sh");
+    command.args(["-c", "sleep 1"]);
+    command
+}
+
+#[cfg(windows)]
+fn slow_external_url_command() -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "ping -n 2 127.0.0.1 >NUL"]);
+    command
 }
 
 #[test]
@@ -2836,7 +2986,7 @@ fn visible_slash_menu_entries_excludes_removed_commands() {
     assert!(entries.iter().any(|entry| entry.name == "/config"));
     assert!(entries.iter().any(|entry| entry.name == "/links"));
     assert!(!entries.iter().any(|entry| entry.name == "/set"));
-    assert!(!entries.iter().any(|entry| entry.name == "/deepseek"));
+    assert!(!entries.iter().any(|entry| entry.name == "/codewhale"));
 }
 
 #[test]
@@ -2920,6 +3070,69 @@ fn apply_slash_menu_selection_uses_skill_command_form() {
 
     assert!(apply_slash_menu_selection(&mut app, &entries, true));
     assert_eq!(app.input, "/skill search-files");
+}
+
+#[test]
+fn inline_skill_slash_popup_lists_cached_skills_in_message() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        ("search-files".to_string(), "Search files".to_string()),
+        ("my-review".to_string(), "Review code".to_string()),
+    ];
+    app.input = "please use /".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_slash_menu_entries(&app, 128);
+
+    assert!(entries.iter().any(|entry| entry.name == "/search-files"));
+    assert!(entries.iter().any(|entry| entry.name == "/my-review"));
+    assert!(entries.iter().all(|entry| entry.is_skill));
+}
+
+#[test]
+fn inline_skill_slash_popup_filters_partial_without_leaking_to_command_position() {
+    let mut app = create_test_app();
+    app.cached_skills = vec![
+        ("search-files".to_string(), "Search files".to_string()),
+        ("my-review".to_string(), "Review code".to_string()),
+    ];
+    app.input = "please use /my".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_slash_menu_entries(&app, 128);
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "/my-review");
+
+    app.input = "/se".to_string();
+    app.cursor_position = app.input.chars().count();
+    let command_entries = visible_slash_menu_entries(&app, 128);
+    assert!(
+        !command_entries
+            .iter()
+            .any(|entry| entry.name == "/search-files" && entry.is_skill),
+        "command-position slash menu should not include inline skill mentions"
+    );
+}
+
+#[test]
+fn apply_slash_menu_selection_splices_inline_skill_mention() {
+    let mut app = create_test_app();
+    app.input = "please use /se here".to_string();
+    app.cursor_position = "please use /se".chars().count();
+    let entries = vec![crate::tui::widgets::SlashMenuEntry {
+        name: "/search-files".to_string(),
+        description: "Search files".to_string(),
+        is_skill: true,
+        alias_hint: None,
+    }];
+
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "please use /search-files here");
+    assert_eq!(
+        app.cursor_position,
+        "please use /search-files".chars().count()
+    );
 }
 
 #[test]
@@ -3026,6 +3239,7 @@ async fn dismissed_plan_prompt_leaves_non_numeric_input_for_normal_send_path() {
 #[tokio::test]
 async fn dispatch_user_message_records_prompt_for_cancel_restore() {
     let mut app = create_test_app();
+    app.show_thinking = false;
     let config = Config::default();
     let mut engine = crate::core::engine::mock_engine_handle();
     let queued = crate::tui::app::QueuedMessage::new("fix this typo\nthen retry".to_string(), None);
@@ -3039,8 +3253,16 @@ async fn dispatch_user_message_records_prompt_for_cancel_restore() {
         Some("fix this typo\nthen retry")
     );
     match engine.rx_op.recv().await.expect("send message op") {
-        crate::core::ops::Op::SendMessage { content, .. } => {
+        crate::core::ops::Op::SendMessage {
+            content,
+            show_thinking,
+            ..
+        } => {
             assert_eq!(content, "fix this typo\nthen retry");
+            assert!(
+                !show_thinking,
+                "dispatch must carry the user's hidden-thinking setting into the engine"
+            );
         }
         other => panic!("expected SendMessage, got {other:?}"),
     }
@@ -3343,6 +3565,36 @@ fn activity_footer_hint_surfaces_visible_thinking_without_raw_tool_hint() {
 }
 
 #[test]
+fn activity_footer_hint_uses_details_for_subagent_cards() {
+    let mut app = create_test_app();
+    app.history = vec![HistoryCell::SubAgent(
+        crate::tui::history::SubAgentCell::Delegate(
+            crate::tui::widgets::agent_card::DelegateCard::new("agent_123", "general"),
+        ),
+    )];
+    app.resync_history_revisions();
+    let revisions = app.history_revisions.clone();
+    app.viewport.transcript_cache.ensure(
+        &app.history,
+        &revisions,
+        100,
+        app.transcript_render_options(),
+    );
+    app.viewport.last_transcript_top = first_line_for_cell(&app, 0);
+    app.viewport.last_transcript_visible = 4;
+
+    let expected = format!(
+        "{} Activity: sub-agent · {} details",
+        crate::tui::key_shortcuts::activity_shortcut_label(),
+        crate::tui::key_shortcuts::tool_details_shortcut_label()
+    );
+    assert_eq!(
+        selected_detail_footer_label(&app).as_deref(),
+        Some(expected.as_str())
+    );
+}
+
+#[test]
 fn macos_option_v_glyph_is_treated_as_details_shortcut_only_on_macos() {
     let option_v = KeyEvent::new(KeyCode::Char('\u{221A}'), KeyModifiers::NONE);
     assert!(crate::tui::key_shortcuts::is_macos_option_v_legacy_key_for_platform(&option_v, true));
@@ -3526,7 +3778,7 @@ fn active_rlm_task_entries_surface_foreground_rlm_work() {
 
 #[test]
 fn alt_nav_modifiers_require_alt_and_exclude_ctrl_super() {
-    // v0.8.30 — transcript-nav shortcuts (`Alt+G`, `Alt+[`, etc.) require
+    // v0.8.30 — transcript-nav shortcuts (`Alt+[`, `Alt+]`, etc.) require
     // Alt, allow Shift for capital-letter forms, and block Ctrl/Super so
     // they don't collide with clipboard / window shortcuts. Bare and
     // Shift-only modifiers fall through to text insertion now.
@@ -3840,6 +4092,72 @@ fn ok_result(
 }
 
 #[test]
+fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
+    let mut app = create_test_app();
+    handle_tool_call_started(
+        &mut app,
+        "shell-wait",
+        "exec_shell_wait",
+        &serde_json::json!({"task_id": "shell_33a08c3c"}),
+    );
+
+    let exec = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .find_map(|cell| match cell {
+            HistoryCell::Tool(ToolCell::Exec(exec)) => Some(exec),
+            _ => None,
+        })
+        .expect("exec cell");
+    assert_eq!(exec.command, "command shell_33a08c3c");
+    assert!(
+        exec.interaction
+            .as_deref()
+            .is_some_and(|text| text.contains("shell_33a08c3c"))
+    );
+    assert!(
+        !exec.command.contains("<command>")
+            && !exec
+                .interaction
+                .as_deref()
+                .unwrap_or_default()
+                .contains("<command>")
+    );
+
+    let result = Ok(crate::tools::spec::ToolResult::success(
+        "Background task running (no new output).",
+    )
+    .with_metadata(serde_json::json!({
+        "status": "Running",
+        "duration_ms": 178_000_u64,
+        "task_id": "shell_33a08c3c",
+        "command": "cargo test --workspace --all-features",
+    })));
+    handle_tool_call_complete(&mut app, "shell-wait", "exec_shell_wait", &result);
+
+    let exec = app
+        .active_cell
+        .as_ref()
+        .expect("active cell")
+        .entries()
+        .iter()
+        .find_map(|cell| match cell {
+            HistoryCell::Tool(ToolCell::Exec(exec)) => Some(exec),
+            _ => None,
+        })
+        .expect("exec cell");
+    assert_eq!(exec.command, "cargo test --workspace --all-features");
+    assert!(
+        exec.interaction
+            .as_deref()
+            .is_some_and(|text| text.contains("cargo test --workspace"))
+    );
+}
+
+#[test]
 fn tool_child_usage_metadata_updates_live_cost_counter() {
     let mut app = create_test_app();
     let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
@@ -3956,6 +4274,9 @@ fn apply_loaded_session_restores_concrete_model_mode() {
 fn apply_loaded_session_restores_auto_model_mode() {
     let mut app = create_test_app();
     app.set_model_selection("deepseek-v4-pro".to_string());
+    app.reasoning_effort = ReasoningEffort::High;
+    app.last_effective_model = Some("deepseek-v4-flash".to_string());
+    app.last_effective_reasoning_effort = Some(ReasoningEffort::Low);
     let mut session = saved_session_with_messages(vec![
         text_message("user", "hello"),
         text_message("assistant", "hi"),
@@ -3968,6 +4289,10 @@ fn apply_loaded_session_restores_auto_model_mode() {
     assert!(app.auto_model);
     assert_eq!(app.model, "auto");
     assert_eq!(app.model_selection_for_persistence(), "auto");
+    assert_eq!(app.last_effective_model, None);
+    assert_eq!(app.last_effective_reasoning_effort, None);
+    assert_eq!(app.reasoning_effort, ReasoningEffort::Auto);
+    assert_eq!(app.effective_model_for_budget(), DEFAULT_TEXT_MODEL);
 }
 
 #[test]
@@ -5064,6 +5389,45 @@ fn recoverable_engine_error_does_not_enter_offline_mode() {
     let _ = ErrorEnvelope::transient("");
 }
 
+#[test]
+fn stream_error_marks_active_turn_failed_without_waiting_for_turn_complete() {
+    use crate::error_taxonomy::ErrorEnvelope;
+
+    let mut app = create_test_app();
+    app.is_loading = true;
+    app.runtime_turn_id = Some("turn_decode_error".to_string());
+    app.runtime_turn_status = Some("in_progress".to_string());
+    handle_tool_call_started(
+        &mut app,
+        "tool-running",
+        "exec_shell",
+        &serde_json::json!({"command": "cargo test --workspace"}),
+    );
+    assert!(app.active_cell.is_some(), "precondition: live tool cell");
+
+    apply_engine_error_to_app(
+        &mut app,
+        ErrorEnvelope::classify("chunk decode error".to_string(), true),
+    );
+
+    assert!(!app.is_loading);
+    assert_eq!(app.runtime_turn_status.as_deref(), Some("failed"));
+    assert!(
+        app.active_cell.is_none(),
+        "stream error should flush live cells so no row stays visually running"
+    );
+    assert!(
+        app.history.iter().any(|cell| {
+            matches!(
+                cell,
+                crate::tui::history::HistoryCell::Error { message, .. }
+                    if message.contains("chunk decode error")
+            )
+        }),
+        "stream decode error should remain visible in transcript"
+    );
+}
+
 /// Hard failures (auth, billing, malformed request) DO need to flip offline
 /// mode so subsequent typed messages get queued instead of silently lost
 /// against a broken upstream.
@@ -5723,16 +6087,15 @@ fn composer_arrows_scroll_defaults_true_without_mouse_capture() {
 }
 
 #[test]
-fn composer_arrows_scroll_defaults_follow_platform_with_mouse_capture() {
+fn composer_arrows_scroll_defaults_false_with_mouse_capture() {
     let options = TuiOptions {
         use_mouse_capture: true,
         ..create_test_options()
     };
     let app = App::new(options, &Config::default());
-    assert_eq!(
-        app.composer_arrows_scroll,
-        cfg!(windows),
-        "arrows-scroll should default to true on Windows and false on other platforms when mouse capture is on"
+    assert!(
+        !app.composer_arrows_scroll,
+        "arrows-scroll must default to false when mouse capture is on"
     );
 }
 
@@ -5841,6 +6204,7 @@ fn notification_settings_tui_always_keeps_configured_method_no_threshold() {
         notifications: Some(crate::config::NotificationsConfig {
             method: crate::config::NotificationMethod::Bel,
             threshold_secs: 120,
+            completion_sound: crate::config::CompletionSound::Beep,
             include_summary: true,
         }),
         ..Config::default()
@@ -5872,6 +6236,7 @@ fn notification_settings_no_tui_override_uses_notifications_block() {
         notifications: Some(crate::config::NotificationsConfig {
             method: crate::config::NotificationMethod::Osc9,
             threshold_secs: 45,
+            completion_sound: crate::config::CompletionSound::Beep,
             include_summary: false,
         }),
         ..Config::default()
@@ -5942,7 +6307,7 @@ fn completed_turn_notification_falls_back_to_default_when_empty() {
         Duration::from_secs(5),
         None,
     );
-    assert_eq!(msg, "deepseek: turn complete");
+    assert_eq!(msg, "codewhale: turn complete");
 }
 
 #[test]
@@ -5965,13 +6330,13 @@ fn completed_turn_notification_truncates_long_text() {
 fn subagent_completion_notification_uses_summary_line_not_sentinel() {
     let msg = crate::tui::notifications::subagent_completion_message(
         "agent_live",
-        "Finished the docs audit.\n<deepseek:subagent.done>{}</deepseek:subagent.done>",
+        "Finished the docs audit.\n<codewhale:subagent.done>{}</codewhale:subagent.done>",
         false,
         Duration::from_secs(42),
     );
 
     assert_eq!(msg, "sub-agent agent_live: Finished the docs audit.");
-    assert!(!msg.contains("deepseek:subagent.done"));
+    assert!(!msg.contains("codewhale:subagent.done"));
 }
 
 #[test]
@@ -5983,8 +6348,8 @@ fn subagent_completion_notification_can_include_elapsed_summary() {
         Duration::from_secs(65),
     );
 
-    assert!(msg.contains("deepseek: sub-agent agent_live complete"));
-    assert!(msg.contains("deepseek: sub-agent complete (1m 5s)"));
+    assert!(msg.contains("codewhale: sub-agent agent_live complete"));
+    assert!(msg.contains("codewhale: sub-agent complete (1m 5s)"));
 }
 
 #[test]
@@ -6149,4 +6514,168 @@ fn toast_stack_overlay_respects_composer_boundary() {
         max_above <= gap,
         "max_above ({max_above}) must never exceed the composer→footer gap ({gap})"
     );
+}
+
+// === Bug #1913: Work sidebar should hide stale completed tasks ============
+//
+// The Work sidebar reads `~/.deepseek/tasks/` on startup, which holds every
+// durable task the user has ever run. Without filtering, completed tasks
+// from prior sessions persist indefinitely. The projection helper keeps
+// active tasks, keeps tasks that finished during this session, keeps tasks
+// that finished within the last `recent_ttl`, and drops everything older.
+
+mod work_sidebar_projection_tests {
+    use super::*;
+    use crate::task_manager::{TaskStatus, TaskSummary};
+    use chrono::{Duration, TimeZone, Utc};
+
+    fn sample_task(
+        id: &str,
+        status: TaskStatus,
+        ended_at: Option<chrono::DateTime<Utc>>,
+    ) -> TaskSummary {
+        TaskSummary {
+            id: id.to_string(),
+            status,
+            prompt_summary: format!("task {id}"),
+            model: "deepseek-v4-flash".to_string(),
+            mode: "agent".to_string(),
+            created_at: Utc.with_ymd_and_hms(2026, 5, 16, 12, 0, 0).unwrap(),
+            started_at: Some(Utc.with_ymd_and_hms(2026, 5, 16, 12, 1, 0).unwrap()),
+            ended_at,
+            duration_ms: ended_at.map(|_| 1_234),
+            error: None,
+            thread_id: None,
+            turn_id: None,
+        }
+    }
+
+    #[test]
+    fn work_sidebar_hides_stale_completed_tasks_but_keeps_active_and_recent() {
+        // Pretend the TUI session started on 2026-05-23T10:00:00Z. "Now"
+        // is one minute into the session.
+        let session_started_at = Utc.with_ymd_and_hms(2026, 5, 23, 10, 0, 0).unwrap();
+        let now = session_started_at + Duration::minutes(1);
+        let recent_ttl = Duration::hours(2);
+
+        let active_running = sample_task("active_run", TaskStatus::Running, None);
+        let active_queued = sample_task("active_q", TaskStatus::Queued, None);
+
+        // Completed during the current session — must show.
+        let just_finished = sample_task(
+            "just_done",
+            TaskStatus::Completed,
+            Some(session_started_at + Duration::seconds(30)),
+        );
+
+        // Completed shortly before the session started, inside the
+        // recent-TTL window — must show.
+        let recently_finished_before_session = sample_task(
+            "recent_done",
+            TaskStatus::Failed,
+            Some(session_started_at - Duration::minutes(15)),
+        );
+
+        // Stale completed from 6 days ago (the exact scenario in #1913) —
+        // must be hidden.
+        let stale_completed = sample_task(
+            "stale_done",
+            TaskStatus::Completed,
+            Some(session_started_at - Duration::days(6)),
+        );
+        let stale_canceled = sample_task(
+            "stale_cancel",
+            TaskStatus::Canceled,
+            Some(session_started_at - Duration::days(7)),
+        );
+        let stale_failed = sample_task(
+            "stale_fail",
+            TaskStatus::Failed,
+            Some(session_started_at - Duration::days(3)),
+        );
+
+        // A terminal task without `ended_at` shouldn't sneak through.
+        let terminal_no_timestamp = sample_task("ghost", TaskStatus::Completed, None);
+
+        let tasks = vec![
+            active_running.clone(),
+            active_queued.clone(),
+            just_finished.clone(),
+            recently_finished_before_session.clone(),
+            stale_completed.clone(),
+            stale_canceled.clone(),
+            stale_failed.clone(),
+            terminal_no_timestamp.clone(),
+        ];
+
+        let kept = select_work_sidebar_tasks(tasks, session_started_at, now, recent_ttl);
+        let kept_ids: Vec<&str> = kept.iter().map(|t| t.id.as_str()).collect();
+
+        assert!(
+            kept_ids.contains(&"active_run"),
+            "active running task must always show: {kept_ids:?}"
+        );
+        assert!(
+            kept_ids.contains(&"active_q"),
+            "active queued task must always show: {kept_ids:?}"
+        );
+        assert!(
+            kept_ids.contains(&"just_done"),
+            "task completed during the current session must show: {kept_ids:?}"
+        );
+        assert!(
+            kept_ids.contains(&"recent_done"),
+            "task completed within the recent TTL before session start must show: \
+             {kept_ids:?}"
+        );
+
+        assert!(
+            !kept_ids.contains(&"stale_done"),
+            "completed task from 6 days ago must be hidden (bug #1913): {kept_ids:?}"
+        );
+        assert!(
+            !kept_ids.contains(&"stale_cancel"),
+            "canceled task from 7 days ago must be hidden: {kept_ids:?}"
+        );
+        assert!(
+            !kept_ids.contains(&"stale_fail"),
+            "failed task from 3 days ago must be hidden: {kept_ids:?}"
+        );
+        assert!(
+            !kept_ids.contains(&"ghost"),
+            "terminal task missing ended_at must be hidden: {kept_ids:?}"
+        );
+    }
+
+    #[test]
+    fn work_sidebar_keeps_tasks_completed_at_session_boundary() {
+        // Edge case: a task that finished at exactly the same instant the
+        // session started should still be visible (>= comparison).
+        let session_started_at = Utc.with_ymd_and_hms(2026, 5, 23, 10, 0, 0).unwrap();
+        let now = session_started_at + Duration::seconds(1);
+        let recent_ttl = Duration::hours(2);
+
+        let at_boundary = sample_task("boundary", TaskStatus::Completed, Some(session_started_at));
+
+        let kept =
+            select_work_sidebar_tasks(vec![at_boundary], session_started_at, now, recent_ttl);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "boundary");
+    }
+
+    #[test]
+    fn receipt_summary_truncation_does_not_panic_on_multibyte_boundary() {
+        // Build a summary where byte 57 falls mid-character (em dash is 3 bytes).
+        // 56 ASCII chars + em dash ensures byte 57 lands inside the em dash.
+        let prefix = "a".repeat(56); // 56 ASCII bytes
+        let summary = format!("{prefix}— rest of summary"); // byte 56='a', 57-59='—'
+        assert!(summary.len() > 60);
+        // Byte 57 should be inside the em dash (3-byte UTF-8 sequence).
+        assert!(!summary.is_char_boundary(57));
+
+        // The runtime helper should step back to the start of the char
+        // and append the ellipsis without panicking.
+        let truncated = crate::utils::truncate_with_ellipsis(&summary, 60, "…");
+        assert_eq!(truncated, format!("{prefix}…"));
+    }
 }

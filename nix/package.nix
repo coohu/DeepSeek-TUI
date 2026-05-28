@@ -15,7 +15,7 @@
   rev ? "dirty",
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
-  pname = "deepseek-tui";
+  pname = "codewhale";
   version = "git-${rev}";
 
   src = ../.;
@@ -46,7 +46,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   cargoBuildFlags = [
     "--package"
-    "deepseek-tui-cli"
+    "codewhale-cli"
     "--package"
     "deepseek-tui"
   ];
@@ -63,6 +63,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     description = "Coding agent for DeepSeek models that runs in your terminal";
     homepage = "https://github.com/coohu/DeepSeek-TUI";
     license = lib.licenses.mit;
-    mainProgram = "deepseek";
+    mainProgram = "codewhale";
   };
 })

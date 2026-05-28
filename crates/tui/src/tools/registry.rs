@@ -549,7 +549,8 @@ impl ToolRegistryBuilder {
             AutomationReadTool, AutomationResumeTool, AutomationRunTool, AutomationUpdateTool,
         };
         use super::github::{
-            GithubCloseIssueTool, GithubCommentTool, GithubIssueContextTool, GithubPrContextTool,
+            GithubCloseIssueTool, GithubClosePrTool, GithubCommentTool, GithubIssueContextTool,
+            GithubPrContextTool,
         };
         use super::tasks::{
             PrAttemptListTool, PrAttemptPreflightTool, PrAttemptReadTool, PrAttemptRecordTool,
@@ -580,6 +581,7 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(AutomationRunTool))
             .with_tool(Arc::new(GithubCommentTool))
             .with_tool(Arc::new(GithubCloseIssueTool))
+            .with_tool(Arc::new(GithubClosePrTool))
     }
 
     /// Include only read-only durable task, PR-attempt, GitHub, and automation
@@ -661,8 +663,11 @@ impl ToolRegistryBuilder {
     /// Include persistent RLM session tools.
     #[must_use]
     pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
-        use super::rlm::{RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool};
-        self.with_tool(Arc::new(RlmOpenTool))
+        use super::rlm::{
+            RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RlmSessionObjectsTool,
+        };
+        self.with_tool(Arc::new(RlmSessionObjectsTool))
+            .with_tool(Arc::new(RlmOpenTool))
             .with_tool(Arc::new(RlmEvalTool::new(client)))
             .with_tool(Arc::new(RlmConfigureTool))
             .with_tool(Arc::new(RlmCloseTool))
@@ -837,6 +842,15 @@ impl ToolRegistryBuilder {
     pub fn with_plan_tool(self, plan_state: super::plan::SharedPlanState) -> Self {
         use super::plan::UpdatePlanTool;
         self.with_tool(Arc::new(UpdatePlanTool::new(plan_state)))
+    }
+
+    /// Include runtime goal tools (`create_goal`, `get_goal`, `update_goal`).
+    #[must_use]
+    pub fn with_goal_tools(self, goal_state: super::goal::SharedGoalState) -> Self {
+        use super::goal::{CreateGoalTool, GetGoalTool, UpdateGoalTool};
+        self.with_tool(Arc::new(CreateGoalTool::new(goal_state.clone())))
+            .with_tool(Arc::new(GetGoalTool::new(goal_state.clone())))
+            .with_tool(Arc::new(UpdateGoalTool::new(goal_state)))
     }
 
     /// Include sub-agent management tools.

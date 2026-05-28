@@ -1,6 +1,6 @@
 # Security Policy
 
-DeepSeek TUI is a coding agent with direct access to file operations, shell execution, and the network. Security disclosures are taken seriously.
+codewhale is a coding agent with direct access to file operations, shell execution, and the network. Security disclosures are taken seriously.
 
 ## Supported Versions
 
@@ -20,7 +20,7 @@ Check the [releases page](https://github.com/coohu/DeepSeek-TUI/releases) for th
 Report privately via one of:
 
 - **GitHub private advisory**: [github.com/coohu/DeepSeek-TUI/security/advisories/new](https://github.com/coohu/DeepSeek-TUI/security/advisories/new)
-- **Email**: [security@deepseek-tui.com](mailto:security@deepseek-tui.com) — include `[SECURITY]` in the subject line
+- **Email**: [security@.com](mailto:security@.com) — include `[SECURITY]` in the subject line
 
 Include in your report:
 
@@ -58,7 +58,7 @@ You will receive status updates at each phase. If the timeline slips, we will co
 - Denial of service / rate-limit exhaustion against the DeepSeek API
 - Vulnerabilities in third-party dependencies (report to the upstream project)
 - Attacks requiring physical access to the victim's machine
-- Theoretical ML-model injection attacks not demonstrated in the DeepSeek TUI context
+- Theoretical ML-model injection attacks not demonstrated in the codewhale context
 
 If you are unsure whether a bug is in scope, report it anyway. We will triage and respond.
 

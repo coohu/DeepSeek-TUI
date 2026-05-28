@@ -1,8 +1,8 @@
 {
-  "name": "@coohu/deepseek-tui",
+  "name": "@coohu/",
   "version": "0.8.40",
   "deepseekBinaryVersion": "0.8.40",
-  "description": "Install and run deepseek and deepseek-tui binaries from GitHub release artifacts.",
+  "description": "Install and run deepseek and  binaries from GitHub release artifacts.",
   "author": "coohu",
   "license": "MIT",
   "homepage": "https://github.com/coohu/DeepSeek-TUI",
@@ -14,6 +14,7 @@
     "url": "https://github.com/coohu/DeepSeek-TUI/issues"
   },
   "keywords": [
+    "compatibility",
     "deepseek",
     "胜算云",
     "cli",
@@ -23,16 +24,8 @@
     "terminal"
   ],
   "type": "commonjs",
-  "bin": {
-    "deepseek": "bin/deepseek.js",
-    "deepseek-tui": "bin/deepseek-tui.js"
-  },
   "scripts": {
-    "release:check": "node scripts/verify-release-assets.js",
-    "postinstall": "node scripts/install.js --optional",
-    "prepublishOnly": "node scripts/verify-release-assets.js",
-    "prepack": "node scripts/install.js",
-    "test": "node --test test/*.test.js"
+    "postinstall": "node scripts/deprecation-notice.js"
   },
   "engines": {
     "node": ">=18"
@@ -40,11 +33,8 @@
   "publishConfig": {
     "access": "public"
   },
-  "preferGlobal": true,
   "files": [
-    "bin/*.js",
     "scripts/*.js",
-    "test/*.js",
     "README.md",
     "package.json"
   ]

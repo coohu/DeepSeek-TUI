@@ -10,12 +10,14 @@ pub mod key_hint;
 // the composer area in `ui.rs`. `pub mod` (vs the usual `pub use` pattern)
 // keeps the unused-imports lint quiet until then.
 pub mod agent_card;
+pub mod decision_card;
 pub mod pending_input_preview;
 mod renderable;
 pub mod tool_card;
 
 pub use footer::{
-    FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
+    FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_shell_chip,
+    footer_working_label,
 };
 pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
@@ -333,7 +335,7 @@ impl Renderable for ChatWidget {
 
         let area = _area;
 
-        // Repaint the full chat area with the deepseek-ink background each
+        // Repaint the full chat area with the codewhale-ink background each
         // frame. Ratatui's `Paragraph` only writes cells that contain text,
         // so cells the current frame's paragraph doesn't touch would
         // otherwise hold the *previous* frame's contents (the `:24Z`
@@ -472,7 +474,7 @@ impl<'a> ComposerWidget<'a> {
     /// backend's per-cell write cost makes the layout jitter visible
     /// even though the work is tiny on Unix terminals. See user
     /// feedback in v0.8.8 polish thread.
-    fn active_menu_reserved_rows(&self) -> usize {
+    pub fn active_menu_reserved_rows(&self) -> usize {
         let actual = self.active_menu_row_count();
         if actual == 0 {
             return 0;
@@ -533,8 +535,8 @@ impl Renderable for ComposerWidget<'_> {
         let input_rows_budget =
             composer_input_rows_budget(inner_area.height, menu_lines_for_budget);
         let content_width = usize::from(inner_area.width.max(1));
-        let (visible_lines, _cursor_row, _cursor_col) =
-            layout_input(input_text, input_cursor, content_width, input_rows_budget);
+        let (visible_lines, _cursor_row, _cursor_col, scroll_offset) =
+            layout_input_with_scroll(input_text, input_cursor, content_width, input_rows_budget);
         let is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
         if has_panel {
             let border_color = if input_text.trim().is_empty() {
@@ -583,7 +585,7 @@ impl Renderable for ComposerWidget<'_> {
                     SubmitDisposition::Immediate => {
                         if queue_count > 0 {
                             (
-                                Some(format!("↵ send ({} queued)", queue_count)),
+                                Some(format!("↵ send ({queue_count} queued)")),
                                 palette::DEEPSEEK_SKY,
                             )
                         } else {
@@ -637,21 +639,11 @@ impl Renderable for ComposerWidget<'_> {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_color))
                 .style(background);
-            // Top-right corner: keep only editor state here. Session titles
-            // belong in session/history surfaces, not in the input chrome.
-            if self.app.composer.vim_enabled {
-                let color = match self.app.composer.vim_mode {
-                    VimMode::Normal => palette::TEXT_MUTED,
-                    VimMode::Insert => palette::DEEPSEEK_SKY,
-                    VimMode::Visual => palette::MODE_PLAN,
-                };
-                block = block.title_top(
-                    Line::from(Span::styled(
-                        self.app.composer.vim_mode.label(),
-                        Style::default().fg(color).bold(),
-                    ))
-                    .right_aligned(),
-                );
+            // Top-right corner: editor state plus transient turn receipts.
+            // Receipts are lifecycle chrome, not transcript content; they
+            // should appear briefly without displacing conversation rows.
+            if let Some(chrome) = composer_top_right_chrome(self.app, area.width) {
+                block = block.title_top(chrome.right_aligned());
             }
             if let Some(hint_line) = hint_line {
                 block = block.title_bottom(hint_line);
@@ -674,6 +666,26 @@ impl Renderable for ComposerWidget<'_> {
                 placeholder,
                 Style::default().fg(palette::TEXT_MUTED).italic(),
             )));
+        } else if let Some((sel_start, sel_end)) = self.app.selection_range() {
+            let line_ranges: Vec<(usize, usize)> =
+                wrap_input_lines_for_mouse(&self.app.input, content_width)
+                    .into_iter()
+                    .skip(scroll_offset)
+                    .take(visible_lines.len())
+                    .map(|(start, text)| (start, start + text.chars().count()))
+                    .collect();
+            for (line_text, (line_start, line_end)) in visible_lines.iter().zip(line_ranges.iter())
+            {
+                let spans = line_spans_with_selection(
+                    line_text,
+                    *line_start,
+                    *line_end,
+                    sel_start,
+                    sel_end,
+                    self.app.ui_theme.selection_bg,
+                );
+                input_lines.push(Line::from(spans));
+            }
         } else {
             for line in &visible_lines {
                 input_lines.push(Line::from(Span::styled(
@@ -1024,13 +1036,10 @@ impl Renderable for ComposerWidget<'_> {
 
 /// Codex-style full-screen approval takeover (#129).
 ///
-/// The widget reads its mutable state (selected option, staged
-/// confirmation) directly from the [`ApprovalView`] so the destructive
-/// variant can render its "Press Y again to confirm" banner without
-/// touching internal fields. Rendering reflows to fill most of the
-/// transcript area instead of a centered popup; on small terminals it
-/// falls back to a 65×22 card so existing snapshot tests still see a
-/// coherent layout.
+/// The widget reads its selected option and locale directly from the
+/// [`ApprovalView`]. Rendering reflows to fill most of the transcript
+/// area instead of a centered popup; on small terminals it falls back to
+/// a 65×22 card so existing snapshot tests still see a coherent layout.
 pub struct ApprovalWidget<'a> {
     request: &'a ApprovalRequest,
     view: &'a ApprovalView,
@@ -1047,8 +1056,8 @@ impl<'a> ApprovalWidget<'a> {
 /// terminal can hold.
 const APPROVAL_CARD_HORIZONTAL_PAD: u16 = 6;
 const APPROVAL_CARD_VERTICAL_PAD: u16 = 2;
-/// Minimum card height — anything tighter and the destructive variant's
-/// confirmation banner overlaps the option list.
+/// Minimum card height — anything tighter and the approval controls
+/// overlap the option list.
 const APPROVAL_CARD_MIN_HEIGHT: u16 = 18;
 /// Minimum card width — anything tighter makes approval copy wrap too
 /// aggressively on small terminals.
@@ -1173,120 +1182,49 @@ impl Renderable for ApprovalWidget<'_> {
         lines.push(Line::from(""));
 
         let options = approval_options_for(risk, locale);
-        let pending = self.view.pending_confirm();
 
         for (i, opt) in options.iter().enumerate() {
             let is_selected = i == self.view.selected();
-            let staged = pending.is_some_and(|p| p == opt.option);
             let label_color = if opt.dangerous {
                 palette_colors.accent
             } else {
                 palette::TEXT_BODY
             };
 
-            let row_style = if is_selected {
-                Style::default()
-                    .fg(palette::SELECTION_TEXT)
-                    .bg(palette::SELECTION_BG)
-            } else {
-                Style::default()
-            };
+            let option_style = approval_option_style(is_selected, label_color);
+            let shortcut_style = approval_option_style(is_selected, palette_colors.shortcut);
 
-            let mut spans = vec![
+            let spans = vec![
                 Span::raw("  "),
                 Span::styled(
                     format!("[{}] ", opt.key_hint),
-                    Style::default()
-                        .fg(palette_colors.shortcut)
-                        .add_modifier(Modifier::BOLD),
+                    shortcut_style.add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(opt.label.to_string(), row_style.fg(label_color)),
+                Span::styled(opt.label.to_string(), option_style),
             ];
-            if staged {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    staged_marker(locale),
-                    Style::default()
-                        .fg(palette_colors.accent)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
             lines.push(Line::from(spans));
         }
 
-        // Variant-specific footer: benign nudges single-key approve;
-        // destructive shows either the standing prompt or the
-        // confirmation banner when an approve key has been staged.
+        // Footer: Enter commits the highlighted row; y/a/d remain direct
+        // shortcuts for users who do not want to move the selection.
         lines.push(Line::from(""));
-        match (risk, pending) {
-            (RiskLevel::Benign, _) => {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        single_key_prefix(locale),
-                        Style::default().fg(palette::TEXT_HINT),
-                    ),
-                    Span::styled(
-                        single_key_value(locale),
-                        Style::default()
-                            .fg(palette_colors.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        footer_controls(locale),
-                        Style::default().fg(palette::TEXT_HINT),
-                    ),
-                ]));
-            }
-            (RiskLevel::Destructive, Some(opt)) => {
-                let again_key = match opt {
-                    crate::tui::approval::ApprovalOption::ApproveOnce => confirm_key_once(locale),
-                    crate::tui::approval::ApprovalOption::ApproveAlways => {
-                        confirm_key_always(locale)
-                    }
-                    _ => "Enter",
-                };
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        destructive_confirm_prefix(locale),
-                        Style::default()
-                            .fg(palette_colors.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        again_key.to_string(),
-                        Style::default()
-                            .fg(palette::DEEPSEEK_INK)
-                            .bg(palette_colors.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        destructive_confirm_suffix(locale),
-                        Style::default().fg(palette::TEXT_HINT),
-                    ),
-                ]));
-            }
-            (RiskLevel::Destructive, None) => {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        two_key_prefix(locale),
-                        Style::default().fg(palette::TEXT_HINT),
-                    ),
-                    Span::styled(
-                        two_key_value(locale),
-                        Style::default()
-                            .fg(palette_colors.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        footer_controls(locale),
-                        Style::default().fg(palette::TEXT_HINT),
-                    ),
-                ]));
-            }
-        }
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                selection_hint_prefix(locale),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
+            Span::styled(
+                selection_hint_value(locale),
+                Style::default()
+                    .fg(palette_colors.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                footer_controls(locale),
+                Style::default().fg(palette::TEXT_HINT),
+            ),
+        ]));
 
         let title = format!(
             " {} {} — {} ",
@@ -1384,6 +1322,21 @@ fn approval_palette(risk: RiskLevel) -> ApprovalColors {
     }
 }
 
+fn approval_selected_style() -> Style {
+    Style::default()
+        .fg(palette::SELECTION_TEXT)
+        .bg(palette::DEEPSEEK_BLUE)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn approval_option_style(is_selected: bool, color: Color) -> Style {
+    if is_selected {
+        approval_selected_style()
+    } else {
+        Style::default().fg(color)
+    }
+}
+
 fn risk_badge_text(risk: RiskLevel, locale: Locale) -> &'static str {
     match (locale, risk) {
         (Locale::ZhHans, RiskLevel::Benign) => "审查",
@@ -1447,24 +1400,6 @@ fn label_params(locale: Locale) -> &'static str {
     }
 }
 
-fn staged_marker(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "(待确认)",
-        _ => "(staged)",
-    }
-}
-
-fn single_key_prefix(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "单键批准：",
-        _ => "Single key approves: ",
-    }
-}
-
-fn single_key_value(_locale: Locale) -> &'static str {
-    "Enter / 1 / y"
-}
-
 fn footer_controls(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => "  ·  v：完整参数  ·  Esc：终止",
@@ -1472,79 +1407,45 @@ fn footer_controls(locale: Locale) -> &'static str {
     }
 }
 
-fn destructive_confirm_prefix(locale: Locale) -> &'static str {
+fn selection_hint_prefix(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => "确认破坏性操作：再次按 ",
-        _ => "Confirm destructive action — press ",
+        Locale::ZhHans => "选择：",
+        _ => "Choose: ",
     }
 }
 
-fn destructive_confirm_suffix(locale: Locale) -> &'static str {
+fn selection_hint_value(locale: Locale) -> &'static str {
     match locale {
-        Locale::ZhHans => " 执行；按其他键取消。",
-        _ => " again to commit, anything else cancels.",
-    }
-}
-
-fn confirm_key_once(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "Enter 或 y",
-        _ => "Enter or y",
-    }
-}
-
-fn confirm_key_always(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "Enter 或 a",
-        _ => "Enter or a",
-    }
-}
-
-fn two_key_prefix(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "两次按键确认：",
-        _ => "Two keys to approve: ",
-    }
-}
-
-fn two_key_value(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "先按 y/a，再按一次 y/a",
-        _ => "y/a then y/a again",
+        Locale::ZhHans => "Enter 执行选中项，或直接按 y/a/d",
+        _ => "Enter selected option, or press y/a/d directly",
     }
 }
 
 struct ApprovalOptionRow {
-    option: crate::tui::approval::ApprovalOption,
     label: &'static str,
     key_hint: &'static str,
     dangerous: bool,
 }
 
 fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 4] {
-    use crate::tui::approval::ApprovalOption as O;
     let dangerous = matches!(risk, RiskLevel::Destructive);
     [
         ApprovalOptionRow {
-            option: O::ApproveOnce,
             label: option_approve_once(locale),
             key_hint: "1 / y",
             dangerous,
         },
         ApprovalOptionRow {
-            option: O::ApproveAlways,
             label: option_approve_always(locale),
             key_hint: "2 / a",
             dangerous,
         },
         ApprovalOptionRow {
-            option: O::Deny,
             label: option_deny(locale),
             key_hint: "3 / d / n",
             dangerous: false,
         },
         ApprovalOptionRow {
-            option: O::Abort,
             label: option_abort(locale),
             key_hint: "Esc",
             dangerous: false,
@@ -1910,6 +1811,114 @@ fn char_display_width(ch: char) -> usize {
     }
 }
 
+fn truncate_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width <= 3 {
+        return text.chars().take(max_width).collect();
+    }
+
+    let mut out = String::new();
+    let mut width = 0usize;
+    let limit = max_width.saturating_sub(3);
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > limit {
+            break;
+        }
+        out.push(ch);
+        width += ch_width;
+    }
+    out.push_str("...");
+    out
+}
+
+fn vim_mode_style(mode: VimMode) -> Style {
+    let color = match mode {
+        VimMode::Normal => palette::TEXT_MUTED,
+        VimMode::Insert => palette::DEEPSEEK_SKY,
+        VimMode::Visual => palette::MODE_PLAN,
+    };
+    Style::default().fg(color).bold()
+}
+
+fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>> {
+    let receipt = app.active_receipt_text();
+    let session_title = app.session_title.as_deref();
+    if !app.composer.vim_enabled && receipt.is_none() && session_title.is_none() {
+        return None;
+    }
+
+    // Leave room for the left title and both borders. On narrow panes, skip
+    // extra chrome rather than letting status text collide with "Composer".
+    let max_width = usize::from(area_width.saturating_sub(18));
+    if max_width < 4 {
+        return None;
+    }
+
+    let receipt_style = Style::default()
+        .fg(palette::STATUS_SUCCESS)
+        .add_modifier(Modifier::DIM);
+    if let Some(receipt) = receipt {
+        let receipt_text = receipt.trim();
+        if app.composer.vim_enabled {
+            let vim_label = app.composer.vim_mode.label();
+            let vim_width = UnicodeWidthStr::width(vim_label);
+            let sep_width = UnicodeWidthStr::width(" · ");
+            if vim_width + sep_width + 4 <= max_width {
+                let receipt_width = max_width.saturating_sub(vim_width + sep_width);
+                return Some(Line::from(vec![
+                    Span::styled(vim_label.to_string(), vim_mode_style(app.composer.vim_mode)),
+                    Span::styled(" · ", Style::default().fg(palette::TEXT_MUTED)),
+                    Span::styled(
+                        truncate_display_width(receipt_text, receipt_width),
+                        receipt_style,
+                    ),
+                ]));
+            }
+        }
+
+        return Some(Line::from(Span::styled(
+            truncate_display_width(receipt_text, max_width),
+            receipt_style,
+        )));
+    }
+
+    let mut spans: Vec<Span> = Vec::new();
+    if app.composer.vim_enabled {
+        spans.push(Span::styled(
+            truncate_display_width(app.composer.vim_mode.label(), max_width),
+            vim_mode_style(app.composer.vim_mode),
+        ));
+    }
+    if let Some(title) = session_title {
+        let used: usize = spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        let sep = if spans.is_empty() { 0 } else { 2 };
+        let remaining = max_width.saturating_sub(used + sep);
+        if remaining >= 4 {
+            if !spans.is_empty() {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                truncate_display_width(title, remaining),
+                Style::default().fg(palette::TEXT_MUTED),
+            ));
+        }
+    }
+    if spans.is_empty() {
+        None
+    } else {
+        Some(Line::from(spans))
+    }
+}
+
 fn should_render_empty_state(app: &App) -> bool {
     app.history.is_empty() && !app.is_loading && !app.is_compacting
 }
@@ -1926,7 +1935,7 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
 
     let body = vec![
         Line::from(Span::styled(
-            format!("{inset}>_ DeepSeek TUI (v{})", env!("CARGO_PKG_VERSION")),
+            format!("{inset}>_ codewhale (v{})", env!("CARGO_PKG_VERSION")),
             Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
         )),
         Line::from(""),
@@ -1940,7 +1949,8 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         )),
     ];
 
-    let top_padding = usize::from(area.height.saturating_sub(body.len() as u16) / 3);
+    // Keep the welcome block near the top of the chat pane (header is separate).
+    let top_padding = 2usize;
     let mut lines = Vec::new();
     for _ in 0..top_padding {
         lines.push(Line::from(""));
@@ -1949,7 +1959,7 @@ fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     lines
 }
 
-fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
+pub fn composer_input_rows_budget(inner_height: u16, extra_lines: usize) -> usize {
     usize::from(inner_height).saturating_sub(extra_lines).max(1)
 }
 
@@ -2030,6 +2040,26 @@ pub(crate) struct SlashMenuEntry {
     pub alias_hint: Option<String>,
 }
 
+/// Check if all characters in `needle` appear in `haystack` in order
+/// (subsequence matching — fuzzy filtering).
+fn fuzzy_chars_in_order(needle: &str, haystack: &str) -> bool {
+    let mut chars = needle.chars();
+    let mut current = match chars.next() {
+        Some(c) => c,
+        None => return true,
+    };
+    for ch in haystack.chars() {
+        if ch == current {
+            if let Some(next) = chars.next() {
+                current = next;
+            } else {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub(crate) fn slash_completion_hints(
     input: &str,
     limit: usize,
@@ -2048,61 +2078,95 @@ pub(crate) fn slash_completion_hints(
         return Vec::new();
     }
     let mut entries: Vec<SlashMenuEntry> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let prefix_lower = prefix.to_ascii_lowercase();
 
-    // Built-in commands + user-defined commands
-    // `all_command_names_matching` returns both; we resolve descriptions for
-    // built-in ones from the static registry and use a generic label for
-    // user-defined commands.
+    // ── Phase 1: prefix (starts_with) matches ─────────────────────────
+    // Highest priority — preserves existing exact-prefix completion.
     if completing_skill_arg.is_none() {
-        let prefix_lower = prefix.to_ascii_lowercase();
         for name in commands::all_command_names_matching(prefix, workspace) {
+            seen.insert(name.clone());
             let command_key = name.trim_start_matches('/');
-            let (description, alias_hint) =
-                if let Some(info) = commands::get_command_info(command_key) {
-                    // Detect matching alias: if the user typed via pinyin rather
-                    // than the canonical name, record which alias matched.
-                    let hint = if !command_key.to_ascii_lowercase().starts_with(&prefix_lower) {
-                        info.aliases
-                            .iter()
-                            .find(|a| a.to_ascii_lowercase().starts_with(&prefix_lower))
-                            .map(|a| a.to_string())
-                    } else {
-                        None
-                    };
-                    let desc = if info.aliases.is_empty() {
-                        info.description_for(locale).to_string()
-                    } else {
-                        format!(
-                            "{}  (aliases: {})",
-                            info.description_for(locale),
-                            info.aliases
-                                .iter()
-                                .map(|a| format!("/{a}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    };
-                    (desc, hint)
-                } else {
-                    (String::from("User-defined command"), None)
-                };
-            entries.push(SlashMenuEntry {
-                name,
-                description,
-                is_skill: false,
-                alias_hint,
-            });
+            push_command_entry(&mut entries, &name, command_key, &prefix_lower, locale);
         }
     }
 
-    // Cached skills are arguments to `/skill`, not top-level commands. Keep
-    // the top-level slash menu focused on commands and expand skills only
-    // after the user has selected the skill command.
-    let prefix_lower = completing_skill_arg.unwrap_or(prefix).to_ascii_lowercase();
+    // ── Phase 2: contains (substring) matches ─────────────────────────
+    // Medium priority — broader catching.
+    if completing_skill_arg.is_none() {
+        for cmd in commands::COMMANDS {
+            let name = format!("/{}", cmd.name);
+            if seen.contains(&name) {
+                continue;
+            }
+            let cmd_lower = cmd.name.to_ascii_lowercase();
+            let alias_match = cmd
+                .aliases
+                .iter()
+                .any(|a| a.to_ascii_lowercase().contains(&prefix_lower));
+            if cmd_lower.contains(&prefix_lower) || alias_match {
+                seen.insert(name.clone());
+                push_command_entry(&mut entries, &name, cmd.name, &prefix_lower, locale);
+            }
+        }
+    }
+
+    // ── Phase 3: fuzzy subsequence matches ────────────────────────────
+    // Lowest priority — characters in order, not necessarily consecutive.
+    if completing_skill_arg.is_none() {
+        for cmd in commands::COMMANDS {
+            let name = format!("/{}", cmd.name);
+            if seen.contains(&name) {
+                continue;
+            }
+            let cmd_lower = cmd.name.to_ascii_lowercase();
+            let alias_match = cmd
+                .aliases
+                .iter()
+                .any(|a| fuzzy_chars_in_order(&prefix_lower, &a.to_ascii_lowercase()));
+            if fuzzy_chars_in_order(&prefix_lower, &cmd_lower) || alias_match {
+                seen.insert(name.clone());
+                push_command_entry(&mut entries, &name, cmd.name, &prefix_lower, locale);
+            }
+        }
+    }
+
+    // ── Skills (only after user has typed `/skill `) ──────────────────
+    let skill_prefix = completing_skill_arg.unwrap_or(prefix).to_ascii_lowercase();
     if completing_skill_arg.is_some() {
         for (skill_name, skill_desc) in cached_skills {
             let skill_name_lower = skill_name.to_ascii_lowercase();
-            if skill_name_lower.starts_with(&prefix_lower) {
+            if skill_name_lower.starts_with(&skill_prefix) {
+                entries.push(SlashMenuEntry {
+                    name: format!("/skill {skill_name}"),
+                    description: skill_desc.clone(),
+                    is_skill: true,
+                    alias_hint: None,
+                });
+            }
+        }
+        // Skills: contains fuzzy fallback
+        for (skill_name, skill_desc) in cached_skills {
+            let skill_name_lower = skill_name.to_ascii_lowercase();
+            if skill_name_lower.contains(&skill_prefix)
+                && !entries
+                    .iter()
+                    .any(|e| e.name == format!("/skill {skill_name}"))
+            {
+                entries.push(SlashMenuEntry {
+                    name: format!("/skill {skill_name}"),
+                    description: skill_desc.clone(),
+                    is_skill: true,
+                    alias_hint: None,
+                });
+            }
+        }
+        for (skill_name, skill_desc) in cached_skills {
+            let skill_name_lower = skill_name.to_ascii_lowercase();
+            if !skill_name_lower.starts_with(&skill_prefix)
+                && !skill_name_lower.contains(&skill_prefix)
+                && fuzzy_chars_in_order(&skill_prefix, &skill_name_lower)
+            {
                 entries.push(SlashMenuEntry {
                     name: format!("/skill {skill_name}"),
                     description: skill_desc.clone(),
@@ -2155,12 +2219,70 @@ pub(crate) fn slash_completion_hints(
     entries.into_iter().take(limit).collect()
 }
 
+/// Push a built-in command entry to the slash menu, resolving description
+/// and alias hints.
+fn push_command_entry(
+    entries: &mut Vec<SlashMenuEntry>,
+    name: &str,
+    command_key: &str,
+    prefix_lower: &str,
+    locale: crate::localization::Locale,
+) {
+    let (description, alias_hint) = if let Some(info) = commands::get_command_info(command_key) {
+        let hint = if !command_key.to_ascii_lowercase().starts_with(prefix_lower) {
+            info.aliases
+                .iter()
+                .find(|a| {
+                    a.to_ascii_lowercase().starts_with(prefix_lower)
+                        || a.to_ascii_lowercase().contains(prefix_lower)
+                        || fuzzy_chars_in_order(prefix_lower, &a.to_ascii_lowercase())
+                })
+                .map(|a| a.to_string())
+        } else {
+            None
+        };
+        let desc = if info.aliases.is_empty() {
+            info.description_for(locale).to_string()
+        } else {
+            format!(
+                "{}  (aliases: {})",
+                info.description_for(locale),
+                info.aliases
+                    .iter()
+                    .map(|a| format!("/{a}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        (desc, hint)
+    } else {
+        (String::from("User-defined command"), None)
+    };
+    entries.push(SlashMenuEntry {
+        name: name.to_string(),
+        description,
+        is_skill: false,
+        alias_hint,
+    });
+}
+
 fn layout_input(
     input: &str,
     cursor: usize,
     width: usize,
     max_height: usize,
 ) -> (Vec<String>, usize, usize) {
+    let (visible, visible_cursor_row, visible_cursor_col, _) =
+        layout_input_with_scroll(input, cursor, width, max_height);
+    (visible, visible_cursor_row, visible_cursor_col)
+}
+
+pub fn layout_input_with_scroll(
+    input: &str,
+    cursor: usize,
+    width: usize,
+    max_height: usize,
+) -> (Vec<String>, usize, usize, usize) {
     let mut lines = wrap_input_lines(input, width);
     if lines.is_empty() {
         lines.push(String::new());
@@ -2186,6 +2308,7 @@ fn layout_input(
         visible,
         visible_cursor_row,
         cursor_col.min(width.saturating_sub(1)),
+        start,
     )
 }
 
@@ -2252,6 +2375,34 @@ fn wrap_input_lines(input: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// For mouse coordinate mapping: returns (char_start_of_line, line_text) pairs
+/// matching the wrapping produced by `wrap_input_lines`.
+pub fn wrap_input_lines_for_mouse(input: &str, width: usize) -> Vec<(usize, String)> {
+    if input.is_empty() || width == 0 {
+        return vec![(0, String::new())];
+    }
+
+    let mut result = Vec::new();
+    let mut char_idx = 0usize;
+
+    for raw_line in input.split('\n') {
+        if raw_line.is_empty() {
+            result.push((char_idx, String::new()));
+            char_idx += 1; // the '\n'
+            continue;
+        }
+        let wrapped = wrap_text(raw_line, width);
+        for wrapped_line in &wrapped {
+            let line_char_len: usize = wrapped_line.chars().count();
+            result.push((char_idx, wrapped_line.clone()));
+            char_idx += line_char_len;
+        }
+        char_idx += 1; // the '\n'
+    }
+
+    result
+}
+
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
@@ -2291,6 +2442,56 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     lines.push(current);
     lines
+}
+
+fn line_spans_with_selection<'a>(
+    line: &'a str,
+    line_start: usize,
+    line_end: usize,
+    sel_start: usize,
+    sel_end: usize,
+    highlight_bg: Color,
+) -> Vec<Span<'a>> {
+    let normal_style = Style::default().fg(palette::TEXT_PRIMARY);
+    let sel_style = Style::default().fg(palette::TEXT_PRIMARY).bg(highlight_bg);
+
+    // No overlap between this line and the selection
+    if line_end <= sel_start || line_start >= sel_end {
+        return vec![Span::styled(line, normal_style)];
+    }
+
+    let local_sel_start = sel_start.saturating_sub(line_start);
+    let local_sel_end = sel_end.min(line_end).saturating_sub(line_start);
+
+    // Build a Vec of byte offsets for each char boundary, plus one past the end.
+    let mut byte_offsets: Vec<usize> = line.char_indices().map(|(i, _)| i).collect();
+    byte_offsets.push(line.len());
+
+    let b0 = byte_offsets
+        .get(local_sel_start)
+        .copied()
+        .unwrap_or(line.len());
+    let b1 = byte_offsets
+        .get(local_sel_end)
+        .copied()
+        .unwrap_or(line.len());
+
+    let mut spans = Vec::with_capacity(3);
+
+    // Text before selection
+    if b0 > 0 {
+        spans.push(Span::styled(&line[..b0], normal_style));
+    }
+    // Selected text
+    if b1 > b0 {
+        spans.push(Span::styled(&line[b0..b1], sel_style));
+    }
+    // Text after selection
+    if b1 < line.len() {
+        spans.push(Span::styled(&line[b1..], normal_style));
+    }
+
+    spans
 }
 
 #[cfg(test)]
@@ -2557,7 +2758,7 @@ mod tests {
     fn slash_completion_hints_exclude_set_and_deepseek_commands() {
         let hints = slash_completion_hints("/", 128, &[], Locale::En, None, ApiProvider::Deepseek);
         assert!(!hints.iter().any(|hint| hint.name == "/set"));
-        assert!(!hints.iter().any(|hint| hint.name == "/deepseek"));
+        assert!(!hints.iter().any(|hint| hint.name == "/codewhale"));
     }
 
     #[test]
@@ -2805,11 +3006,10 @@ mod tests {
     }
 
     #[test]
-    fn composer_border_does_not_render_session_title() {
+    fn composer_border_renders_session_title() {
         let mut app = create_test_app();
         app.composer_density = ComposerDensity::Comfortable;
-        app.session_title =
-            Some("hello could you please take a look at deepseek-tui and all changes".to_string());
+        app.session_title = Some("my-session".to_string());
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
@@ -2825,8 +3025,31 @@ mod tests {
         let rendered = buffer_text(&buf, area);
 
         assert!(rendered.contains("Composer"));
-        assert!(!rendered.contains("deepseek-tui"));
-        assert!(!rendered.contains("hello could you"));
+        assert!(rendered.contains("my-session"));
+    }
+
+    #[test]
+    fn composer_border_renders_active_turn_receipt() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        app.set_receipt_text("✓ turn completed · 2 tool(s) used");
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
+        let mention_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 5,
+        };
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(rendered.contains("Composer"));
+        assert!(rendered.contains("turn completed"));
+        assert!(rendered.contains("tool(s) used"));
     }
 
     #[test]
@@ -2951,7 +3174,7 @@ mod tests {
     #[test]
     fn empty_state_shows_startup_context() {
         let mut app = create_test_app();
-        app.workspace = PathBuf::from("/tmp/deepseek-test-workspace");
+        app.workspace = PathBuf::from("/tmp/codewhale-test-workspace");
         app.model = "deepseek-v4-pro".to_string();
 
         let lines = build_empty_state_lines(&app, Rect::new(0, 0, 100, 20));
@@ -2966,9 +3189,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains(&format!(">_ DeepSeek TUI (v{})", env!("CARGO_PKG_VERSION"))));
+        assert!(rendered.contains(&format!(">_ codewhale (v{})", env!("CARGO_PKG_VERSION"))));
         assert!(rendered.contains("model: deepseek-v4-pro  /model to switch"));
-        assert!(rendered.contains("directory: /tmp/deepseek-test-workspace"));
+        assert!(rendered.contains("directory: /tmp/codewhale-test-workspace"));
     }
 
     /// Probe: confirm `cell.lines_with_motion` returns no Line whose total
@@ -3100,6 +3323,35 @@ mod tests {
         assert_eq!(
             buf[(area.x + area.width - 1, area.y + area.height - 1)].bg,
             custom
+        );
+    }
+
+    #[test]
+    fn chat_widget_does_not_render_turn_receipt_as_transcript_content() {
+        let mut app = create_test_app();
+        for i in 0..8 {
+            app.add_message(HistoryCell::Assistant {
+                content: format!("assistant line {i}"),
+                streaming: false,
+            });
+        }
+        app.set_receipt_text("✓ turn completed · 2 tool(s) used");
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 6,
+        };
+        let mut buf = Buffer::empty(area);
+        let widget = ChatWidget::new(&mut app, area);
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert!(!rendered.contains("turn completed"));
+        assert!(
+            rendered.contains("assistant line 7"),
+            "receipt should not displace the latest transcript line: {rendered:?}"
         );
     }
 
@@ -3347,6 +3599,43 @@ mod tests {
             let mut buf = Buffer::empty(area);
             widget.render(area, &mut buf);
         }
+    }
+
+    #[test]
+    fn approval_selected_destructive_option_uses_contrasting_highlight() {
+        let request = crate::tui::approval::ApprovalRequest::new(
+            "approval-1",
+            "exec_shell",
+            "Run git commit",
+            &serde_json::json!({ "command": "git commit -m fix" }),
+            "exec_shell:git commit",
+        );
+        let view = crate::tui::approval::ApprovalView::new(request.clone());
+        let widget = ApprovalWidget::new(&request, &view);
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+
+        widget.render(area, &mut buf);
+
+        let selected_row = (area.y..area.y.saturating_add(area.height))
+            .find(|&y| {
+                (area.x..area.x.saturating_add(area.width))
+                    .any(|x| buf[(x, y)].bg == palette::DEEPSEEK_BLUE)
+            })
+            .expect("selected approval row should use blue background");
+        let highlighted_cells = (area.x..area.x.saturating_add(area.width))
+            .filter(|&x| {
+                let cell = &buf[(x, selected_row)];
+                !cell.symbol().trim().is_empty()
+                    && cell.bg == palette::DEEPSEEK_BLUE
+                    && cell.fg == palette::SELECTION_TEXT
+            })
+            .count();
+
+        assert!(
+            highlighted_cells >= 4,
+            "selected destructive option should render visible blue/white text"
+        );
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget

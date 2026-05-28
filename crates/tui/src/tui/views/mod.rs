@@ -3,6 +3,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use std::cell::{Cell, RefCell};
 use std::fmt;
 
+use crate::config::Config;
 use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
@@ -156,6 +157,11 @@ pub enum ViewEvent {
         provider: crate::config::ApiProvider,
         api_key: String,
     },
+    /// Emitted by the `/provider` picker when Kimi CLI OAuth credentials can
+    /// be reused for Moonshot/Kimi dispatch.
+    ProviderPickerKimiOAuthEnabled {
+        provider: crate::config::ApiProvider,
+    },
     /// Emitted by the `/mode` picker when the user chooses a mode.
     ModeSelected {
         mode: crate::tui::app::AppMode,
@@ -257,7 +263,7 @@ impl ViewStack {
     pub fn push<V: ModalView + 'static>(&mut self, view: V) {
         let kind = view.kind();
         self.views.push(Box::new(view));
-        tracing::debug!(target: "deepseek_tui::view_stack", action = "push", kind = ?kind, depth = self.views.len(), "view pushed");
+        tracing::debug!(target: "codewhale_tui::view_stack", action = "push", kind = ?kind, depth = self.views.len(), "view pushed");
     }
 
     /// Push an already-boxed view back onto the stack. Used by call sites
@@ -266,13 +272,13 @@ impl ViewStack {
     pub fn push_boxed(&mut self, view: Box<dyn ModalView>) {
         let kind = view.kind();
         self.views.push(view);
-        tracing::debug!(target: "deepseek_tui::view_stack", action = "push_boxed", kind = ?kind, depth = self.views.len(), "view pushed");
+        tracing::debug!(target: "codewhale_tui::view_stack", action = "push_boxed", kind = ?kind, depth = self.views.len(), "view pushed");
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {
         let popped = self.views.pop();
         if let Some(view) = popped.as_ref() {
-            tracing::debug!(target: "deepseek_tui::view_stack", action = "pop", kind = ?view.kind(), depth = self.views.len(), "view popped");
+            tracing::debug!(target: "codewhale_tui::view_stack", action = "pop", kind = ?view.kind(), depth = self.views.len(), "view popped");
         }
         popped
     }
@@ -330,7 +336,7 @@ impl ViewStack {
             ViewAction::None => {}
             ViewAction::Close => {
                 if let Some(view) = self.views.pop() {
-                    tracing::debug!(target: "deepseek_tui::view_stack", action = "close", kind = ?view.kind(), depth = self.views.len(), "view closed via action");
+                    tracing::debug!(target: "codewhale_tui::view_stack", action = "close", kind = ?view.kind(), depth = self.views.len(), "view closed via action");
                 }
             }
             ViewAction::Emit(event) => {
@@ -339,7 +345,7 @@ impl ViewStack {
             ViewAction::EmitAndClose(event) => {
                 events.push(event);
                 if let Some(view) = self.views.pop() {
-                    tracing::debug!(target: "deepseek_tui::view_stack", action = "emit_and_close", kind = ?view.kind(), depth = self.views.len(), "view closed via action");
+                    tracing::debug!(target: "codewhale_tui::view_stack", action = "emit_and_close", kind = ?view.kind(), depth = self.views.len(), "view closed via action");
                 }
             }
         }
@@ -606,6 +612,15 @@ impl ConfigView {
                     .as_deref()
                     .unwrap_or("(config/default)")
                     .to_string(),
+                editable: true,
+                scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Model,
+                key: "base_url".to_string(),
+                value: Config::load(app.config_path.clone(), app.config_profile.as_deref())
+                    .map(|config| config.deepseek_base_url())
+                    .unwrap_or_else(|_| "(unavailable)".to_string()),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -1234,6 +1249,18 @@ impl ModalView for ConfigView {
                 }
                 ViewAction::None
             }
+            // Ctrl+H is the legacy ASCII backspace many terminals emit.
+            KeyCode::Char('h')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                if !self.filter.is_empty() {
+                    self.update_filter(|filter| {
+                        filter.pop();
+                    });
+                }
+                ViewAction::None
+            }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.clear_filter();
                 ViewAction::None
@@ -1536,6 +1563,7 @@ pub(crate) fn subagent_view_agents(
                 SubAgentStatus::Running,
                 progress,
                 Some("live"),
+                None, // live rows compute nickname from agent manager on render
             ));
         }
     }
@@ -1553,6 +1581,7 @@ pub(crate) fn subagent_view_agents(
                     lifecycle_to_subagent_status(card.status),
                     card.summary.as_deref().unwrap_or(card.agent_type.as_str()),
                     Some("transcript"),
+                    None, // transcript-derived rows get nickname from manager on render
                 ));
             }
             HistoryCell::SubAgent(SubAgentCell::Fanout(card)) => {
@@ -1569,6 +1598,7 @@ pub(crate) fn subagent_view_agents(
                             lifecycle_to_subagent_status(worker.status),
                             &objective,
                             Some(card.kind.as_str()),
+                            None, // fanout worker rows get nickname from manager on render
                         ));
                     }
                 }
@@ -1595,6 +1625,7 @@ fn live_subagent_result(
     status: SubAgentStatus,
     objective: &str,
     role: Option<&str>,
+    nickname: Option<String>,
 ) -> SubAgentResult {
     SubAgentResult {
         name: agent_id.to_string(),
@@ -1607,7 +1638,7 @@ fn live_subagent_result(
             role: role.map(str::to_string),
         },
         model: String::new(),
-        nickname: None,
+        nickname,
         status,
         result: None,
         steps_taken: 0,
@@ -1717,7 +1748,7 @@ impl ModalView for SubAgentsView {
             let mut summary_parts = Vec::new();
             for (label, count, color) in status_summary {
                 summary_parts.push(Line::from(Span::styled(
-                    format!("{}: {}", label, count),
+                    format!("{label}: {count}"),
                     Style::default().fg(color),
                 )));
             }
@@ -1849,15 +1880,19 @@ fn append_subagent_group(
 
     for agent in agents {
         let id = truncate_view_text(&agent.agent_id, 11);
+        let display_name = agent
+            .nickname
+            .as_deref()
+            .map(|nick| format!("{nick:<12}"))
+            .unwrap_or_else(|| format!("{id:<12}"));
         let kind = format_agent_type(&agent.agent_type);
         let (status, status_style, status_detail) = format_agent_status(&agent.status);
 
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(
-                format!("{id:<12}"),
-                Style::default().fg(palette::TEXT_PRIMARY),
-            ),
+            Span::styled(display_name, Style::default().fg(palette::TEXT_PRIMARY)),
+            Span::raw(" "),
+            Span::styled(format!("{id:<11}"), Style::default().fg(palette::TEXT_DIM)),
             Span::styled(
                 format!("{kind:<9}"),
                 Style::default().fg(palette::TEXT_MUTED),
@@ -1988,6 +2023,7 @@ mod tests {
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::{buffer::Buffer, layout::Rect};
+    use std::fs;
     use std::path::PathBuf;
 
     fn create_test_app() -> App {
@@ -2150,6 +2186,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(keys.contains(&"model"));
         assert!(keys.contains(&"reasoning_effort"));
+        assert!(keys.contains(&"base_url"));
         assert!(keys.contains(&"approval_mode"));
         assert!(keys.contains(&"theme"));
         assert!(keys.contains(&"locale"));
@@ -2166,6 +2203,32 @@ mod tests {
         assert!(keys.contains(&"prefer_external_pdftotext"));
         assert!(keys.contains(&"mcp_config_path"));
         assert!(view.rows.iter().all(|row| row.editable));
+    }
+
+    #[test]
+    fn config_view_base_url_reflects_app_config_path() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "-base-url-view-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let config_path = temp_root.join("config.toml");
+        fs::write(
+            &config_path,
+            "base_url = \"https://ui-config-view.local/v1\"\n",
+        )
+        .unwrap();
+
+        let mut app = create_test_app();
+        app.config_path = Some(config_path.clone());
+        let view = ConfigView::new_for_app(&app);
+
+        let row = view
+            .rows
+            .iter()
+            .find(|row| row.key == "base_url")
+            .expect("base_url row missing");
+        assert_eq!(row.value, "https://ui-config-view.local/v1");
     }
 
     #[test]

@@ -222,6 +222,12 @@ impl Harness {
             return PathBuf::from(path);
         }
         if name == "deepseek-tui"
+            && let Some(path) = option_env!("CARGO_BIN_EXE_codewhale-tui")
+        {
+            return PathBuf::from(path);
+        }
+        // Legacy fallback for callers still referencing the old bin name.
+        if name == "deepseek-tui"
             && let Some(path) = option_env!("CARGO_BIN_EXE_deepseek-tui")
         {
             return PathBuf::from(path);

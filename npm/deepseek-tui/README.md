@@ -1,24 +1,24 @@
-# deepseek-tui
+#  (deprecated)
 
-Install and run the `deepseek` and `deepseek-tui` binaries from GitHub release artifacts.
-
-## Install
+This package has been renamed to **codewhale**. Install that instead:
 
 ```bash
-npm install -g @coohu/deepseek-tui
+npm install -g @coohu/
 # or
-pnpm add -g @coohu/deepseek-tui
+pnpm add -g @coohu/
 ```
 
-For project-local usage:
+`codewhale` ships the same `codewhale` and `deepseek-tui` binaries plus
+deprecation shims under the old `deepseek` / `` names so existing
+scripts keep working through the v0.8.x transition.
 
 ```bash
-npm install @coohu/deepseek-tui
-npx @coohu/deepseek-tui --help
+npm install @coohu/
+npx @coohu/ --help
 ```
 
 `postinstall` tries to download platform binaries into `bin/downloads/` and
-exposes `deepseek` and `deepseek-tui` commands. If GitHub release assets are
+exposes `deepseek` and `` commands. If GitHub release assets are
 temporarily unreachable, install continues and the wrapper retries the download
 on first run.
 
@@ -30,7 +30,7 @@ deepseek doctor
 deepseek
 ```
 
-The `deepseek` facade and `deepseek-tui` binary share `~/.deepseek/config.toml`
+The `deepseek` facade and `` binary share `~/.deepseek/config.toml`
 for DeepSeek auth and default model settings. Common TUI commands are available
 directly through the facade, including `deepseek doctor`, `deepseek models`,
 `deepseek sessions`, and `deepseek resume --last`.
@@ -64,7 +64,7 @@ Prebuilt binaries for the GitHub release are downloaded automatically:
 Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
 shipped as prebuilts. Unsupported platforms, checksum failures, and glibc
 compatibility problems still fail with a clear error pointing you at
-`cargo install deepseek-tui-cli deepseek-tui --locked` and the full
+`cargo install -cli  --locked` and the full
 [docs/INSTALL.md](https://github.com/coohu/DeepSeek-TUI/blob/main/docs/INSTALL.md)
 build-from-source guide.
 

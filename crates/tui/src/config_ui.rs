@@ -278,6 +278,7 @@ pub enum StatusItemValue {
     GitBranch,
     LastToolElapsed,
     RateLimit,
+    Tokens,
 }
 
 pub fn parse_mode(arg: Option<&str>) -> Result<ConfigUiMode, String> {
@@ -348,7 +349,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
 
 pub fn build_schema() -> Value {
     let mut schema = serde_json::to_value(schema_for!(ConfigUiDocument)).expect("config ui schema");
-    schema["title"] = Value::String("DeepSeek TUI Config".to_string());
+    schema["title"] = Value::String("codewhale Config".to_string());
     schema["description"] =
         Value::String("Edit runtime and persisted TUI configuration.".to_string());
     schema
@@ -359,7 +360,7 @@ pub fn run_tui_editor(app: &App, config: &Config) -> Result<ConfigUiDocument> {
     let document = build_document(app, config)?;
     let value = SchemaUI::new(serde_json::to_value(document.clone())?)
         .with_schema(build_schema())
-        .with_title("DeepSeek TUI Config")
+        .with_title("codewhale Config")
         .with_description("Edit persisted settings and live runtime knobs.")
         .run(FrontendOptions::Tui(
             UiOptions::default()
@@ -377,7 +378,7 @@ pub async fn start_web_editor(app: &App, config: &Config) -> Result<WebConfigSes
     let initial = serde_json::to_value(build_document(app, config)?)?;
     let session = WebSessionBuilder::new(build_schema())
         .with_initial_data(initial)
-        .with_title("DeepSeek TUI Config")
+        .with_title("codewhale Config")
         .with_description("Save updates the browser draft. Exit commits changes back to the TUI.")
         .build()?;
     let bound = bind_session(session, ServeOptions::default()).await?;
@@ -686,7 +687,11 @@ fn apply_reasoning_effort(
     app.last_effective_reasoning_effort = None;
     app.update_model_compaction_budget();
     if persist {
-        commands::persist_root_string_key("reasoning_effort", effort.as_setting())?;
+        commands::persist_root_string_key(
+            app.config_path.as_deref(),
+            "reasoning_effort",
+            effort.as_setting(),
+        )?;
     }
     config.reasoning_effort = Some(effort.as_setting().to_string());
     Ok(())
@@ -996,6 +1001,7 @@ impl From<StatusItem> for StatusItemValue {
             StatusItem::GitBranch => Self::GitBranch,
             StatusItem::LastToolElapsed => Self::LastToolElapsed,
             StatusItem::RateLimit => Self::RateLimit,
+            StatusItem::Tokens => Self::Tokens,
         }
     }
 }
@@ -1016,6 +1022,7 @@ impl From<StatusItemValue> for StatusItem {
             StatusItemValue::GitBranch => Self::GitBranch,
             StatusItemValue::LastToolElapsed => Self::LastToolElapsed,
             StatusItemValue::RateLimit => Self::RateLimit,
+            StatusItemValue::Tokens => Self::Tokens,
         }
     }
 }
@@ -1082,7 +1089,7 @@ mod tests {
             .expect("clock")
             .as_nanos();
         let temp_root = std::env::temp_dir().join(format!(
-            "deepseek-config-ui-cost-currency-{}-{}",
+            "codewhale-config-ui-cost-currency-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -1126,7 +1133,7 @@ cost_currency = "cny"
             .expect("clock")
             .as_nanos();
         let temp_root = std::env::temp_dir().join(format!(
-            "deepseek-config-ui-background-color-{}-{}",
+            "codewhale-config-ui-background-color-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -1208,7 +1215,7 @@ background_color = "#1A1B26"
             .expect("clock")
             .as_nanos();
         let temp_root = std::env::temp_dir().join(format!(
-            "deepseek-config-ui-session-only-{}-{}",
+            "codewhale-config-ui-session-only-{}-{}",
             std::process::id(),
             nanos
         ));

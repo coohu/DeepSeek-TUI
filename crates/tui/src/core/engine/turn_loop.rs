@@ -20,6 +20,11 @@ impl Engine {
         mode: AppMode,
         force_update_plan_first: bool,
     ) -> (TurnOutcomeStatus, Option<String>) {
+        // Signal to the terminal / taskbar that a turn is in progress
+        // (OSC 9 ; 4 indeterminate progress + title spinner).
+        crate::tui::notifications::set_taskbar_progress_busy();
+        crate::tui::notifications::start_title_animation("DeepSeek TUI");
+
         let client = self
             .deepseek_client
             .clone()
@@ -30,10 +35,11 @@ impl Engine {
         let mut context_recovery_attempts = 0u8;
         let mut tool_catalog = tools.unwrap_or_default();
         if !tool_catalog.is_empty() {
-            ensure_advanced_tooling(&mut tool_catalog, mode);
+            ensure_advanced_tooling(&mut tool_catalog, mode, &self.config.tools_always_load);
         }
         let mut active_tool_names = initial_active_tools(&tool_catalog);
         let mut loop_guard = LoopGuard::default();
+        let mut goal_continuations_this_turn = 0u32;
 
         // Transparent stream-retry counter: when the chunked-transfer
         // connection dies mid-stream and we got nothing useful out of it
@@ -173,16 +179,13 @@ impl Engine {
                 continue;
             }
 
-            if let Some(input_budget) =
-                context_input_budget(&self.session.model, TURN_MAX_OUTPUT_TOKENS)
-            {
+            if let Some(input_budget) = context_input_budget(&self.session.model) {
                 let estimated_input = self.estimated_input_tokens();
                 if estimated_input > input_budget {
                     if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {
                         let message = format!(
-                            "Context remains above model limit after {} recovery attempts \
-                             (~{} token estimate, ~{} budget). Please run /compact or /clear.",
-                            MAX_CONTEXT_RECOVERY_ATTEMPTS, estimated_input, input_budget
+                            "Context remains above model limit after {MAX_CONTEXT_RECOVERY_ATTEMPTS} recovery attempts \
+                             (~{estimated_input} token estimate, ~{input_budget} budget). Please run /compact or /clear."
                         );
                         turn_error = Some(message.clone());
                         let _ = self
@@ -193,11 +196,7 @@ impl Engine {
                     }
 
                     if self
-                        .recover_context_overflow(
-                            &client,
-                            "preflight token budget",
-                            TURN_MAX_OUTPUT_TOKENS,
-                        )
+                        .recover_context_overflow(&client, "preflight token budget")
                         .await
                     {
                         context_recovery_attempts = context_recovery_attempts.saturating_add(1);
@@ -327,11 +326,7 @@ impl Engine {
                     if is_context_length_error_message(&message)
                         && context_recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
                         && self
-                            .recover_context_overflow(
-                                &client,
-                                "provider context-length rejection",
-                                TURN_MAX_OUTPUT_TOKENS,
-                            )
+                            .recover_context_overflow(&client, "provider context-length rejection")
                             .await
                     {
                         context_recovery_attempts = context_recovery_attempts.saturating_add(1);
@@ -489,8 +484,7 @@ impl Engine {
                             transparent_stream_retries =
                                 transparent_stream_retries.saturating_add(1);
                             crate::logging::info(format!(
-                                "Transparent stream retry {}/{} (no content received yet): {}",
-                                transparent_stream_retries, MAX_TRANSPARENT_STREAM_RETRIES, message,
+                                "Transparent stream retry {transparent_stream_retries}/{MAX_TRANSPARENT_STREAM_RETRIES} (no content received yet): {message}",
                             ));
                             // Drop the failed stream before issuing the new
                             // request to release the underlying connection.
@@ -585,8 +579,7 @@ impl Engine {
                             caller,
                         } => {
                             crate::logging::info(format!(
-                                "Tool '{}' block start. Initial input: {:?}",
-                                name, input
+                                "Tool '{name}' block start. Initial input: {input:?}"
                             ));
                             current_block_kind = Some(ContentBlockKind::ToolUse);
                             current_tool_indices.insert(index, tool_uses.len());
@@ -604,8 +597,7 @@ impl Engine {
                         }
                         ContentBlockStart::ServerToolUse { id, name, input } => {
                             crate::logging::info(format!(
-                                "Server tool '{}' block start. Initial input: {:?}",
-                                name, input
+                                "Server tool '{name}' block start. Initial input: {input:?}"
                             ));
                             current_block_kind = Some(ContentBlockKind::ToolUse);
                             current_tool_indices.insert(index, tool_uses.len());
@@ -781,14 +773,12 @@ impl Engine {
                 if stream_retry_attempts < MAX_STREAM_RETRIES {
                     stream_retry_attempts = stream_retry_attempts.saturating_add(1);
                     crate::logging::warn(format!(
-                        "Stream died with no content (attempt {}/{}); retrying request",
-                        stream_retry_attempts, MAX_STREAM_RETRIES
+                        "Stream died with no content (attempt {stream_retry_attempts}/{MAX_STREAM_RETRIES}); retrying request"
                     ));
                     let _ = self
                         .tx_event
                         .send(Event::status(format!(
-                            "Connection interrupted; retrying ({}/{})",
-                            stream_retry_attempts, MAX_STREAM_RETRIES
+                            "Connection interrupted; retrying ({stream_retry_attempts}/{MAX_STREAM_RETRIES})"
                         )))
                         .await;
                     // Don't preserve the per-stream `turn_error` — we're
@@ -798,8 +788,7 @@ impl Engine {
                     continue;
                 }
                 crate::logging::warn(format!(
-                    "Stream retry budget exhausted ({} attempts); failing turn",
-                    stream_retry_attempts
+                    "Stream retry budget exhausted ({stream_retry_attempts} attempts); failing turn"
                 ));
             } else if stream_errors == 0 {
                 // Healthy round → reset retry budget so we don't carry over
@@ -924,7 +913,7 @@ impl Engine {
                 // streaming with no tool calls — but if it has direct children
                 // still running (or completions queued from children that
                 // finished while we were inferring), surface their
-                // `<deepseek:subagent.done>` sentinels into the transcript and
+                // `<codewhale:subagent.done>` sentinels into the transcript and
                 // resume instead of ending the turn. This fulfils the contract
                 // already documented in `prompts/base.md`: the parent is
                 // promised it'll see the sentinel when a child finishes.
@@ -1103,6 +1092,46 @@ impl Engine {
                 // code fell straight through to this `break`, emitting nothing
                 // and leaving the UI spinner hung. Surface a status now —
                 // safe because the turn can no longer resume.
+                // #1961: Before breaking, drain any sub-agent completions that
+                // arrived between the last hold check and now. If a child finished
+                // while we were running the thinking-only check, surface its
+                // sentinel rather than delaying it to the next turn.
+                let mut late_completions: Vec<crate::tools::subagent::SubAgentCompletion> =
+                    Vec::new();
+                while let Ok(c) = self.rx_subagent_completion.try_recv() {
+                    late_completions.push(c);
+                }
+                if !late_completions.is_empty() {
+                    let count = late_completions.len();
+                    for c in late_completions {
+                        self.add_session_message(subagent_completion_runtime_message(&c.payload))
+                            .await;
+                    }
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Resuming turn with {count} late sub-agent completion(s)"
+                        )))
+                        .await;
+                    turn.next_step();
+                    continue;
+                }
+
+                if let Some(continuation) = self
+                    .goal_continuation_message_if_needed(
+                        tool_registry,
+                        &mut goal_continuations_this_turn,
+                    )
+                    .await
+                {
+                    self.add_session_message(
+                        self.user_text_message_with_turn_metadata(continuation),
+                    )
+                    .await;
+                    turn.next_step();
+                    continue;
+                }
+
                 if thinking_only_no_sendable {
                     let holding_for_subagents = {
                         let running = {
@@ -1156,8 +1185,7 @@ impl Engine {
                 let tool_input = tool.input.clone();
                 let tool_caller = tool.caller.clone();
                 crate::logging::info(format!(
-                    "Planning tool '{}' with input: {:?}",
-                    tool_name, tool_input
+                    "Planning tool '{tool_name}' with input: {tool_input:?}"
                 ));
 
                 let interactive = (tool_name == "exec_shell"
@@ -1187,7 +1215,7 @@ impl Engine {
                     )
                 {
                     blocked_error = Some(ToolError::permission_denied(format!(
-                        "Tool '{tool_name}' is unavailable in Plan mode"
+                        "'{tool_name}' is not available in Plan mode — switch to Agent, Goal, or YOLO mode to run commands and code."
                     )));
                 }
 
@@ -1201,8 +1229,7 @@ impl Engine {
                     && let Some(canonical) = registry.resolve(&tool_name)
                 {
                     crate::logging::info(format!(
-                        "Resolved hallucinated tool name '{}' -> '{}'",
-                        tool_name, canonical
+                        "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
                     ));
                     tool_def = tool_catalog.iter().find(|d| d.name == canonical);
                     if tool_def.is_some() {
@@ -1281,8 +1308,7 @@ impl Engine {
                             format!("Auto-loaded deferred tool '{tool_name}' after model request.")
                         } else {
                             format!(
-                                "Auto-loaded deferred tool '{}' after resolving '{}'.",
-                                tool_name, requested_tool_name
+                                "Auto-loaded deferred tool '{tool_name}' after resolving '{requested_tool_name}'."
                             )
                         };
                         let _ = self.tx_event.send(Event::status(status)).await;
@@ -1934,7 +1960,9 @@ impl Engine {
 
             if let Some(message) = loop_guard_halt {
                 crate::logging::warn(message.clone());
-                let _ = self.tx_event.send(Event::status(message)).await;
+                let _ = self.tx_event.send(Event::status(message.clone())).await;
+                // 设置 turn_error 以确保最终返回 TurnOutcomeStatus::Failed 而非 Completed
+                turn_error = Some(message);
                 break;
             }
 
@@ -1996,6 +2024,55 @@ impl Engine {
         (TurnOutcomeStatus::Completed, None)
     }
 
+    async fn goal_continuation_message_if_needed(
+        &self,
+        tool_registry: Option<&crate::tools::ToolRegistry>,
+        continuations_this_turn: &mut u32,
+    ) -> Option<String> {
+        let registry = tool_registry?;
+        if !registry.contains("update_goal") {
+            return None;
+        }
+
+        let snapshot = match self.config.goal_state.lock() {
+            Ok(state) => state.snapshot(),
+            Err(err) => {
+                tracing::warn!("goal state lock poisoned during continuation check: {err}");
+                return None;
+            }
+        };
+
+        if !snapshot.is_active() {
+            return None;
+        }
+
+        let max = crate::tools::goal::MAX_GOAL_CONTINUATIONS_PER_TURN;
+        if *continuations_this_turn >= max {
+            let _ = self
+                .tx_event
+                .send(Event::status(format!(
+                    "Goal remains active after {max} continuation pass(es); ending turn to avoid a runaway loop."
+                )))
+                .await;
+            return None;
+        }
+
+        *continuations_this_turn = (*continuations_this_turn).saturating_add(1);
+        let _ = self
+            .tx_event
+            .send(Event::status(format!(
+                "Continuing active goal audit ({}/{max})",
+                *continuations_this_turn
+            )))
+            .await;
+
+        Some(crate::tools::goal::render_continuation_prompt(
+            &snapshot,
+            *continuations_this_turn,
+            max,
+        ))
+    }
+
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
         // `<turn_meta>` is stored on user-text messages when the message is
         // appended. Do not rewrite historical messages at request time: doing
@@ -2006,17 +2083,25 @@ impl Engine {
 }
 
 fn subagent_completion_runtime_message(payload: &str) -> Message {
+    // Role is "user", not "system": some OpenAI-compatible backends apply a
+    // strict chat template (e.g. vLLM serving Qwen3) that requires any system
+    // message to be messages[0]. A system message appended mid-conversation
+    // makes the template raise "System message must be at the beginning",
+    // which surfaces as a 400 BadRequest and breaks the whole sub-agent
+    // hand-off in the parent turn. The `visibility="internal"` tag already
+    // tells the model this is a runtime event rather than user input, so the
+    // role carries no semantic weight here — only template-compatibility cost.
     Message {
-        role: "system".to_string(),
+        role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "<deepseek:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+                "<codewhale:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
 This is an internal runtime event, not user input. Use the sub-agent completion \
 data below to continue coordinating the current task. Do not tell the user they \
 pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
 XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 {payload}\n\
-</deepseek:runtime_event>"
+</codewhale:runtime_event>"
             ),
             cache_control: None,
         }],
@@ -2107,19 +2192,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subagent_completion_handoff_is_internal_system_message() {
+    fn subagent_completion_handoff_is_internal_user_message() {
         let message = subagent_completion_runtime_message(
-            "Build passed\n<deepseek:subagent.done>{\"agent_id\":\"agent_a\"}</deepseek:subagent.done>",
+            "Build passed\n<codewhale:subagent.done>{\"agent_id\":\"agent_a\"}</codewhale:subagent.done>",
         );
 
-        assert_eq!(message.role, "system");
+        // Must be "user", not "system": a system message appended mid-stream
+        // trips strict chat templates (vLLM/Qwen3) into a 400 BadRequest
+        // ("System message must be at the beginning"). The internal-event
+        // framing lives in the text + visibility tag, not the role.
+        assert_eq!(message.role, "user");
         let text = match &message.content[0] {
             ContentBlock::Text { text, .. } => text,
             other => panic!("expected text block, got {other:?}"),
         };
         assert!(text.contains("internal runtime event, not user input"));
         assert!(text.contains("Do not tell the user they pasted sentinels"));
-        assert!(text.contains("<deepseek:subagent.done>"));
+        assert!(text.contains("<codewhale:subagent.done>"));
         assert!(text.contains("Build passed"));
     }
 

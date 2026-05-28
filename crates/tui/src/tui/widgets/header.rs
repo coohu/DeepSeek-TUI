@@ -637,7 +637,7 @@ mod tests {
     fn header_renders_version_chip_when_width_allows() {
         // At a generous width the header must surface the runtime version
         // — users repeatedly ask for it in the live UI (vs only via
-        // `deepseek --version` / `/status`).
+        // `codewhale --version` / `/status`).
         let rendered = render_header(
             HeaderData::new(
                 AppMode::Agent,

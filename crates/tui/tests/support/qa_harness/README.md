@@ -1,6 +1,6 @@
 # PTY/frame-capture TUI QA harness
 
-Tiny helper for integration tests that need to drive `deepseek-tui` like a real
+Tiny helper for integration tests that need to drive `` like a real
 user typing in a real terminal — keys, paste, resize, plus assertions over the
 parsed terminal frame and the workspace filesystem.
 
