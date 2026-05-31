@@ -5,7 +5,7 @@ use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -41,7 +41,7 @@ use crate::client::{DeepSeekClient, build_cache_warmup_request};
 use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{
-    ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, ProviderConfig, ProvidersConfig,
+    ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, ProviderConfig, ProvidersConfig, StatusItem,
     save_provider_auth_mode_for,
 };
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
@@ -906,6 +906,55 @@ fn active_rlm_task_entries(app: &App) -> Vec<TaskPanelEntry> {
         .collect()
 }
 
+/// Minimum interval between balance API fetches to avoid flooding.
+const BALANCE_FETCH_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Shared `reqwest::Client` for balance fetches so connection pools are
+/// reused across successive background polls.
+static BALANCE_CLIENT: LazyLock<::reqwest::Client> = LazyLock::new(|| {
+    ::reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default()
+});
+
+/// Fetch the DeepSeek account balance from the balance API.
+///
+/// Returns `None` on any error (network, auth, parse) — callers should treat
+/// a `None` return as "balance unknown" and keep the previous value.
+async fn fetch_deepseek_balance(
+    api_key: &str,
+    base_url: &str,
+) -> Option<crate::pricing::BalanceInfo> {
+    let url = format!("{}/user/balance", base_url.trim_end_matches('/'));
+    let client = &*BALANCE_CLIENT;
+    let response = client
+        .get(url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        tracing::debug!(
+            "balance API returned {}: {}",
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default()
+        );
+        return None;
+    }
+    let body: crate::pricing::BalanceResponse = response.json().await.ok()?;
+    // Return the first balance entry (typically the user's primary currency).
+    body.balance_infos.into_iter().next()
+}
+
+fn should_fetch_deepseek_balance(app: &App) -> bool {
+    app.status_items.contains(&StatusItem::Balance)
+        && matches!(
+            app.api_provider,
+            ApiProvider::Deepseek | ApiProvider::DeepseekCN
+        )
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_event_loop(
     terminal: &mut AppTerminal,
@@ -971,6 +1020,26 @@ async fn run_event_loop(
             version_hint_from_release_json(&json, &current)
         })
     });
+
+    // Fire a one-shot initial balance fetch for DeepSeek providers
+    // so the footer chip shows balance on the first frame without
+    // waiting for a turn to complete.
+    if !app.balance_initiated && should_fetch_deepseek_balance(app) {
+        let cell = app.balance_cell.clone();
+        let api_key = config.deepseek_api_key().unwrap_or_default();
+        let base_url = config.deepseek_base_url();
+        if !api_key.is_empty() {
+            app.last_balance_fetch = Some(Instant::now());
+            tokio::spawn(async move {
+                if let Some(info) = fetch_deepseek_balance(&api_key, &base_url).await
+                    && let Ok(mut guard) = cell.lock()
+                {
+                    *guard = Some(info);
+                }
+            });
+        }
+        app.balance_initiated = true;
+    }
 
     loop {
         // Drain the version-check handle once; re-assign None so we
@@ -1665,6 +1734,29 @@ async fn run_event_loop(
                         }
                         persistence_actor::persist(PersistRequest::ClearCheckpoint);
 
+                        // Refresh DeepSeek account balance after each completed
+                        // turn so the footer balance chip stays current without
+                        // adding latency to any request path.
+                        let balance_cooldown_expired = app
+                            .last_balance_fetch
+                            .map_or(true, |t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
+                        if balance_cooldown_expired && should_fetch_deepseek_balance(app) {
+                            let cell = app.balance_cell.clone();
+                            let api_key = config.deepseek_api_key().unwrap_or_default();
+                            let base_url = config.deepseek_base_url();
+                            if !api_key.is_empty() {
+                                app.last_balance_fetch = Some(Instant::now());
+                                tokio::spawn(async move {
+                                    if let Some(info) =
+                                        fetch_deepseek_balance(&api_key, &base_url).await
+                                        && let Ok(mut guard) = cell.lock()
+                                    {
+                                        *guard = Some(info);
+                                    }
+                                });
+                            }
+                        }
+
                         if app.mode == AppMode::Plan
                             && app.plan_tool_used_in_turn
                             && !app.plan_prompt_pending
@@ -1966,6 +2058,7 @@ async fn run_event_loop(
                         input,
                         approval_key,
                         approval_grouping_key,
+                        intent_summary,
                     } => {
                         let session_approved =
                             is_session_approved_for_tool(app, &tool_name, &approval_grouping_key);
@@ -2017,6 +2110,7 @@ async fn run_event_loop(
                                 &description,
                                 &tool_input,
                                 &approval_key,
+                                intent_summary.as_deref(),
                             );
                             log_sensitive_event(
                                 "tool.approval.prompted",
@@ -5015,6 +5109,30 @@ async fn apply_command_result(
             }
             AppAction::SwitchProvider { provider, model } => {
                 switch_provider(app, engine_handle, config, provider, model).await;
+                // Refresh balance after provider switch.
+                let balance_cooldown_expired = app
+                    .last_balance_fetch
+                    .map_or(true, |t| t.elapsed() >= BALANCE_FETCH_COOLDOWN);
+                if balance_cooldown_expired && should_fetch_deepseek_balance(app) {
+                    let cell = app.balance_cell.clone();
+                    let api_key = config.deepseek_api_key().unwrap_or_default();
+                    let base_url = config.deepseek_base_url();
+                    if !api_key.is_empty() {
+                        app.last_balance_fetch = Some(Instant::now());
+                        tokio::spawn(async move {
+                            if let Some(info) = fetch_deepseek_balance(&api_key, &base_url).await
+                                && let Ok(mut guard) = cell.lock()
+                            {
+                                *guard = Some(info);
+                            }
+                        });
+                    }
+                } else {
+                    // Clear balance when switching to a non-DeepSeek provider.
+                    if let Ok(mut guard) = app.balance_cell.lock() {
+                        *guard = None;
+                    }
+                }
             }
             AppAction::UpdateCompaction(compaction) => {
                 apply_model_and_compaction_update(engine_handle, compaction).await;
@@ -5117,6 +5235,7 @@ async fn apply_command_result(
                     app.view_stack
                         .push(crate::tui::views::status_picker::StatusPickerView::new(
                             &app.status_items,
+                            app.api_provider,
                         ));
                 }
             }
@@ -6339,6 +6458,7 @@ fn toggle_live_transcript_overlay(app: &mut App) {
     app.needs_redraw = true;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_view_events(
     terminal: &mut AppTerminal,
     app: &mut App,
@@ -6689,12 +6809,20 @@ fn push_approval_request_view(
     description: &str,
     tool_input: &serde_json::Value,
     approval_key: &str,
+    intent_summary: Option<&str>,
 ) {
     if tool_name == "apply_patch" {
         maybe_add_patch_preview(app, tool_input);
     }
 
-    let request = ApprovalRequest::new(id, tool_name, description, tool_input, approval_key);
+    let request = ApprovalRequest::new_with_intent(
+        id,
+        tool_name,
+        description,
+        tool_input,
+        approval_key,
+        intent_summary,
+    );
     app.view_stack
         .push(ApprovalView::new_for_locale(request, app.ui_locale));
 }

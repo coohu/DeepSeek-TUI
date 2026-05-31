@@ -1166,6 +1166,45 @@ impl Renderable for ApprovalWidget<'_> {
             ]));
         }
 
+        // Intent summary — the model's explanation of why this change is needed (#2381).
+        if let Some(ref summary) = self.request.intent_summary {
+            let max_width = card_area.width.saturating_sub(14) as usize;
+            if max_width > 0 {
+                lines.push(Line::from(""));
+                let intent_label = match locale {
+                    Locale::ZhHans => "意图：",
+                    _ => "Intent: ",
+                };
+                let summary_lines: Vec<&str> = summary.lines().collect();
+                for (i, sline) in summary_lines.iter().take(3).enumerate() {
+                    let prefix = if i == 0 { intent_label } else { "  " };
+                    let truncated = crate::utils::truncate_with_ellipsis(sline, max_width, "...");
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            prefix,
+                            if i == 0 {
+                                Style::default().fg(palette::TEXT_HINT)
+                            } else {
+                                Style::default()
+                            },
+                        ),
+                        Span::styled(truncated, Style::default().fg(palette::TEXT_SECONDARY)),
+                    ]));
+                }
+                if summary_lines.len() > 3 {
+                    let more = match locale {
+                        Locale::ZhHans => format!("  … (还有 {} 行)", summary_lines.len() - 3),
+                        _ => format!("  … (+{} lines)", summary_lines.len() - 3),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(more, Style::default().fg(palette::TEXT_HINT)),
+                    ]));
+                }
+            }
+        }
+
         lines.push(Line::from(""));
         let params_str = self.request.params_display();
         let params_width = card_area.width.saturating_sub(14) as usize;

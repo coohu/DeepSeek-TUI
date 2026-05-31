@@ -2683,6 +2683,7 @@ impl RuntimeThreadManager {
                     id,
                     tool_name,
                     description,
+                    intent_summary,
                     ..
                 } => {
                     self.emit_event(
@@ -2695,6 +2696,7 @@ impl RuntimeThreadManager {
                             "approval_id": id,
                             "tool_name": tool_name,
                             "description": description,
+                            "intent_summary": intent_summary,
                         }),
                     )
                     .await?;
@@ -4217,6 +4219,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "stale approval".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 
@@ -4291,6 +4294,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "external allow".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: Some("I will update the config file.".to_string()),
             })
             .await?;
 
@@ -4299,6 +4303,20 @@ mod tests {
             sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(manager.pending_approvals_count(), 1);
+
+        let events = manager.events_since(&thread.id, None)?;
+        let approval_event = events
+            .iter()
+            .rev()
+            .find(|event| event.event == "approval.required")
+            .context("missing approval.required event")?;
+        assert_eq!(
+            approval_event
+                .payload
+                .get("intent_summary")
+                .and_then(Value::as_str),
+            Some("I will update the config file.")
+        );
 
         assert!(manager.deliver_external_approval(
             "tool_external_allow",
@@ -4369,6 +4387,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "external deny".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 
@@ -4556,6 +4575,7 @@ mod tests {
                 tool_name: "exec_command".to_string(),
                 description: "remember=true".to_string(),
                 input: serde_json::json!({}),
+                intent_summary: None,
             })
             .await?;
 
