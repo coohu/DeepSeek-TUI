@@ -12,7 +12,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -331,11 +331,10 @@ pub struct Engine {
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
-    /// Cached SlopLedger gate block so `refresh_system_prompt` doesn't hit
-    /// the filesystem on every turn (#2127). `None` = not yet loaded;
-    /// `Some(None)` = loaded, no open entries; `Some(Some(...))` = loaded,
-    /// gate block ready.
-    slop_ledger_gate_cache: Option<Option<String>>,
+    /// Cached SlopLedger gate block keyed by the ledger file's modified time.
+    /// This keeps prompt refreshes cheap while still noticing append/update
+    /// writes from slop ledger tools during the same session.
+    slop_ledger_gate_cache: Option<(Option<SystemTime>, Option<String>)>,
 }
 
 // === Internal tool helpers ===
@@ -1851,25 +1850,8 @@ impl Engine {
 
         // SlopLedger completion-gate: inject unresolved slop entries into the
         // system prompt so the agent can autonomously review them before
-        // claiming the task is done (#2127). Cached to avoid filesystem I/O on
-        // every turn — only re-loaded when the cache is empty (first call or
-        // after invalidation).
-        let gate_block = match &self.slop_ledger_gate_cache {
-            Some(cached) => cached.clone(),
-            None => {
-                let loaded = crate::slop_ledger::SlopLedger::load()
-                    .ok()
-                    .and_then(|ledger| {
-                        if ledger.has_open_entries() {
-                            ledger.completion_gate_summary()
-                        } else {
-                            None
-                        }
-                    });
-                self.slop_ledger_gate_cache = Some(loaded.clone());
-                loaded
-            }
-        };
+        // claiming the task is done (#2127).
+        let gate_block = self.slop_ledger_gate_block();
         if let Some(ref block) = gate_block {
             if let Some(SystemPrompt::Text(prompt_text)) = &mut stable_prompt {
                 prompt_text.push_str("\n\n");
@@ -1886,6 +1868,31 @@ impl Engine {
             self.session.system_prompt = stable_prompt;
             self.session.last_system_prompt_hash = Some(stable_hash);
         }
+    }
+
+    fn slop_ledger_gate_block(&mut self) -> Option<String> {
+        let modified = crate::slop_ledger::SlopLedger::default_path()
+            .ok()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok());
+
+        if let Some((cached_modified, cached_block)) = &self.slop_ledger_gate_cache
+            && *cached_modified == modified
+        {
+            return cached_block.clone();
+        }
+
+        let loaded = crate::slop_ledger::SlopLedger::load()
+            .ok()
+            .and_then(|ledger| {
+                if ledger.has_open_entries() {
+                    ledger.completion_gate_summary()
+                } else {
+                    None
+                }
+            });
+        self.slop_ledger_gate_cache = Some((modified, loaded.clone()));
+        loaded
     }
 
     fn merge_compaction_summary(&mut self, summary_prompt: Option<SystemPrompt>) {

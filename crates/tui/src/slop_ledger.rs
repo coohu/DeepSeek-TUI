@@ -304,9 +304,9 @@ impl SlopLedger {
     }
 
     /// Append one or more entries. Returns the new entry count and
-    /// the short ids of the appended entries (first 8 chars).
+    /// the short ids of the appended entries.
     pub fn append(&mut self, entries: Vec<SlopEntry>) -> (usize, Vec<String>) {
-        let ids: Vec<String> = entries.iter().map(|e| e.id[..8].to_string()).collect();
+        let ids: Vec<String> = entries.iter().map(|e| short_id(&e.id)).collect();
         self.entries.extend(entries);
         (self.entries.len(), ids)
     }
@@ -375,18 +375,21 @@ impl SlopLedger {
         status: SlopEntryStatus,
         cleanup_recommendation: Option<String>,
     ) -> io::Result<Option<&SlopEntry>> {
-        let entry = match self.find_mut(id) {
-            Some(e) => e,
-            None => return Ok(None),
+        let full_id = {
+            let entry = match self.find_mut(id) {
+                Some(e) => e,
+                None => return Ok(None),
+            };
+            entry.status = status;
+            entry.updated_at = chrono::Utc::now().to_rfc3339();
+            if let Some(rec) = cleanup_recommendation {
+                entry.cleanup_recommendation = Some(rec);
+            }
+            entry.id.clone()
         };
-        entry.status = status;
-        entry.updated_at = chrono::Utc::now().to_rfc3339();
-        if let Some(rec) = cleanup_recommendation {
-            entry.cleanup_recommendation = Some(rec);
-        }
         self.save()?;
-        // Return a shared ref to the updated entry
-        Ok(self.entries.iter().find(|e| e.id == id))
+        // Return a shared ref to the updated entry.
+        Ok(self.entries.iter().find(|e| e.id == full_id))
     }
 
     /// Export all entries as a Markdown string suitable for handoff or
@@ -430,7 +433,7 @@ impl SlopLedger {
                 let title = truncate_str(&e.title, 60);
                 out.push_str(&format!(
                     "| {} | {:?} | {:?} | {:?} | {title} | {source} |\n",
-                    &e.id[..8],
+                    short_id(&e.id),
                     e.severity,
                     e.confidence,
                     e.status
@@ -440,7 +443,7 @@ impl SlopLedger {
 
             // Detailed entries
             for e in bucket_entries {
-                out.push_str(&format!("### {} — {}\n\n", &e.id[..8], e.title));
+                out.push_str(&format!("### {} — {}\n\n", short_id(&e.id), e.title));
                 out.push_str(&format!("- **Severity**: {:?}\n", e.severity));
                 out.push_str(&format!("- **Confidence**: {:?}\n", e.confidence));
                 out.push_str(&format!("- **Status**: {:?}\n", e.status));
@@ -729,7 +732,7 @@ impl ToolSpec for SlopLedgerQueryTool {
         for entry in &results {
             out.push_str(&format!(
                 "- [{}] **{}** ({:?} | {:?} | {:?}) — {}\n",
-                &entry.id[..8],
+                short_id(&entry.id),
                 entry.bucket.as_str(),
                 entry.severity,
                 entry.confidence,
@@ -806,7 +809,7 @@ impl ToolSpec for SlopLedgerUpdateTool {
         match ledger.update_status(id, status, cleanup) {
             Ok(Some(entry)) => Ok(ToolResult::success(format!(
                 "Updated slop ledger entry {} ({}) → {:?}",
-                &entry.id[..8],
+                short_id(&entry.id),
                 entry.title,
                 entry.status
             ))),
@@ -912,6 +915,14 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     format!("{truncated}…")
 }
 
+/// Return a display-safe short id without assuming byte offsets are char
+/// boundaries. Ledger ids are normally UUIDs, but imported or hand-edited
+/// ledgers may contain shorter or non-ASCII ids.
+#[must_use]
+pub fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
 /// Redact sensitive patterns from exported text: API keys and secrets
 /// paths. Scan the output for known key prefixes (`sk-`, `Bearer `, `dsk-`)
 /// and replace the token until a whitespace / punctuation boundary with
@@ -961,7 +972,7 @@ fn redact_exported_text(text: &mut String) {
 
 impl SlopLedger {
     /// Completion-gate / verifier hook: returns `true` when there are
-    /// unresolved slop entries (status `Open` or `Investigate`) that the
+    /// unresolved slop entries (status `Open` or `InProgress`) that the
     /// agent should review before claiming the task is done.
     ///
     /// Tools and engine hooks can call this on claim-of-done to surface
@@ -1005,7 +1016,7 @@ impl SlopLedger {
             out.push_str(&format!(
                 "- **{}** `{}` ({:?}/{:?}): {}\n",
                 e.bucket.as_str(),
-                &e.id[..8],
+                short_id(&e.id),
                 e.severity,
                 e.confidence,
                 truncate_str(&e.title, 80),
@@ -1060,6 +1071,44 @@ mod tests {
         let loaded = SlopLedger::load_at(&ledger.ledger_path).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded.entries[0].title, "README is outdated");
+    }
+
+    #[test]
+    fn short_id_handles_short_and_non_ascii_ids() {
+        assert_eq!(short_id("abc"), "abc");
+        assert_eq!(short_id("abcdefghi"), "abcdefgh");
+        assert_eq!(short_id("残渣-ledger-entry"), "残渣-ledge");
+    }
+
+    #[test]
+    fn display_paths_do_not_panic_on_short_or_non_ascii_ids() {
+        let (_tmp, mut ledger) = temp_ledger();
+
+        let mut short = SlopEntry::new(
+            SlopBucket::StaleDocs,
+            SlopSeverity::Low,
+            SlopConfidence::High,
+            "short id".into(),
+            "desc".into(),
+        );
+        short.id = "abc".into();
+
+        let mut unicode = SlopEntry::new(
+            SlopBucket::ToolGaps,
+            SlopSeverity::Medium,
+            SlopConfidence::Medium,
+            "unicode id".into(),
+            "desc".into(),
+        );
+        unicode.id = "残渣-ledger-entry".into();
+
+        let (_total, ids) = ledger.append(vec![short, unicode]);
+        assert_eq!(ids, vec!["abc", "残渣-ledge"]);
+
+        let md = ledger.export_markdown(None, None);
+        assert!(md.contains("| abc |"));
+        assert!(md.contains("| 残渣-ledge |"));
+        assert!(ledger.completion_gate_summary().is_some());
     }
 
     #[test]
@@ -1142,6 +1191,29 @@ mod tests {
             loaded.entries[0].cleanup_recommendation,
             Some("Renamed in #1234".into())
         );
+    }
+
+    #[test]
+    fn update_status_returns_entry_for_prefix_match() {
+        let (_tmp, mut ledger) = temp_ledger();
+
+        let entry = SlopEntry::new(
+            SlopBucket::NamingDrift,
+            SlopSeverity::Low,
+            SlopConfidence::High,
+            "naming issue".into(),
+            "desc".into(),
+        );
+        let id = entry.id.clone();
+        let prefix = short_id(&id);
+        let _ = ledger.append(vec![entry]);
+        ledger.save().unwrap();
+
+        let result = ledger
+            .update_status(&prefix, SlopEntryStatus::Resolved, None)
+            .unwrap();
+
+        assert_eq!(result.map(|entry| entry.id.as_str()), Some(id.as_str()));
     }
 
     #[test]

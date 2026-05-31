@@ -721,7 +721,7 @@ pub fn slop(_app: &mut App, arg: Option<&str>) -> CommandResult {
                 let _ = writeln!(
                     out,
                     "[{}] {} ({:?} | {:?}) — {}",
-                    &entry.id[..8],
+                    crate::slop_ledger::short_id(&entry.id),
                     entry.bucket.as_str(),
                     entry.severity,
                     entry.status,

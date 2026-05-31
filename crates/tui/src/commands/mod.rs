@@ -545,7 +545,7 @@ pub const COMMANDS: &[CommandInfo] = &[
         name: "slop",
         aliases: &["canzha"],
         usage: "/slop [query|export]",
-        description_id: MessageId::CmdHelpDescription,
+        description_id: MessageId::CmdSlopDescription,
     },
 ];
 
