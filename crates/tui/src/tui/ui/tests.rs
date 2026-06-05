@@ -7379,7 +7379,7 @@ async fn provider_switch_auth_error_restores_previous_provider_and_model() {
     assert!(
         app.status_message
             .as_deref()
-            .map_or(true, |status| !status.contains("Provider switch failed")),
+            .is_none_or(|status| !status.contains("Provider switch failed")),
         "status message is set by the async event loop after engine respawn"
     );
 }
