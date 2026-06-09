@@ -796,8 +796,7 @@ pub fn default_automations_dir() -> PathBuf {
     }
     dirs::home_dir()
         .map(|home| {
-            let primary = home.join(".deepseek").join("automations");
-            primary
+            home.join(".deepseek").join("automations")
         })
         .unwrap_or_else(|| PathBuf::from(".deepseek").join("automations"))
 }

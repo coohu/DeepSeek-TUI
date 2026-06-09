@@ -1328,8 +1328,6 @@ fn is_swebench_generated_artifact(path: &str) -> bool {
     let path = path.replace('\\', "/");
     path == ".deepseek"
         || path.starts_with(".deepseek/")
-        || path == ".deepseek"
-        || path.starts_with(".deepseek/")
         || path == ".pytest_cache"
         || path.starts_with(".pytest_cache/")
         || path.contains("/.pytest_cache/")
