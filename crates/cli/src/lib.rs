@@ -28,14 +28,19 @@ enum ProviderArg {
     Openai,
     Atlascloud,
     WanjieArk,
+    Volcengine,
     Openrouter,
+    XiaomiMimo,
     Novita,
     Fireworks,
+    Siliconflow,
+    Arcee,
     Moonshot,
     Sglang,
     Vllm,
     Ollama,
     ShengSuanYun,
+    Huggingface,
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -46,14 +51,19 @@ impl From<ProviderArg> for ProviderKind {
             ProviderArg::Openai => ProviderKind::Openai,
             ProviderArg::Atlascloud => ProviderKind::Atlascloud,
             ProviderArg::WanjieArk => ProviderKind::WanjieArk,
+            ProviderArg::Volcengine => ProviderKind::Volcengine,
             ProviderArg::Openrouter => ProviderKind::Openrouter,
+            ProviderArg::XiaomiMimo => ProviderKind::XiaomiMimo,
             ProviderArg::Novita => ProviderKind::Novita,
             ProviderArg::Fireworks => ProviderKind::Fireworks,
+            ProviderArg::Siliconflow => ProviderKind::Siliconflow,
+            ProviderArg::Arcee => ProviderKind::Arcee,
             ProviderArg::Moonshot => ProviderKind::Moonshot,
             ProviderArg::Sglang => ProviderKind::Sglang,
             ProviderArg::Vllm => ProviderKind::Vllm,
             ProviderArg::Ollama => ProviderKind::Ollama,
             ProviderArg::ShengSuanYun => ProviderKind::ShengSuanYun,
+            ProviderArg::Huggingface => ProviderKind::Huggingface,
         }
     }
 }
@@ -125,10 +135,13 @@ struct Cli {
 enum Commands {
     /// Run interactive/non-interactive flows via the TUI binary.
     Run(RunArgs),
-    /// Run CodeWhale diagnostics.
+    /// Run DeepSeek diagnostics.
     Doctor(TuiPassthroughArgs),
-    /// List live DeepSeek API models via the TUI binary.
+    /// List live provider API models via the TUI binary.
     Models(TuiPassthroughArgs),
+    /// Generate speech audio with Xiaomi MiMo TTS models via the TUI binary.
+    #[command(visible_alias = "tts")]
+    Speech(TuiPassthroughArgs),
     /// List saved TUI sessions.
     Sessions(TuiPassthroughArgs),
     /// Resume a saved TUI session.
@@ -159,7 +172,7 @@ non-interactive filesystem/shell tool use, matching the supported automation
 path used by stream-json wrappers.
 ")]
     Exec(TuiPassthroughArgs),
-    /// Generate SWE-bench prediction rows from CodeWhale runs.
+    /// Generate SWE-bench prediction rows from DeepSeek runs.
     #[command(after_help = "\
 Examples:
   deepseek swebench run --instance-id django__django-12345 --issue-file issue.md
@@ -170,7 +183,7 @@ and writes a SWE-bench-compatible JSONL prediction row from the resulting
 working-tree diff. `export` only writes the current diff.
 ")]
     Swebench(TuiPassthroughArgs),
-    /// Run a CodeWhale-powered code review over a git diff.
+    /// Run a DeepSeek-powered code review over a git diff.
     Review(TuiPassthroughArgs),
     /// Apply a patch file or stdin to the working tree.
     Apply(TuiPassthroughArgs),
@@ -242,6 +255,12 @@ struct UpdateArgs {
     /// Update to the latest beta release instead of the latest stable release.
     #[arg(long)]
     beta: bool,
+    /// Only check the latest release; do not download or replace binaries.
+    #[arg(long)]
+    check: bool,
+    /// Proxy URL to use for update HTTP requests.
+    #[arg(long, value_name = "URL")]
+    proxy: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -283,7 +302,13 @@ struct AuthArgs {
 #[derive(Debug, Subcommand)]
 enum AuthCommand {
     /// Show current provider and credential source state.
-    Status,
+    /// Without `--provider`, shows all known providers.
+    /// With `--provider`, shows detailed status for that provider.
+    Status {
+        /// Show status for a specific provider only.
+        #[arg(long, value_enum)]
+        provider: Option<ProviderArg>,
+    },
     /// Save an API key to the shared user config file. Reads from
     /// `--api-key`, `--api-key-stdin`, or prompts on stdin when
     /// neither is given. Does not echo the key.
@@ -448,7 +473,13 @@ struct AppServerArgs {
 
 const MCP_SERVER_DEFINITIONS_KEY: &str = "mcp.server_definitions";
 
+fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub fn run_cli() -> std::process::ExitCode {
+    install_rustls_crypto_provider();
+
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
@@ -499,6 +530,10 @@ fn run() -> Result<()> {
         Some(Commands::Models(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("models", args))
+        }
+        Some(Commands::Speech(args)) => {
+            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("speech", args))
         }
         Some(Commands::Sessions(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -571,7 +606,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => update::run_update(args.beta),
+        Some(Commands::Update(args)) => update::run_update(args.beta, args.check, args.proxy),
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -719,32 +754,44 @@ fn provider_slot(provider: ProviderKind) -> &'static str {
         ProviderKind::Openai => "openai",
         ProviderKind::Atlascloud => "atlascloud",
         ProviderKind::WanjieArk => "wanjie-ark",
+        ProviderKind::Volcengine => "volcengine",
         ProviderKind::Openrouter => "openrouter",
+        ProviderKind::XiaomiMimo => "xiaomi-mimo",
         ProviderKind::Novita => "novita",
         ProviderKind::Fireworks => "fireworks",
+        ProviderKind::Siliconflow => "siliconflow",
+        ProviderKind::SiliconflowCN => "siliconflow",
+        ProviderKind::Arcee => "arcee",
         ProviderKind::Moonshot => "moonshot",
         ProviderKind::Sglang => "sglang",
         ProviderKind::Vllm => "vllm",
         ProviderKind::Ollama => "ollama",
         ProviderKind::ShengSuanYun => "shengsuanyun",
+        ProviderKind::Huggingface => "huggingface",
     }
 }
 
 /// Provider order used by the `auth list` and `auth status` outputs.
-const PROVIDER_LIST: [ProviderKind; 13] = [
+const PROVIDER_LIST: [ProviderKind; 19] = [
     ProviderKind::Deepseek,
     ProviderKind::NvidiaNim,
     ProviderKind::Openai,
     ProviderKind::Atlascloud,
     ProviderKind::WanjieArk,
+    ProviderKind::Volcengine,
     ProviderKind::Openrouter,
+    ProviderKind::XiaomiMimo,
     ProviderKind::Novita,
     ProviderKind::Fireworks,
+    ProviderKind::Siliconflow,
+    ProviderKind::SiliconflowCN,
+    ProviderKind::Arcee,
     ProviderKind::Moonshot,
     ProviderKind::Sglang,
     ProviderKind::Vllm,
     ProviderKind::Ollama,
     ProviderKind::ShengSuanYun,
+    ProviderKind::Huggingface,
 ];
 
 #[cfg(test)]
@@ -759,7 +806,6 @@ fn write_provider_api_key_to_config(
     provider: ProviderKind,
     api_key: &str,
 ) {
-    store.config.provider = provider;
     store.config.auth_mode = Some("api_key".to_string());
     store.config.providers.for_provider_mut(provider).api_key = Some(api_key.to_string());
     if provider == ProviderKind::Deepseek {
@@ -793,16 +839,26 @@ fn provider_env_vars(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Deepseek => &["DEEPSEEK_API_KEY"],
         ProviderKind::Openrouter => &["OPENROUTER_API_KEY"],
+        ProviderKind::XiaomiMimo => &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"],
         ProviderKind::Novita => &["NOVITA_API_KEY"],
         ProviderKind::NvidiaNim => &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY", "DEEPSEEK_API_KEY"],
         ProviderKind::Fireworks => &["FIREWORKS_API_KEY"],
+        ProviderKind::Siliconflow => &["SILICONFLOW_API_KEY"],
+        ProviderKind::SiliconflowCN => &["SILICONFLOW_API_KEY"],
+        ProviderKind::Arcee => &["ARCEE_API_KEY"],
         ProviderKind::Moonshot => &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
         ProviderKind::Sglang => &["SGLANG_API_KEY"],
         ProviderKind::Vllm => &["VLLM_API_KEY"],
         ProviderKind::Ollama => &["OLLAMA_API_KEY"],
+        ProviderKind::Huggingface => &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
         ProviderKind::Openai => &["OPENAI_API_KEY"],
         ProviderKind::Atlascloud => &["ATLASCLOUD_API_KEY"],
         ProviderKind::ShengSuanYun => &["SHENGSUANYUN_API_KEY"],
+        ProviderKind::Volcengine => &[
+            "VOLCENGINE_API_KEY",
+            "VOLCENGINE_ARK_API_KEY",
+            "ARK_API_KEY",
+        ],
         ProviderKind::WanjieArk => &[
             "WANJIE_ARK_API_KEY",
             "WANJIE_API_KEY",
@@ -861,8 +917,67 @@ fn clear_provider_api_key_from_keyring(secrets: &Secrets, provider: ProviderKind
     let _ = secrets.delete(provider_slot(provider));
 }
 
-fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
-    let provider = store.config.provider;
+fn auth_status_all_providers(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
+    let active_provider = store.config.provider;
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "active provider: {} (set via config or CODEWHALE_PROVIDER)",
+        active_provider.as_str()
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "{:<14} {:<8} {:<10} {:<8} {}",
+        "provider", "config", "keyring", "env", "status"
+    ));
+    lines.push("-".repeat(70));
+
+    for provider in PROVIDER_LIST {
+        let config_key = provider_config_api_key(store, provider);
+        let keyring_key = provider_keyring_api_key(secrets, provider);
+        let env_key = provider_env_value(provider);
+
+        let config_status = config_key.map(|_| "set").unwrap_or("-");
+        let keyring_status = keyring_key.as_ref().map(|_| "set").unwrap_or("-");
+        let env_status = env_key.as_ref().map(|_| "set").unwrap_or("-");
+
+        let source = if config_key.is_some() {
+            "config"
+        } else if keyring_key.is_some() {
+            "keyring"
+        } else if env_key.is_some() {
+            "env"
+        } else {
+            "unset"
+        };
+
+        let active_marker = if provider == active_provider {
+            " *"
+        } else {
+            ""
+        };
+
+        lines.push(format!(
+            "{:<14} {:<8} {:<10} {:<8} {}{}",
+            provider.as_str(),
+            config_status,
+            keyring_status,
+            env_status,
+            source,
+            active_marker
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("* = active provider (from config or CODEWHALE_PROVIDER)".to_string());
+    lines.push("Run `deepseek auth status --provider <id>` for detailed info.".to_string());
+    lines
+}
+
+fn auth_status_lines_for_provider(
+    store: &ConfigStore,
+    secrets: &Secrets,
+    provider: ProviderKind,
+) -> Vec<String> {
     let config_key = provider_config_api_key(store, provider);
     let keyring_key = provider_keyring_api_key(secrets, provider);
     let env_key = provider_env_value(provider);
@@ -893,8 +1008,17 @@ fn auth_status_lines(store: &ConfigStore, secrets: &Secrets) -> Vec<String> {
         .map(|(_, value)| format!("set, last4: {}", last4_label(value)))
         .unwrap_or_else(|| "unset".to_string());
 
+    let is_active = provider == store.config.provider;
+    let active_marker = if is_active { " (active provider)" } else { "" };
+
+    let provider_cfg = store.config.providers.for_provider(provider);
+    let base_url = provider_cfg.base_url.as_deref().unwrap_or("(default)");
+    let model = provider_cfg.model.as_deref().unwrap_or("(default)");
+
     vec![
-        format!("provider: {}", provider.as_str()),
+        format!("provider: {}{}", provider.as_str(), active_marker),
+        format!("route: {}", base_url),
+        format!("model: {}", model),
         format!(
             "auth mode: {}",
             store.config.auth_mode.as_deref().unwrap_or("api_key")
@@ -941,9 +1065,19 @@ fn run_auth_command_with_secrets(
     secrets: &Secrets,
 ) -> Result<()> {
     match command {
-        AuthCommand::Status => {
-            for line in auth_status_lines(store, secrets) {
-                println!("{line}");
+        AuthCommand::Status { provider } => {
+            match provider {
+                Some(p) => {
+                    let provider: ProviderKind = p.into();
+                    for line in auth_status_lines_for_provider(store, secrets, provider) {
+                        println!("{line}");
+                    }
+                }
+                None => {
+                    for line in auth_status_all_providers(store, secrets) {
+                        println!("{line}");
+                    }
+                }
             }
             Ok(())
         }
@@ -955,7 +1089,6 @@ fn run_auth_command_with_secrets(
             let provider: ProviderKind = provider.into();
             let slot = provider_slot(provider);
             if provider == ProviderKind::Ollama && api_key.is_none() && !api_key_stdin {
-                store.config.provider = provider;
                 let provider_cfg = store.config.providers.for_provider_mut(provider);
                 if provider_cfg.base_url.is_none() {
                     provider_cfg.base_url = Some("http://localhost:11434/v1".to_string());
@@ -1020,12 +1153,10 @@ fn run_auth_command_with_secrets(
         }
         AuthCommand::List => {
             println!("provider     config store env  active");
-            let active_provider = store.config.provider;
             for provider in PROVIDER_LIST {
                 let slot = provider_slot(provider);
                 let file = provider_config_set(store, provider);
-                let keyring = (provider == active_provider && !file)
-                    .then(|| provider_keyring_set(secrets, provider));
+                let keyring = (!file).then(|| provider_keyring_set(secrets, provider));
                 let env = provider_env_set(provider);
                 let active = if file {
                     "config"
@@ -1289,6 +1420,8 @@ fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
             let decision = engine.check(ExecPolicyContext {
                 command: &command,
                 cwd: &cwd.display().to_string(),
+                tool: Some("exec_shell"),
+                path: None,
                 ask_for_approval: ask.into(),
                 sandbox_mode: Some("workspace-write"),
             })?;
@@ -1478,8 +1611,11 @@ fn build_tui_command(
             | ProviderKind::Atlascloud
             | ProviderKind::WanjieArk
             | ProviderKind::Openrouter
+            | ProviderKind::XiaomiMimo
             | ProviderKind::Novita
             | ProviderKind::Fireworks
+            | ProviderKind::Siliconflow
+            | ProviderKind::Arcee
             | ProviderKind::Moonshot
             | ProviderKind::Sglang
             | ProviderKind::Vllm
@@ -1487,7 +1623,7 @@ fn build_tui_command(
             | ProviderKind::ShengSuanYun
     ) {
         bail!(
-            "The interactive TUI supports DeepSeek, 胜算云, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Novita, Fireworks, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
+            "The interactive TUI supports DeepSeek, 胜算云, NVIDIA NIM, OpenAI-compatible, AtlasCloud, Wanjie Ark, OpenRouter, Xiaomi MiMo, Novita, Fireworks, SiliconFlow, Arcee AI, Moonshot/Kimi, SGLang, vLLM, and Ollama providers. Remove --provider {} or use `deepseek model ...` for provider registry inspection.",
             resolved_runtime.provider.as_str()
         );
     }
@@ -1547,6 +1683,12 @@ fn build_tui_command(
         }
         if resolved_runtime.provider == ProviderKind::WanjieArk {
             cmd.env("WANJIE_ARK_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Volcengine {
+            cmd.env("VOLCENGINE_API_KEY", api_key);
+        }
+        if resolved_runtime.provider == ProviderKind::Siliconflow {
+            cmd.env("SILICONFLOW_API_KEY", api_key);
         }
         cmd.env("DEEPSEEK_API_KEY_SOURCE", "cli");
     }
@@ -1823,14 +1965,40 @@ mod tests {
         let cli = parse_ok(&["deepseek", "update"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs { beta: false }))
+            Some(Commands::Update(UpdateArgs {
+                beta: false,
+                check: false,
+                proxy: None
+            }))
         ));
 
         let cli = parse_ok(&["deepseek", "update", "--beta"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Update(UpdateArgs { beta: true }))
+            Some(Commands::Update(UpdateArgs {
+                beta: true,
+                check: false,
+                proxy: None
+            }))
         ));
+
+        let cli = parse_ok(&["deepseek", "update", "--check"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Update(UpdateArgs {
+                beta: false,
+                check: true,
+                proxy: None
+            }))
+        ));
+
+        let cli = parse_ok(&["deepseek", "update", "--proxy", "socks5://127.0.0.1:1080"]);
+        let Some(Commands::Update(args)) = cli.command else {
+            panic!("expected update command");
+        };
+        assert!(!args.beta);
+        assert!(!args.check);
+        assert_eq!(args.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
     }
 
     #[test]
@@ -2156,6 +2324,30 @@ mod tests {
             }))
         ));
 
+        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "siliconflow"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Set {
+                    provider: ProviderArg::Siliconflow,
+                    api_key: None,
+                    api_key_stdin: false,
+                }
+            }))
+        ));
+
+        let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "arcee"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthArgs {
+                command: AuthCommand::Set {
+                    provider: ProviderArg::Arcee,
+                    api_key: None,
+                    api_key_stdin: false,
+                }
+            }))
+        ));
+
         let cli = parse_ok(&["deepseek", "auth", "set", "--provider", "moonshot"]);
         assert!(matches!(
             cli.command,
@@ -2278,6 +2470,44 @@ mod tests {
     }
 
     #[test]
+    fn auth_set_provider_key_does_not_switch_active_provider() {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-auth-set-preserve-provider-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.provider = ProviderKind::Deepseek;
+        let secrets = no_keyring_secrets();
+
+        run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Set {
+                provider: ProviderArg::Arcee,
+                api_key: Some("arcee-key".to_string()),
+                api_key_stdin: false,
+            },
+            &secrets,
+        )
+        .expect("set should succeed");
+
+        assert_eq!(store.config.provider, ProviderKind::Deepseek);
+        assert_eq!(
+            store.config.providers.arcee.api_key.as_deref(),
+            Some("arcee-key")
+        );
+
+        let reloaded = ConfigStore::load(Some(path.clone())).expect("store should reload");
+        assert_eq!(reloaded.config.provider, ProviderKind::Deepseek);
+        assert_eq!(
+            reloaded.config.providers.arcee.api_key.as_deref(),
+            Some("arcee-key")
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn auth_set_ollama_accepts_empty_key_and_records_base_url() {
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
         let path = std::env::temp_dir().join(format!(
@@ -2285,6 +2515,7 @@ mod tests {
             std::process::id()
         ));
         let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.provider = ProviderKind::Deepseek;
         let secrets = no_keyring_secrets();
 
         run_auth_command_with_secrets(
@@ -2298,7 +2529,7 @@ mod tests {
         )
         .expect("ollama auth set should not require a key");
 
-        assert_eq!(store.config.provider, ProviderKind::Ollama);
+        assert_eq!(store.config.provider, ProviderKind::Deepseek);
         assert_eq!(
             store.config.providers.ollama.base_url.as_deref(),
             Some("http://localhost:11434/v1")
@@ -2344,7 +2575,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_status_and_list_only_probe_active_provider_keyring() {
+    fn auth_status_scoped_probe_and_list_all_provider_keyrings() {
         use deepseek_secrets::{KeyringStore, SecretsError};
         use std::sync::{Arc, Mutex};
 
@@ -2382,14 +2613,29 @@ mod tests {
         let inner = Arc::new(RecordingStore::default());
         let secrets = Secrets::new(inner.clone());
 
-        run_auth_command_with_secrets(&mut store, AuthCommand::Status, &secrets)
-            .expect("status should succeed");
+        run_auth_command_with_secrets(
+            &mut store,
+            AuthCommand::Status {
+                provider: Some(ProviderArg::Deepseek),
+            },
+            &secrets,
+        )
+        .expect("status should succeed");
         run_auth_command_with_secrets(&mut store, AuthCommand::List, &secrets)
             .expect("list should succeed");
 
-        assert_eq!(
-            inner.gets.lock().unwrap().as_slice(),
-            ["deepseek", "deepseek"]
+        let probed = inner.gets.lock().unwrap();
+        // Scoped status probes only the requested provider.
+        assert_eq!(probed[0], "deepseek");
+        // List now probes all providers (not just active) to fix the
+        // stale keyring-only-for-active-provider bug.
+        assert!(probed.len() > 1, "list should probe all providers");
+        assert!(
+            PROVIDER_LIST
+                .iter()
+                .all(|p| probed.contains(&provider_slot(*p).to_string())),
+            "every known provider should be probed by auth list: {:?}",
+            *probed
         );
 
         let _ = std::fs::remove_file(path);
@@ -2417,7 +2663,8 @@ mod tests {
         inner.set("deepseek", "sk-keyring-2222").unwrap();
         let secrets = Secrets::new(inner);
 
-        let output = auth_status_lines(&store, &secrets).join("\n");
+        let output =
+            auth_status_lines_for_provider(&store, &secrets, ProviderKind::Deepseek).join("\n");
 
         assert!(output.contains("provider: deepseek"));
         assert!(output.contains("active source: config (last4: ...3333)"));
@@ -2429,6 +2676,74 @@ mod tests {
         assert!(!output.contains("sk-config-3333"));
         assert!(!output.contains("sk-keyring-2222"));
         assert!(!output.contains("sk-env-1111"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn auth_status_all_providers_lists_every_known_provider() {
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
+        use std::sync::Arc;
+
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-auth-all-status-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.provider = ProviderKind::Deepseek;
+        store.config.providers.arcee.api_key = Some("sk-arcee-test1234".to_string());
+
+        let inner = Arc::new(InMemoryKeyringStore::new());
+        inner.set("openrouter", "sk-or-test5678").unwrap();
+        let secrets = Secrets::new(inner);
+
+        let output = auth_status_all_providers(&store, &secrets).join("\n");
+
+        // Should list all known providers
+        assert!(output.contains("deepseek"));
+        assert!(output.contains("arcee"));
+        assert!(output.contains("openrouter"));
+        assert!(output.contains("huggingface"));
+        assert!(output.contains("ollama"));
+
+        // Active provider should be marked
+        assert!(output.contains("deepseek") && output.contains("*"));
+
+        // Arcee should show config source
+        assert!(output.contains("config"));
+
+        // Should NOT leak raw keys
+        assert!(!output.contains("sk-arcee-test1234"));
+        assert!(!output.contains("sk-or-test5678"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn auth_status_scoped_provider_shows_detailed_info() {
+        use deepseek_secrets::InMemoryKeyringStore;
+        use std::sync::Arc;
+
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(
+            "deepseek-cli-auth-scoped-test-{}-{nanos}.toml",
+            std::process::id()
+        ));
+        let mut store = ConfigStore::load(Some(path.clone())).expect("store should load");
+        store.config.provider = ProviderKind::Deepseek;
+        store.config.providers.arcee.api_key = Some("sk-arcee-9999".to_string());
+
+        let secrets = Secrets::new(Arc::new(InMemoryKeyringStore::new()));
+
+        let output =
+            auth_status_lines_for_provider(&store, &secrets, ProviderKind::Arcee).join("\n");
+
+        assert!(output.contains("provider: arcee"));
+        assert!(output.contains("active source: config (last4: ...9999)"));
+        assert!(output.contains("route:"));
+        assert!(output.contains("model:"));
+        assert!(!output.contains("sk-arcee-9999"));
 
         let _ = std::fs::remove_file(path);
     }
@@ -2662,6 +2977,7 @@ mod tests {
             api_key_source: Some(RuntimeApiKeySource::Keyring),
             base_url: "https://openai-compatible.example/v4".to_string(),
             auth_mode: Some("api_key".to_string()),
+            insecure_skip_tls_verify: false,
             output_mode: None,
             log_level: None,
             telemetry: false,
@@ -2721,6 +3037,7 @@ mod tests {
             api_key_source: Some(RuntimeApiKeySource::ConfigFile),
             base_url: "https://api.deepseek.com/beta".to_string(),
             auth_mode: Some("api_key".to_string()),
+            insecure_skip_tls_verify: false,
             output_mode: None,
             log_level: None,
             telemetry: false,
@@ -2776,6 +3093,7 @@ mod tests {
             api_key_source: Some(RuntimeApiKeySource::Keyring),
             base_url: "https://api.moonshot.ai/v1".to_string(),
             auth_mode: Some("api_key".to_string()),
+            insecure_skip_tls_verify: false,
             output_mode: None,
             log_level: None,
             telemetry: false,
@@ -2842,6 +3160,7 @@ mod tests {
             api_key_source: None,
             base_url: "https://openai-compatible.example/v4".to_string(),
             auth_mode: None,
+            insecure_skip_tls_verify: false,
             output_mode: None,
             log_level: None,
             telemetry: false,
@@ -2885,6 +3204,11 @@ mod tests {
                 "openrouter",
                 &["OPENROUTER_API_KEY"],
             ),
+            (
+                ProviderKind::XiaomiMimo,
+                "xiaomi-mimo",
+                &["XIAOMI_MIMO_API_KEY", "XIAOMI_API_KEY", "MIMO_API_KEY"],
+            ),
             (ProviderKind::Novita, "novita", &["NOVITA_API_KEY"]),
             (
                 ProviderKind::NvidiaNim,
@@ -2892,6 +3216,12 @@ mod tests {
                 &["NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"],
             ),
             (ProviderKind::Fireworks, "fireworks", &["FIREWORKS_API_KEY"]),
+            (
+                ProviderKind::Siliconflow,
+                "siliconflow",
+                &["SILICONFLOW_API_KEY"],
+            ),
+            (ProviderKind::Arcee, "arcee", &["ARCEE_API_KEY"]),
             (ProviderKind::Sglang, "sglang", &["SGLANG_API_KEY"]),
             (ProviderKind::Vllm, "vllm", &["VLLM_API_KEY"]),
             (ProviderKind::Ollama, "ollama", &["OLLAMA_API_KEY"]),
@@ -2926,6 +3256,7 @@ mod tests {
                 api_key_source: Some(RuntimeApiKeySource::Keyring),
                 base_url: "http://localhost:8000/v1".to_string(),
                 auth_mode: Some("api_key".to_string()),
+                insecure_skip_tls_verify: false,
                 output_mode: None,
                 log_level: None,
                 telemetry: false,
@@ -2964,11 +3295,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_top_level_prompt_flag_for_canonical_one_shot() {
+    fn parses_top_level_prompt_flag_for_interactive_startup_prompt() {
         let cli = parse_ok(&["deepseek", "-p", "Reply with exactly OK."]);
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("Reply with exactly OK."));
         assert!(cli.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "Reply with exactly OK.".to_string()]
+        );
     }
 
     #[test]
@@ -2982,7 +3317,7 @@ mod tests {
     }
 
     #[test]
-    fn top_level_continue_rejects_one_shot_prompt() {
+    fn top_level_continue_rejects_startup_prompt() {
         let cli = parse_ok(&["deepseek", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
@@ -2998,6 +3333,10 @@ mod tests {
 
         assert_eq!(cli.prompt, vec!["hello", "world"]);
         assert!(cli.command.is_none());
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "hello world".to_string()]
+        );
     }
 
     #[test]
@@ -3006,6 +3345,10 @@ mod tests {
 
         assert_eq!(cli.prompt_flag.as_deref(), Some("hello"));
         assert_eq!(cli.prompt, vec!["world"]);
+        assert_eq!(
+            root_tui_passthrough(&cli).unwrap(),
+            vec!["--prompt".to_string(), "hello world".to_string()]
+        );
     }
 
     #[test]

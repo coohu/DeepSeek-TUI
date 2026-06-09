@@ -43,15 +43,6 @@ readonly SHA_COD_LINUX_ARM="$(sha deepseek-linux-arm64)"
 readonly SHA_TUI_LINUX_ARM="$(sha deepseek-tui-linux-arm64)"
 readonly SHA_COD_LINUX_X64="$(sha deepseek-linux-x64)"
 readonly SHA_TUI_LINUX_X64="$(sha deepseek-tui-linux-x64)"
-# Legacy shims (removed in v0.9.0)
-readonly SHA_LEG_MACOS_ARM="$(sha deepseek-macos-arm64)"
-readonly SHA_LEG_TUI_MACOS_ARM="$(sha -macos-arm64)"
-readonly SHA_LEG_MACOS_X64="$(sha deepseek-macos-x64)"
-readonly SHA_LEG_TUI_MACOS_X64="$(sha -macos-x64)"
-readonly SHA_LEG_LINUX_ARM="$(sha deepseek-linux-arm64)"
-readonly SHA_LEG_TUI_LINUX_ARM="$(sha -linux-arm64)"
-readonly SHA_LEG_LINUX_X64="$(sha deepseek-linux-x64)"
-readonly SHA_LEG_TUI_LINUX_X64="$(sha -linux-x64)"
 
 # --- temp dirs --------------------------------------------------------
 
@@ -78,28 +69,12 @@ class DeepseekTui < Formula
         url "${BASE_URL}/deepseek-tui-macos-arm64", using: :nounzip
         sha256 "${SHA_TUI_MACOS_ARM}"
       end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-macos-arm64", using: :nounzip
-        sha256 "${SHA_LEG_MACOS_ARM}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/-macos-arm64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_MACOS_ARM}"
-      end
     else
       url "${BASE_URL}/deepseek-macos-x64", using: :nounzip
       sha256 "${SHA_COD_MACOS_X64}"
       resource "tui" do
         url "${BASE_URL}/deepseek-tui-macos-x64", using: :nounzip
         sha256 "${SHA_TUI_MACOS_X64}"
-      end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-macos-x64", using: :nounzip
-        sha256 "${SHA_LEG_MACOS_X64}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/-macos-x64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_MACOS_X64}"
       end
     end
   end
@@ -112,14 +87,6 @@ class DeepseekTui < Formula
         url "${BASE_URL}/deepseek-tui-linux-arm64", using: :nounzip
         sha256 "${SHA_TUI_LINUX_ARM}"
       end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-linux-arm64", using: :nounzip
-        sha256 "${SHA_LEG_LINUX_ARM}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/-linux-arm64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_LINUX_ARM}"
-      end
     else
       url "${BASE_URL}/deepseek-linux-x64", using: :nounzip
       sha256 "${SHA_COD_LINUX_X64}"
@@ -127,22 +94,12 @@ class DeepseekTui < Formula
         url "${BASE_URL}/deepseek-tui-linux-x64", using: :nounzip
         sha256 "${SHA_TUI_LINUX_X64}"
       end
-      resource "legacy-shim" do
-        url "${BASE_URL}/deepseek-linux-x64", using: :nounzip
-        sha256 "${SHA_LEG_LINUX_X64}"
-      end
-      resource "legacy-tui-shim" do
-        url "${BASE_URL}/-linux-x64", using: :nounzip
-        sha256 "${SHA_LEG_TUI_LINUX_X64}"
-      end
     end
   end
 
   def install
     bin.install Dir["*"].first => "deepseek"
     resource("tui").stage { bin.install Dir["*"].first => "deepseek-tui" }
-    resource("legacy-shim").stage { bin.install Dir["*"].first => "deepseek" }
-    resource("legacy-tui-shim").stage { bin.install Dir["*"].first => "" }
   end
 
   test do

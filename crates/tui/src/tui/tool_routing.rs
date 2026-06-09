@@ -5,15 +5,17 @@ use std::time::Instant;
 
 use crate::hooks::HookEvent;
 use crate::tools::ReviewOutput;
+use crate::tools::plan::PlanSnapshot;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
 use crate::tui::history::{
     DiffPreviewCell, ExecCell, ExecSource, ExploringEntry, GenericToolCell, HistoryCell,
-    McpToolCell, PatchSummaryCell, PlanStep, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus,
-    ViewImageCell, WebSearchCell, output_looks_like_diff, summarize_mcp_output,
-    summarize_tool_args, summarize_tool_output,
+    McpToolCell, PatchSummaryCell, PlanUpdateCell, ReviewCell, ToolCell, ToolStatus, ViewImageCell,
+    WebSearchCell, output_looks_like_diff, summarize_mcp_output, summarize_tool_args,
+    summarize_tool_output,
 };
+use crate::tui::workspace_context;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle_tool_call_started(
@@ -22,19 +24,11 @@ pub(super) fn handle_tool_call_started(
     name: &str,
     input: &serde_json::Value,
 ) {
-    // #455 (observer-only): fire `tool_call_before` hooks here, before
-    // any UI bookkeeping. Hooks are read-only observers in this slice
-    // — they can log, notify, or audit, but cannot mutate the args.
-    // Fast-path skip when no hooks are configured so per-tool
-    // dispatch doesn't pay for context construction in the common
-    // case (most users have no hooks).
-    if app.hooks.has_hooks_for_event(HookEvent::ToolCallBefore) {
-        let context = app
-            .base_hook_context()
-            .with_tool_name(name)
-            .with_tool_args(input);
-        let _ = app.execute_hooks(HookEvent::ToolCallBefore, &context);
-    }
+    // #2511: ToolCallBefore gate moved to turn-loop planning loop
+    // (Engine::handle_deepseek_turn). Removing observer-only firing
+    // here to avoid double-firing hooks for each tool call.
+    // Hooks that need observation can configure ToolCallBefore on
+    // the turn-loop gate — it processes the denial (exit code 2).
 
     let id = id.to_string();
 
@@ -107,6 +101,8 @@ pub(super) fn handle_tool_call_started(
                     command,
                     status: ToolStatus::Running,
                     output: None,
+                    live_output: None,
+                    shell_task_id: None,
                     started_at: Some(Instant::now()),
                     duration_ms: None,
                     source,
@@ -139,6 +135,8 @@ pub(super) fn handle_tool_call_started(
                 command,
                 status: ToolStatus::Running,
                 output: None,
+                live_output: None,
+                shell_task_id: None,
                 started_at: Some(Instant::now()),
                 duration_ms: None,
                 source,
@@ -150,15 +148,14 @@ pub(super) fn handle_tool_call_started(
     }
 
     if name == "update_plan" {
-        let (explanation, steps) = parse_plan_input(input);
+        let snapshot = parse_plan_input(input);
         push_active_tool_cell(
             app,
             &id,
             name,
             input,
             HistoryCell::Tool(ToolCell::PlanUpdate(PlanUpdateCell {
-                explanation,
-                steps,
+                snapshot,
                 status: ToolStatus::Running,
             })),
         );
@@ -477,10 +474,7 @@ pub(super) fn handle_tool_call_complete(
             app.cell_at_virtual_index_mut(cell_index)
             && let Some(entry) = cell.entries.get_mut(entry_index)
         {
-            entry.status = match result.as_ref() {
-                Ok(tool_result) if tool_result.success => ToolStatus::Success,
-                Ok(_) | Err(_) => ToolStatus::Failed,
-            };
+            entry.status = tool_status_from_result(result);
             app.mark_history_updated();
             // Mutating the in-flight exploring cell needs an active-cell
             // revision bump so the transcript cache invalidates the synthetic
@@ -509,32 +503,23 @@ pub(super) fn handle_tool_call_complete(
     store_tool_detail_output(app, id, cell_index, result);
     let in_active = cell_index >= app.history.len();
 
-    let status = match result.as_ref() {
-        Ok(tool_result) => match tool_result.metadata.as_ref() {
-            Some(meta)
-                if meta
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| s == "Running") =>
-            {
-                ToolStatus::Running
-            }
-            _ => {
-                if tool_result.success {
-                    ToolStatus::Success
-                } else {
-                    ToolStatus::Failed
-                }
-            }
-        },
-        Err(_) => ToolStatus::Failed,
-    };
+    let status = tool_status_from_result(result);
 
     if let Some(cell) = app.cell_at_virtual_index_mut(cell_index) {
         match cell {
             HistoryCell::Tool(ToolCell::Exec(exec)) => {
                 exec.status = status;
                 if let Ok(tool_result) = result.as_ref() {
+                    let shell_task_id = tool_result
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("task_id"))
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|task_id| !task_id.trim().is_empty())
+                        .map(str::to_string);
+                    if shell_task_id.is_some() {
+                        exec.shell_task_id = shell_task_id;
+                    }
                     if let Some(meta_command) = tool_result
                         .metadata
                         .as_ref()
@@ -567,6 +552,12 @@ pub(super) fn handle_tool_call_complete(
                         exec.output = Some(tool_result.content.clone());
                         exec.output_summary =
                             Some(super::history::summarize_tool_output(&tool_result.content));
+                        exec.live_output = None;
+                    } else if status == ToolStatus::Running
+                        && exec.interaction.is_none()
+                        && !tool_result.content.is_empty()
+                    {
+                        exec.live_output = Some(tool_result.content.clone());
                     }
                 } else if let Err(err) = result.as_ref()
                     && exec.interaction.is_none()
@@ -618,7 +609,9 @@ pub(super) fn handle_tool_call_complete(
                 match result.as_ref() {
                     Ok(tool_result) => {
                         let summary = summarize_mcp_output(&tool_result.content);
-                        if summary.is_error == Some(true) {
+                        if status == ToolStatus::Hydrated {
+                            mcp.status = status;
+                        } else if summary.is_error == Some(true) {
                             mcp.status = ToolStatus::Failed;
                         } else {
                             mcp.status = status;
@@ -673,6 +666,10 @@ pub(super) fn handle_tool_call_complete(
             active.bump_revision();
         }
         refresh_active_tool_completion_timestamp(app, cell_index);
+    }
+
+    if refreshes_workspace_context_on_completion(name) && status != ToolStatus::Running {
+        workspace_context::refresh_now(app, Instant::now());
     }
 
     // #455 (observer-only): fire `tool_call_after` hooks once the
@@ -772,16 +769,7 @@ fn push_orphan_tool_completion(
     name: &str,
     result: &Result<ToolResult, ToolError>,
 ) {
-    let status = match result.as_ref() {
-        Ok(tool_result) => {
-            if tool_result.success {
-                ToolStatus::Success
-            } else {
-                ToolStatus::Failed
-            }
-        }
-        Err(_) => ToolStatus::Failed,
-    };
+    let status = tool_status_from_result(result);
     let output = match result.as_ref() {
         Ok(tool_result) => Some(summarize_tool_output(&tool_result.content)),
         Err(err) => Some(err.to_string()),
@@ -844,6 +832,47 @@ fn push_orphan_tool_completion(
     }
 }
 
+fn tool_status_from_result(result: &Result<ToolResult, ToolError>) -> ToolStatus {
+    match result.as_ref() {
+        Ok(tool_result) if is_deferred_schema_hydration(tool_result) => ToolStatus::Hydrated,
+        Ok(tool_result) => match tool_result.metadata.as_ref() {
+            Some(meta)
+                if meta
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s == "Running") =>
+            {
+                ToolStatus::Running
+            }
+            _ => {
+                if tool_result.success {
+                    ToolStatus::Success
+                } else {
+                    ToolStatus::Failed
+                }
+            }
+        },
+        Err(_) => ToolStatus::Failed,
+    }
+}
+
+fn is_deferred_schema_hydration(tool_result: &ToolResult) -> bool {
+    if !tool_result.success {
+        return false;
+    }
+    let Some(metadata) = tool_result.metadata.as_ref() else {
+        return false;
+    };
+    metadata
+        .get("event")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|event| event == "tool.schema_hydrated")
+        && metadata
+            .get("executed")
+            .and_then(serde_json::Value::as_bool)
+            .is_some_and(|executed| !executed)
+}
+
 fn is_exploring_tool(name: &str) -> bool {
     matches!(name, "read_file" | "list_dir" | "grep_files" | "list_files")
 }
@@ -852,6 +881,19 @@ fn is_exec_tool(name: &str) -> bool {
     matches!(
         name,
         "exec_shell" | "exec_shell_wait" | "exec_shell_interact" | "exec_wait" | "exec_interact"
+    )
+}
+
+pub(super) fn refreshes_workspace_context_on_completion(name: &str) -> bool {
+    matches!(
+        name,
+        "exec_shell"
+            | "exec_shell_wait"
+            | "exec_shell_interact"
+            | "exec_wait"
+            | "exec_interact"
+            | "task_shell_start"
+            | "task_shell_wait"
     )
 }
 
@@ -944,28 +986,8 @@ fn review_target_label(input: &serde_json::Value) -> String {
     target.to_string()
 }
 
-fn parse_plan_input(input: &serde_json::Value) -> (Option<String>, Vec<PlanStep>) {
-    let explanation = input
-        .get("explanation")
-        .and_then(|v| v.as_str())
-        .map(std::string::ToString::to_string);
-    let mut steps = Vec::new();
-    if let Some(items) = input.get("plan").and_then(|v| v.as_array()) {
-        for item in items {
-            let step = item.get("step").and_then(|v| v.as_str()).unwrap_or("");
-            let status = item
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pending");
-            if !step.is_empty() {
-                steps.push(PlanStep {
-                    step: step.to_string(),
-                    status: status.to_string(),
-                });
-            }
-        }
-    }
-    (explanation, steps)
+fn parse_plan_input(input: &serde_json::Value) -> PlanSnapshot {
+    PlanSnapshot::from_tool_input(input)
 }
 
 fn parse_patch_summary(input: &serde_json::Value) -> (String, String) {
@@ -1193,4 +1215,62 @@ fn exec_is_background(input: &serde_json::Value) -> bool {
         .get("background")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::plan::StepStatus;
+    use serde_json::json;
+
+    #[test]
+    fn parse_plan_input_accepts_legacy_payload() {
+        let snapshot = parse_plan_input(&json!({
+            "explanation": "Legacy explanation",
+            "plan": [
+                { "step": "inspect", "status": "completed" },
+                { "step": "patch", "status": "in_progress" }
+            ]
+        }));
+
+        assert_eq!(snapshot.explanation.as_deref(), Some("Legacy explanation"));
+        assert_eq!(snapshot.items.len(), 2);
+        assert_eq!(snapshot.items[0].status, StepStatus::Completed);
+        assert_eq!(snapshot.items[1].status, StepStatus::InProgress);
+    }
+
+    #[test]
+    fn parse_plan_input_extracts_rich_artifact_fields() {
+        let snapshot = parse_plan_input(&json!({
+            "title": " PlanArtifact ",
+            "objective": "Make Plan mode reviewable",
+            "context_summary": "Grounded in issue #2691",
+            "sources_used": [" gh issue view 2691 ", ""],
+            "critical_files": ["crates/tui/src/tools/plan.rs"],
+            "constraints": ["No secrets"],
+            "recommended_approach": "Enrich update_plan",
+            "verification_plan": "Run focused tests",
+            "risks_and_unknowns": "Replay may drift",
+            "handoff_packet": "Continue with session replay",
+            "plan": [
+                { "step": " ", "status": "completed" },
+                { "step": "render all fields", "status": "weird" }
+            ]
+        }));
+
+        assert_eq!(snapshot.title.as_deref(), Some("PlanArtifact"));
+        assert_eq!(snapshot.sources_used, vec!["gh issue view 2691"]);
+        assert_eq!(
+            snapshot.critical_files,
+            vec!["crates/tui/src/tools/plan.rs"]
+        );
+        assert_eq!(snapshot.constraints, vec!["No secrets"]);
+        assert_eq!(
+            snapshot.verification_plan.as_deref(),
+            Some("Run focused tests")
+        );
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(snapshot.items[0].step, "render all fields");
+        assert_eq!(snapshot.items[0].status, StepStatus::Pending);
+    }
 }

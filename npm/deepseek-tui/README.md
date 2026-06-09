@@ -8,9 +8,10 @@ npm install -g @coohu/
 pnpm add -g @coohu/
 ```
 
-`deepseek` ships the same `deepseek` and `deepseek-tui` binaries plus
-deprecation shims under the old `deepseek` / `` names so existing
-scripts keep working through the v0.8.x transition.
+This legacy npm package is deprecated and receives no further releases.
+`deepseek` ships the canonical `deepseek`, `codew`, and `deepseek-tui`
+binaries. Compatibility-only deprecation shims under the old `deepseek` /
+`deepseek-tui` binary names were available in v0.8.x and are removed in v0.9.0.
 
 ```bash
 npm install @coohu/

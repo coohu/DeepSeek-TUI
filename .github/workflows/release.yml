@@ -42,6 +42,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Compile check
         run: cargo check --workspace --all-targets --locked
+      - name: OHOS dependency graph
+        run: ./scripts/release/check-ohos-deps.sh
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Workspace tests
@@ -71,9 +73,15 @@ jobs:
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             tag="v${{ inputs.version }}"
-            git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
-            sha="$(git rev-list -n 1 "${tag}")"
-            source_ref="${tag}"
+            if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+              sha="$(git rev-list -n 1 "${tag}")"
+              source_ref="${tag}"
+            else
+              # Tag doesn't exist yet — build from HEAD
+              sha="${GITHUB_SHA}"
+              source_ref="${GITHUB_SHA}"
+              echo "Tag ${tag} not found; building from ${source_ref} @ ${sha}"
+            fi
           else
             tag="${GITHUB_REF_NAME}"
             sha="${GITHUB_SHA}"
@@ -98,17 +106,18 @@ jobs:
     # the same gates locally / via ci.yml on `main`.
     if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           # --- deepseek (cli dispatcher, canonical) ---
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-x64
-          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             binary: deepseek
             artifact_name: deepseek-linux-arm64
+          - os: ubuntu-latest
+            target: riscv64gc-unknown-linux-gnu
+            binary: deepseek
+            artifact_name: deepseek-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: deepseek
@@ -126,10 +135,14 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: deepseek-tui
             artifact_name: deepseek-tui-linux-x64
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             binary: deepseek-tui
             artifact_name: deepseek-tui-linux-arm64
+          - os: ubuntu-latest
+            target: riscv64gc-unknown-linux-gnu
+            binary: deepseek-tui
+            artifact_name: deepseek-tui-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: deepseek-tui
@@ -142,48 +155,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: deepseek-tui.exe
             artifact_name: deepseek-tui-windows-x64.exe
-          # --- deepseek (legacy dispatcher shim; removed in v0.9.0) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: deepseek.exe
-            artifact_name: deepseek-windows-x64.exe
-          # ---  (legacy TUI shim; removed in v0.9.0) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: 
-            artifact_name: -linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: 
-            artifact_name: -linux-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: 
-            artifact_name: -macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: 
-            artifact_name: -macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: .exe
-            artifact_name: -windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -204,10 +175,52 @@ jobs:
             sleep 15
           done
           sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Install RISC-V cross-compilation toolchain
+        if: matrix.target == 'riscv64gc-unknown-linux-gnu'
+        run: |
+          # Install cross-compiler (available in standard repos)
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu libc6-dev-riscv64-cross
+
+          # Add Ubuntu ports for riscv64 packages
+          . /etc/os-release
+          sudo tee /etc/apt/sources.list.d/riscv64.sources <<SRC
+          Types: deb
+          URIs: http://ports.ubuntu.com/
+          Suites: ${UBUNTU_CODENAME} ${UBUNTU_CODENAME}-updates
+          Components: main universe
+          Architectures: riscv64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SRC
+          sudo dpkg --add-architecture riscv64
+          sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/riscv64.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+          sudo apt-get install -y libdbus-1-dev:riscv64
+      - name: Install AArch64 cross-compilation toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && runner.os == 'Linux'
+        run: |
+          . /etc/os-release
+          sudo tee /etc/apt/sources.list.d/arm64.sources <<SRC
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: ${UBUNTU_CODENAME} ${UBUNTU_CODENAME}-updates ${UBUNTU_CODENAME}-security
+          Components: main universe
+          Architectures: arm64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SRC
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/arm64.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdbus-1-dev:arm64 pkg-config
       - name: Build
         shell: bash
         env:
           DEEPSEEK_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_riscv64gc_unknown_linux_gnu: riscv64-linux-gnu-gcc
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: 1
+          PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
+          PKG_CONFIG_LIBDIR_riscv64gc_unknown_linux_gnu: /usr/lib/riscv64-linux-gnu/pkgconfig
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Rename binary
         shell: bash
@@ -296,6 +309,10 @@ jobs:
           bundle linux-arm64 \
             deepseek-linux-arm64 deepseek-tui-linux-arm64 tar.gz ""
 
+          # Platform: linux-riscv64
+          bundle linux-riscv64 \
+            deepseek-linux-riscv64 deepseek-tui-linux-riscv64 tar.gz ""
+
           # Platform: macos-x64
           bundle macos-x64 \
             deepseek-macos-x64 deepseek-tui-macos-x64 tar.gz ""
@@ -319,6 +336,48 @@ jobs:
         with:
           name: deepseek-bundles
           path: bundles/*
+          if-no-files-found: error
+
+  windows-installer:
+    needs: [build, resolve]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: 'deepseek*-windows-x64.exe'
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ needs.resolve.outputs.tag }}".TrimStart("v")
+          Copy-Item "artifacts\deepseek-windows-x64.exe\deepseek-windows-x64.exe" "scripts\installer\deepseek.exe"
+          Copy-Item "artifacts\deepseek-tui-windows-x64.exe\deepseek-tui-windows-x64.exe" "scripts\installer\deepseek-tui.exe"
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (!(Test-Path $makensis)) {
+            $makensis = "${env:ProgramFiles}\NSIS\makensis.exe"
+          }
+          if (!(Test-Path $makensis)) {
+            throw "makensis.exe not found after NSIS install"
+          }
+          Push-Location scripts\installer
+          & $makensis "/DVERSION=$version" "deepseek.nsi"
+          Pop-Location
+          if (!(Test-Path "scripts\installer\DeepSeekSetup.exe")) {
+            throw "DeepSeekSetup.exe was not produced"
+          }
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekSetup.exe
+          path: scripts/installer/DeepSeekSetup.exe
           if-no-files-found: error
 
   docker:
@@ -390,8 +449,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   release:
-    needs: [build, bundle, docker, resolve]
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.bundle.result == 'success' && needs.docker.result == 'success' }}
+    needs: [build, bundle, windows-installer, docker, resolve]
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.bundle.result == 'success' && needs.windows-installer.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -399,9 +458,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          # Match both the canonical `deepseek*` artifacts and the legacy
-          # `deepseek*` shim artifacts that ship for the transition release.
           pattern: '*'
+      - name: Generate Windows npm launcher asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/deepseek-windows-launcher
+          {
+            printf '@echo off\r\n'
+            printf 'where wt >nul 2>nul\r\n'
+            printf 'set NO_ANIMATIONS=1\r\n'
+            printf 'if "%%ERRORLEVEL%%"=="0" (\r\n'
+            printf '    wt --title DeepSeek cmd /k "%%~dp0codewhale-windows-x64.exe"\r\n'
+            printf ') else (\r\n'
+            printf '    "%%~dp0codewhale-windows-x64.exe"\r\n'
+            printf ')\r\n'
+            printf '\r\n'
+          } > artifacts/deepseek-windows-launcher/deepseek.bat
       - name: List artifacts
         run: find artifacts -type f
       - name: Generate checksum manifest
@@ -416,10 +489,6 @@ jobs:
             base="$(basename "${file}")"
             printf '%s  %s\n' "${hash}" "${base}" >> "${manifest}"
           done < <(find artifacts -type f ! -path 'artifacts/checksums/*' -print0 | sort -z)
-          # Legacy alias manifest so v0.8.40 `deepseek update` clients can
-          # still find a manifest by their hardcoded name. Same content; will
-          # be removed once the legacy shim binaries are retired in v0.9.0.
-          cp "${manifest}" "artifacts/checksums/deepseek-artifacts-sha256.txt"
           cat "${manifest}"
       - uses: softprops/action-gh-release@v1
         with:
@@ -427,12 +496,11 @@ jobs:
           files: artifacts/*/*
           prerelease: false
           body: |
-            > This release renames the project to **CodeWhale**. The legacy
-            > `deepseek` and `` binaries continue to ship as
-            > deprecation shims for one release cycle; they print a one-line
-            > warning and forward to `deepseek` / `deepseek-tui`. They will
-            > be removed in v0.9.0. See `docs/REBRAND.md` for the full
-            > migration story.
+            > **DeepSeek** is the canonical project, command, npm package, and
+            > release-asset name. The legacy npm package `deepseek-tui` is
+            > deprecated and receives no further releases. Users coming from
+            > v0.8.x legacy `deepseek` / `deepseek-tui` names should migrate
+            > with `docs/REBRAND.md`.
 
             ## Install
 
@@ -453,7 +521,7 @@ jobs:
               ghcr.io/coohu/:${{ needs.resolve.outputs.tag }}
             ```
 
-            The image ships the `deepseek` dispatcher and `deepseek-tui` runtime (plus the legacy `deepseek` / `` shims during the transition). The `latest` tag is also updated on release.
+            The image ships the `deepseek` dispatcher and `deepseek-tui` runtime. The `latest` tag is also updated on release.
 
             ### Cargo (Linux / macOS)
 
@@ -471,8 +539,10 @@ jobs:
             |---|---|---|
             | Linux x64 | `deepseek-linux-x64.tar.gz` | `install.sh` |
             | Linux ARM64 | `deepseek-linux-arm64.tar.gz` | `install.sh` |
+            | Linux RISC-V | `deepseek-linux-riscv64.tar.gz` | `install.sh` |
             | macOS x64 | `deepseek-macos-x64.tar.gz` | `install.sh` |
             | macOS ARM | `deepseek-macos-arm64.tar.gz` | `install.sh` |
+            | Windows x64 (installer) | `DeepSeekSetup.exe` | NSIS setup |
             | Windows x64 | `deepseek-windows-x64.zip` | `install.bat` |
             | Windows x64 (portable) | `deepseek-windows-x64-portable.zip` | — |
 
@@ -484,13 +554,14 @@ jobs:
             ```
 
             **Windows:**
+            - For the installer path, run `DeepSeekSetup.exe`; it installs both binaries under `%LOCALAPPDATA%\Programs\DeepSeek\bin` and adds that directory to the current-user PATH.
             - Extract `deepseek-windows-x64.zip`
             - Run `install.bat` (copies to `%USERPROFILE%\bin`)
             - Add `%USERPROFILE%\bin` to your PATH
 
-            The **portable** Windows archive skips the install script — extract and run from any directory.
+            The **portable** Windows archive skips the install script — extract and run from any directory. The NSIS installer is currently unsigned and may trigger Windows SmartScreen until a signing certificate is wired into the release pipeline.
 
-            Individual binaries are also attached below for scripting and the npm wrapper. Legacy `deepseek-*` and `-*` assets ship for one release cycle so that existing `deepseek update` invocations on v0.8.40 keep working; they install the deprecation shims, which forward to the canonical binaries.
+            Individual binaries are also attached below for scripting and the npm wrapper. The legacy npm package `deepseek-tui` is deprecated and is not republished. For migration from v0.8.x legacy binary names, see `docs/REBRAND.md`.
 
             ### Verify (recommended)
 
@@ -508,7 +579,19 @@ jobs:
             shasum -a 256 -c deepseek-artifacts-sha256.txt
             ```
 
-            The legacy `deepseek-artifacts-sha256.txt` is also attached for backward compatibility and contains the same hashes as the canonical manifest.
+            ## Contributors
+
+            Thanks to @sximelon, @cyq1017, @Artenx, @LHqweasd, @wywsoor,
+            @hsdbeebou, @mserrano11, @Dr3259, @yekern, @lioryx,
+            @puneetdixit200, @HUQIANTAO, @xyuai, @gaord, @shenjackyuanjie,
+            @AdityaVG13, @aboimpinto, @ousamabenyounes, @reidliu41,
+            @ljm3790865, @idling11, @h3c-hexin, @AresNing, @tdccccc,
+            @qiyuanlicn, @bevis-wong, @shuxiangxuebiancheng, @hongqitai,
+            @NASLXTO, @wuxixing, @linzhiqin2003, @merchloubna70-dot,
+            @mvanhorn, @Implementist, @jrcjrcc, @punkcanyang,
+            @yusufgurdogan, @LeoAlex0, @mo-vic, @AiurArtanis, @nasus9527,
+            and @lbcheng888 for reports, PRs, reviews, reproductions,
+            design direction, and harvested work that shaped v0.9.0.
 
             ## Changelog
 
@@ -552,7 +635,7 @@ jobs:
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
           MANIFEST: /tmp/deepseek-artifacts-sha256.txt
-          TAP_REPO: coohu/homebrew-
+          TAP_REPO: coohu/deepseek-tui
           TOKEN: ${{ secrets.HOMEBREW_TAP_PAT || secrets.RELEASE_TAG_PAT }}
         run: bash .github/scripts/update-homebrew-tap.sh
 

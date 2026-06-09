@@ -11,7 +11,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   const { locale } = await params;
   const isZh = locale === "zh";
   return {
-    title: isZh ? "动态 · CodeWhale" : "Activity · CodeWhale",
+    title: isZh ? "动态 · DeepSeek" : "Activity · DeepSeek",
     description: isZh
       ? "来自 coohu/ GitHub 仓库的议题、合并请求和发布的实时动态。"
       : "Live feed of issues, pull requests, and releases mirrored from the coohu/ GitHub repo.",

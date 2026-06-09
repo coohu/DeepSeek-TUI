@@ -35,7 +35,8 @@ Restart the TUI after toggling. Disabling is the same in reverse.
 The memory file lives at `~/.deepseek/memory.md` by default; override
 with `memory_path` in `config.toml` or `DEEPSEEK_MEMORY_PATH` in
 the environment. `DEEPSEEK_MEMORY_PATH` wins over the config file when
-both are set.
+both are set. Existing `~/.deepseek/memory.md` files remain supported as a
+legacy fallback when no `.deepseek` memory file exists.
 
 ## Quick examples
 
@@ -166,7 +167,8 @@ note was added when grooming the file.
 
 Memory is intentionally **user-scoped** rather than repo-scoped. It
 sits alongside — not inside — project instruction sources such as
-`AGENTS.md`, `.deepseek/instructions.md`, and `instructions = [...]`.
+`AGENTS.md`, `.deepseek/instructions.md`, legacy `.deepseek/instructions.md`,
+and `instructions = [...]`.
 
 - Use **memory** for durable personal preferences that should follow
   you across repos and sessions.
@@ -203,9 +205,9 @@ used; the file is provider-agnostic.
 
 The file is per-user, not per-project. If you want project-specific
 memory, use the project-level `AGENTS.md` or
-`.deepseek/instructions.md` files instead — those are loaded by
-`project_context` and live in the repo (or wherever you commit
-them).
+`.deepseek/instructions.md` files instead. Legacy
+`.deepseek/instructions.md` files are still loaded for compatibility. These are
+loaded by `project_context` and live in the repo (or wherever you commit them).
 
 ## Configuration reference
 

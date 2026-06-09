@@ -44,7 +44,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     if !lines.is_empty() {
         let mut panel = Block::default()
             .title(Line::from(Span::styled(
-                " CodeWhale ",
+                " DeepSeek ",
                 Style::default()
                     .fg(palette::DEEPSEEK_BLUE)
                     .add_modifier(Modifier::BOLD),

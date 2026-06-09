@@ -5,8 +5,9 @@
 use std::time::Instant;
 
 use super::CommandResult;
-use crate::client::{PromptInspection, inspect_prompt_for_request};
+use crate::client::{CacheWarmupKey, PromptInspection, inspect_prompt_for_request};
 use crate::compaction::estimate_input_tokens_conservative;
+use crate::dependencies::{ExternalTool, Git};
 use crate::localization::{Locale, MessageId, tr};
 use crate::models::{ContentBlock, MessageRequest, SystemPrompt, context_window_for_model};
 use crate::tui::app::{App, AppAction, TurnCacheRecord};
@@ -139,11 +140,20 @@ pub fn context(_app: &mut App) -> CommandResult {
 /// Renders a fixed-width table the user can paste into a bug report.
 pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
     let arg = arg.map(str::trim).filter(|s| !s.is_empty());
-    if matches!(arg, Some("inspect")) {
-        return CommandResult::message(format_cache_inspect(app));
+    if let Some(flags) = arg.and_then(|a| a.strip_prefix("inspect")) {
+        let flags = flags.trim();
+        let verbose = flags.split_whitespace().any(|flag| flag == "--verbose");
+        let json_mode = flags.split_whitespace().any(|flag| flag == "--json");
+        return CommandResult::message(format_cache_inspect(app, verbose, json_mode));
     }
     if matches!(arg, Some("warmup")) {
         return CommandResult::action(AppAction::CacheWarmup);
+    }
+    if matches!(arg, Some("stats")) {
+        return CommandResult::message(format_cache_stats(app));
+    }
+    if matches!(arg, Some("zones")) {
+        return CommandResult::message(format_cache_zones(app));
     }
 
     let want = arg.and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
@@ -159,7 +169,11 @@ pub fn cache(app: &mut App, arg: Option<&str>) -> CommandResult {
     CommandResult::message(format_cache_history(app, count, app.ui_locale))
 }
 
-fn format_cache_inspect(app: &mut App) -> String {
+fn format_cache_inspect(app: &mut App, verbose: bool, json_mode: bool) -> String {
+    if verbose && json_mode {
+        return "cache inspect: --json and --verbose cannot be combined".to_string();
+    }
+
     let reasoning_effort = if app.reasoning_effort == crate::tui::app::ReasoningEffort::Auto {
         app.last_effective_reasoning_effort
             .and_then(crate::tui::app::ReasoningEffort::api_value)
@@ -172,7 +186,7 @@ fn format_cache_inspect(app: &mut App) -> String {
         messages: app.api_messages.clone(),
         max_tokens: 0,
         system: app.system_prompt.clone(),
-        tools: None,
+        tools: app.session.last_tool_catalog.clone(),
         tool_choice: None,
         metadata: None,
         thinking: None,
@@ -183,6 +197,35 @@ fn format_cache_inspect(app: &mut App) -> String {
     };
     let inspection = inspect_prompt_for_request(&request);
     let previous = app.session.last_cache_inspection.as_ref();
+    let current_warmup_key = CacheWarmupKey::from_inspection(
+        &format!("{:?}", app.api_provider),
+        &app.model,
+        app.session.last_base_url.as_deref().unwrap_or_default(),
+        &inspection,
+    );
+    let warmup_status =
+        format_warmup_status(app.session.last_warmup_key.as_ref(), &current_warmup_key);
+    if json_mode {
+        let output = serde_json::to_value(&inspection)
+            .and_then(|mut value| {
+                if let serde_json::Value::Object(ref mut object) = value {
+                    object.insert(
+                        "current_warmup_key".to_string(),
+                        serde_json::to_value(&current_warmup_key)?,
+                    );
+                    object.insert(
+                        "warmup_status".to_string(),
+                        serde_json::Value::String(warmup_status.trim_end().to_string()),
+                    );
+                }
+                serde_json::to_string_pretty(&value)
+            })
+            .unwrap_or_else(|_| {
+                "{\"error\":\"cache inspection serialization failed\"}".to_string()
+            });
+        app.session.last_cache_inspection = Some(inspection);
+        return output;
+    }
 
     let mut out = String::new();
     out.push_str("Cache Inspect\n");
@@ -195,16 +238,33 @@ fn format_cache_inspect(app: &mut App) -> String {
         "Full request prefix hash: {}\n",
         inspection.full_request_prefix_hash
     ));
+    out.push_str(&format!(
+        "Tool catalog hash: {}\n",
+        if inspection.tool_catalog_hash.is_empty() {
+            "(no tools registered)".to_string()
+        } else {
+            inspection.tool_catalog_hash.clone()
+        }
+    ));
     out.push_str(&format_static_prefix_status(previous, &inspection));
     out.push_str(&format_first_divergence(previous, &inspection));
+    out.push_str(&warmup_status);
+    let total_tokens: usize = inspection
+        .layers
+        .iter()
+        .map(|layer| layer.token_estimate)
+        .sum();
+    out.push_str(&format!("Estimated reusable tokens: ~{total_tokens}\n"));
     out.push('\n');
 
     for layer in &inspection.layers {
         let mut line = format!(
-            "{}: {}, chars={}, hash={}\n",
+            "{}: {}, chars={}, bytes={}, ~{}tok, hash={}\n",
             layer.name,
             layer.stability.label(),
             layer.char_len,
+            layer.byte_len,
+            layer.token_estimate,
             layer.sha256
         );
         if let Some(tool_result) = &layer.tool_result {
@@ -229,8 +289,327 @@ fn format_cache_inspect(app: &mut App) -> String {
         }
         out.push_str(&line);
     }
+    if verbose {
+        out.push_str("\nVerbose diff\n");
+        if let Some(previous) = previous {
+            out.push_str(&format_verbose_diff(previous, &inspection));
+        } else {
+            out.push_str("No previous inspection to compare against.\n");
+        }
+    }
     app.session.last_cache_inspection = Some(inspection);
     out
+}
+
+fn format_warmup_status(last_warmup: Option<&CacheWarmupKey>, current: &CacheWarmupKey) -> String {
+    match last_warmup {
+        None => format!(
+            "Warmup status: no previous warmup (current key: {})\n",
+            current.hash_short()
+        ),
+        Some(previous) if previous == current => {
+            format!(
+                "Warmup status: valid (key {} matches)\n",
+                current.hash_short()
+            )
+        }
+        Some(previous) => {
+            let mut reasons = Vec::new();
+            if previous.provider != current.provider {
+                reasons.push("provider changed");
+            }
+            if previous.model != current.model {
+                reasons.push("model changed");
+            }
+            if previous.base_url != current.base_url {
+                reasons.push("base URL changed");
+            }
+            if previous.static_prefix_hash != current.static_prefix_hash {
+                reasons.push("static prefix changed");
+            }
+            if previous.tool_catalog_hash != current.tool_catalog_hash {
+                reasons.push("tool catalog changed");
+            }
+            if previous.project_pack_hash != current.project_pack_hash {
+                reasons.push("project pack changed");
+            }
+            if previous.skills_hash != current.skills_hash {
+                reasons.push("skills changed");
+            }
+            let reason_text = if reasons.is_empty() {
+                "unknown prefix input changed".to_string()
+            } else {
+                reasons.join(", ")
+            };
+            format!(
+                "Warmup status: invalid ({} -> {}; {})\n",
+                previous.hash_short(),
+                current.hash_short(),
+                reason_text
+            )
+        }
+    }
+}
+
+fn format_verbose_diff(previous: &PromptInspection, current: &PromptInspection) -> String {
+    let mut out = String::new();
+    let max_len = previous.layers.len().max(current.layers.len());
+    for index in 0..max_len {
+        match (previous.layers.get(index), current.layers.get(index)) {
+            (Some(prev), Some(curr)) if prev == curr => {
+                out.push_str(&format!("  [{index}] {} unchanged\n", curr.name));
+            }
+            (Some(prev), Some(curr)) => {
+                out.push_str(&format!("  [{index}] {} changed\n", curr.name));
+                if prev.name != curr.name {
+                    out.push_str(&format!("    name: {} -> {}\n", prev.name, curr.name));
+                }
+                if prev.stability != curr.stability {
+                    out.push_str(&format!(
+                        "    stability: {} -> {}\n",
+                        prev.stability.label(),
+                        curr.stability.label()
+                    ));
+                }
+                if prev.char_len != curr.char_len {
+                    out.push_str(&format!(
+                        "    chars: {} -> {} ({:+})\n",
+                        prev.char_len,
+                        curr.char_len,
+                        curr.char_len as i64 - prev.char_len as i64
+                    ));
+                }
+                if prev.sha256 != curr.sha256 {
+                    out.push_str(&format!(
+                        "    hash: {} -> {}\n",
+                        short_hash(&prev.sha256),
+                        short_hash(&curr.sha256)
+                    ));
+                }
+            }
+            (None, Some(curr)) => {
+                out.push_str(&format!("  [{index}] {} added\n", curr.name));
+            }
+            (Some(prev), None) => {
+                out.push_str(&format!("  [{index}] {} removed\n", prev.name));
+            }
+            (None, None) => unreachable!("index is within max_len"),
+        }
+    }
+    out
+}
+
+fn short_hash(hash: &str) -> &str {
+    &hash[..hash.len().min(12)]
+}
+
+/// Render a prefix-cache stability and health summary for `/cache stats`.
+///
+/// Surfaces the current prefix fingerprint, stability ratio, change history,
+/// and an aggregated cache-hit summary from per-turn telemetry.  When the
+/// prefix has changed, a prominent warning is included so users can
+/// correlate cache misses with prefix drift.
+fn format_cache_stats(app: &App) -> String {
+    let mut out = String::new();
+    out.push_str("Cache Stats\n");
+
+    // ── Prefix stability ──────────────────────────────────────────────
+    out.push_str("\n── Prefix Stability\n");
+    match app.prefix_stability_pct {
+        Some(pct) => {
+            let checks = app.prefix_checks_total;
+            let changes = app.prefix_change_count;
+            let stable_checks = checks.saturating_sub(changes);
+
+            if changes == 0 {
+                out.push_str(&format!(
+                    "  Stability: {pct}% ({stable_checks}/{checks} checks)\n"
+                ));
+                out.push_str("  Status:    stable (no prefix changes this session)\n");
+            } else {
+                out.push_str(&format!(
+                    "  Stability: {pct}% ({stable_checks}/{checks} checks, {changes} change{})\n",
+                    if changes == 1 { "" } else { "s" }
+                ));
+                out.push_str("  Status:    WARNING — prefix has changed\n");
+                if let Some(ref desc) = app.last_prefix_change_desc {
+                    out.push_str(&format!("  Last change: {desc}\n"));
+                }
+            }
+        }
+        None => {
+            out.push_str("  Stability: unknown (no checks recorded yet)\n");
+            out.push_str("  Run a turn first to collect prefix stability data.\n");
+        }
+    }
+
+    // ── Prefix fingerprint ────────────────────────────────────────────
+    out.push_str("\n── Prefix Fingerprint\n");
+    match &app.last_pinned_prefix_hash {
+        Some(hash) => {
+            out.push_str(&format!("  Pinned hash: {hash}\n"));
+            let short = if hash.len() >= 12 { &hash[..12] } else { hash };
+            out.push_str(&format!("  Short id:    {short}\n"));
+            if app.prefix_change_count > 0 {
+                out.push_str("  Drift:       WARNING — hash has changed during this session\n");
+                out.push_str(&format!(
+                    "               ({change} change{plural} detected)\n",
+                    change = app.prefix_change_count,
+                    plural = if app.prefix_change_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            } else {
+                out.push_str("  Drift:       none (hash stable)\n");
+            }
+        }
+        None => {
+            out.push_str("  Pinned hash: unavailable\n");
+            out.push_str("  Run a turn first, or use /cache inspect.\n");
+        }
+    }
+
+    // ── Cache hit-rate summary ────────────────────────────────────────
+    out.push_str("\n── Cache Hit Rate\n");
+    let history = &app.session.turn_cache_history;
+    if history.is_empty() {
+        out.push_str("  No turn telemetry recorded yet.\n");
+    } else {
+        // Aggregate only cache-aware turns; skip turns where the provider
+        // did not report cache telemetry (cache_hit_tokens is None).
+        // When cache_miss_tokens is None, infer it as
+        //   input_tokens − cache_hit_tokens  (matches /cache table logic).
+        let mut turns = 0u64;
+        let (hit, miss, input) = app.session.turn_cache_history.iter().fold(
+            (0u64, 0u64, 0u64),
+            |(hit, miss, input), rec| {
+                let Some(hit_tokens) = rec.cache_hit_tokens else {
+                    return (hit, miss, input);
+                };
+                let h = u64::from(hit_tokens);
+                let m = u64::from(
+                    rec.cache_miss_tokens
+                        .unwrap_or(rec.input_tokens.saturating_sub(hit_tokens)),
+                );
+                turns += 1;
+                (hit + h, miss + m, input + u64::from(rec.input_tokens))
+            },
+        );
+        let total_cache = hit + miss;
+        let avg_pct = if total_cache > 0 {
+            (hit as f64 / total_cache as f64 * 100.0).clamp(0.0, 100.0)
+        } else {
+            0.0
+        };
+        out.push_str(&format!("  Turns recorded: {turns}\n"));
+        out.push_str(&format!(
+            "  Cache hit tokens:  {hit} ({avg_pct:.1}% of {total_cache} cache-aware tokens)\n",
+            hit = format_tokens(hit),
+            total_cache = format_tokens(total_cache),
+        ));
+        out.push_str(&format!(
+            "  Cache miss tokens: {miss}\n",
+            miss = format_tokens(miss),
+        ));
+        out.push_str(&format!(
+            "  Total input tokens: {input}\n",
+            input = format_tokens(input),
+        ));
+        if avg_pct < 80.0 {
+            out.push_str("  NOTE: cache hit rate is low (< 80%). Check prefix stability above or consider /compact.\n");
+        }
+    }
+
+    out
+}
+
+/// Render three-zone prefix contract status for `/cache zones` (#2264).
+///
+/// Displays the PinnedPrefix fingerprint, AppendLog size, and TurnScratch
+/// state. The zones are type scaffolding only (Phase 1) — not yet
+/// enforcing the full contract at request time.
+fn format_cache_zones(app: &App) -> String {
+    let mut out = String::new();
+    out.push_str("Cache Zones (#2264 three-zone contract, Phase 1 foundation)\n");
+
+    // ── PinnedPrefix ─────────────────────────────────────────────────
+    out.push_str("\n── PinnedPrefix (system + tools, frozen baseline)\n");
+    match &app.last_pinned_prefix_hash {
+        Some(hash) => {
+            let short = if hash.len() >= 12 { &hash[..12] } else { hash };
+            out.push_str(&format!("  Short id: {short}\n"));
+            if app.prefix_change_count > 0 {
+                out.push_str(&format!(
+                    "  Status:    WARNING — {change} drift{plural} detected\n",
+                    change = app.prefix_change_count,
+                    plural = if app.prefix_change_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ));
+            } else {
+                out.push_str("  Status:    stable (no drift this session)\n");
+            }
+            if let Some(pct) = app.prefix_stability_pct {
+                out.push_str(&format!("  Stability: {pct}%\n"));
+            }
+        }
+        None => {
+            out.push_str("  Status:    unavailable (not yet frozen)\n");
+            out.push_str("  Run a turn first to freeze the baseline.\n");
+        }
+    }
+
+    // ── AppendLog ────────────────────────────────────────────────────
+    out.push_str("\n── AppendLog (conversation history, append-only)\n");
+    out.push_str("  Status:      Phase 1 scaffolding — not yet wired into engine\n");
+    let msg_count = app.api_messages.len();
+    out.push_str(&format!("  Messages:    {msg_count}\n"));
+    let history_count = app
+        .api_messages
+        .iter()
+        .filter(|m| m.role != "system")
+        .count();
+    out.push_str(&format!("  History msgs: {history_count}\n"));
+
+    // ── TurnScratch ──────────────────────────────────────────────────
+    out.push_str("\n── TurnScratch (per-turn ephemeral data)\n");
+    out.push_str("  Status:      Phase 1 scaffolding — not yet wired into engine\n");
+
+    // ── Zone contract summary ────────────────────────────────────────
+    out.push_str("\n── Contract Status\n");
+    let has_drift = app.prefix_change_count > 0;
+    out.push_str(&format!(
+        "  PinnedPrefix: {}\n",
+        if app.last_pinned_prefix_hash.is_some() {
+            if has_drift {
+                "WARNING — drifted"
+            } else {
+                "OK"
+            }
+        } else {
+            "not frozen"
+        }
+    ));
+    out.push_str("  AppendLog:    Phase 1 foundation\n");
+    out.push_str("  TurnScratch:  Phase 1 foundation\n");
+
+    out
+}
+
+/// Formats a u64 token count with a compact suffix: K for thousands,
+/// M for millions. Never returns scientific notation.
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn format_static_prefix_status(
@@ -422,7 +801,7 @@ fn humanize_age(d: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::models::{ContentBlock, Message, SystemBlock};
+    use crate::models::{ContentBlock, Message, SystemBlock, Tool};
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::history::{GenericToolCell, ToolCell, ToolStatus};
     use std::path::PathBuf;
@@ -454,6 +833,25 @@ mod tests {
         app.cost_currency = crate::pricing::CostCurrency::Usd;
         app.api_provider = crate::config::ApiProvider::Deepseek;
         app
+    }
+
+    fn test_tool(name: &str) -> Tool {
+        Tool {
+            tool_type: Some("function".to_string()),
+            name: name.to_string(),
+            description: format!("{name} test tool"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                }
+            }),
+            allowed_callers: None,
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        }
     }
 
     #[test]
@@ -600,6 +998,143 @@ mod tests {
     }
 
     #[test]
+    fn cache_inspect_uses_last_request_tool_catalog() {
+        let mut app = create_test_app();
+        app.system_prompt = Some(SystemPrompt::Text("Base policy".to_string()));
+        app.session.last_tool_catalog = Some(vec![test_tool("read_file")]);
+        app.api_messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Current task".to_string(),
+                cache_control: None,
+            }],
+        });
+
+        let msg = cache(&mut app, Some("inspect"))
+            .message
+            .expect("inspect output");
+
+        assert!(msg.contains("Tool catalog hash: "), "got: {msg}");
+        assert!(!msg.contains("(no tools registered)"), "got: {msg}");
+        assert!(msg.contains("Tool catalog: static"), "got: {msg}");
+        assert!(msg.contains("bytes="), "got: {msg}");
+        assert!(msg.contains("~"), "got: {msg}");
+    }
+
+    #[test]
+    fn cache_inspect_json_reports_tool_catalog_hash_and_layer_sizes() {
+        let mut app = create_test_app();
+        app.system_prompt = Some(SystemPrompt::Text("Base policy".to_string()));
+        app.session.last_tool_catalog = Some(vec![test_tool("read_file")]);
+        app.api_messages.push(Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: "Current task".to_string(),
+                cache_control: None,
+            }],
+        });
+
+        let msg = cache(&mut app, Some("inspect --json"))
+            .message
+            .expect("inspect json output");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).expect("valid json");
+
+        assert_eq!(parsed["tool_catalog_hash"].as_str().unwrap().len(), 64);
+        assert!(
+            parsed["warmup_status"]
+                .as_str()
+                .is_some_and(|status| status.starts_with("Warmup status: no previous warmup"))
+        );
+        assert!(parsed["current_warmup_key"].is_object());
+        let tool_layer = parsed["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| layer["name"] == "Tool catalog")
+            .expect("tool catalog layer");
+        assert!(tool_layer["byte_len"].as_u64().unwrap() > 0);
+        assert!(tool_layer["token_estimate"].as_u64().unwrap() > 0);
+    }
+
+    fn warmup_key(model: &str, static_hash: &str) -> CacheWarmupKey {
+        CacheWarmupKey {
+            provider: "Deepseek".to_string(),
+            model: model.to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            static_prefix_hash: static_hash.to_string(),
+            tool_catalog_hash: "tool".to_string(),
+            project_pack_hash: "project".to_string(),
+            skills_hash: "skills".to_string(),
+        }
+    }
+
+    #[test]
+    fn warmup_status_reports_valid_matching_key() {
+        let key = warmup_key("deepseek-v4-pro", "static-a");
+        let result = format_warmup_status(Some(&key), &key);
+        assert!(result.contains("Warmup status: valid"), "got: {result}");
+    }
+
+    #[test]
+    fn warmup_status_reports_invalidation_reason() {
+        let previous = warmup_key("deepseek-v4-pro", "static-a");
+        let current = warmup_key("deepseek-v4-flash", "static-b");
+        let result = format_warmup_status(Some(&previous), &current);
+        assert!(result.contains("Warmup status: invalid"), "got: {result}");
+        assert!(result.contains("model changed"), "got: {result}");
+        assert!(result.contains("static prefix changed"), "got: {result}");
+    }
+
+    #[test]
+    fn warmup_status_reports_project_and_skills_reasons() {
+        let previous = warmup_key("deepseek-v4-pro", "static-a");
+        let mut current = previous.clone();
+        current.project_pack_hash = "project-b".to_string();
+        current.skills_hash = "skills-b".to_string();
+
+        let result = format_warmup_status(Some(&previous), &current);
+
+        assert!(result.contains("project pack changed"), "got: {result}");
+        assert!(result.contains("skills changed"), "got: {result}");
+        assert!(!result.contains("; )"), "got: {result}");
+    }
+
+    #[test]
+    fn cache_inspect_rejects_json_verbose_combo() {
+        let mut app = create_test_app();
+        let msg = cache(&mut app, Some("inspect --json --verbose"))
+            .message
+            .expect("inspect output");
+
+        assert_eq!(
+            msg,
+            "cache inspect: --json and --verbose cannot be combined"
+        );
+    }
+
+    #[test]
+    fn cache_inspect_json_uses_cjk_aware_token_estimate() {
+        let mut app = create_test_app();
+        app.system_prompt = Some(SystemPrompt::Text("缓存命中测试".to_string()));
+
+        let msg = cache(&mut app, Some("inspect --json"))
+            .message
+            .expect("inspect json output");
+        let parsed: serde_json::Value = serde_json::from_str(&msg).expect("valid json");
+        let system_layer = parsed["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| layer["name"] == "Global system prefix")
+            .expect("system layer");
+
+        assert_eq!(
+            system_layer["token_estimate"].as_u64(),
+            system_layer["char_len"].as_u64()
+        );
+    }
+
+    #[test]
     fn cache_inspect_reports_divergence_from_previous_request() {
         let mut app = create_test_app();
         app.system_prompt = Some(SystemPrompt::Text(
@@ -648,6 +1183,22 @@ mod tests {
         let _spill_guard = crate::tools::truncate::TEST_SPILLOVER_GUARD
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        // Set a temporary spillover root so wire-dedup can persist
+        // SHA-addressed tool-result files without depending on a
+        // writable $HOME (nix sandboxes have a read-only home tree).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _restore = {
+            let prior = crate::tools::truncate::set_test_spillover_root(Some(
+                tmp.path().join(".deepseek").join("tool_outputs"),
+            ));
+            struct Restore(Option<std::path::PathBuf>);
+            impl Drop for Restore {
+                fn drop(&mut self) {
+                    crate::tools::truncate::set_test_spillover_root(self.0.take());
+                }
+            }
+            Restore(prior)
+        };
         let mut app = create_test_app();
         let long_output = format!("{}{}", "A".repeat(7_000), "Z".repeat(7_000));
         app.api_messages.push(Message {
@@ -690,10 +1241,25 @@ mod tests {
         let result = cache(&mut app, Some("inspect"));
         let msg = result.message.expect("inspect output");
 
-        assert!(msg.contains("original_chars=14000"), "got: {msg}");
-        assert!(msg.contains("truncated=true"), "got: {msg}");
-        assert!(msg.contains("deduplicated=false"), "got: {msg}");
-        assert!(msg.contains("deduplicated=true"), "got: {msg}");
+        let tool_budget_lines: Vec<_> = msg
+            .lines()
+            .filter(|line| line.contains("original_chars=14000"))
+            .collect();
+        assert_eq!(tool_budget_lines.len(), 2, "got: {msg}");
+
+        let first_sighting = tool_budget_lines
+            .iter()
+            .find(|line| line.contains("deduplicated=false"))
+            .expect("first tool-result sighting should report non-dedup metadata");
+        assert!(first_sighting.contains("sent_chars="), "got: {msg}");
+        assert!(first_sighting.contains("truncated=true"), "got: {msg}");
+
+        let repeat_sighting = tool_budget_lines
+            .iter()
+            .find(|line| line.contains("deduplicated=true"))
+            .expect("repeat tool-result sighting should report dedup metadata");
+        assert!(repeat_sighting.contains("sent_chars="), "got: {msg}");
+        assert!(repeat_sighting.contains("truncated=false"), "got: {msg}");
     }
 
     #[test]
@@ -1402,6 +1968,136 @@ mod tests {
             ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "call-a"
         ));
     }
+
+    // ── /cache stats tests ──────────────────────────────────────────────
+
+    #[test]
+    fn cache_stats_no_data_before_first_turn() {
+        let mut app = create_test_app();
+        let result = cache(&mut app, Some("stats"));
+        let msg = result.message.expect("cache stats produces a message");
+        assert!(msg.contains("Cache Stats"), "got: {msg}");
+        assert!(
+            msg.contains("unknown (no checks recorded yet)"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("Pinned hash: unavailable"), "got: {msg}");
+        assert!(msg.contains("No turn telemetry recorded yet"), "got: {msg}");
+    }
+
+    #[test]
+    fn cache_stats_shows_stable_prefix_with_hash() {
+        let mut app = create_test_app();
+        app.prefix_stability_pct = Some(100);
+        app.prefix_checks_total = 5;
+        app.prefix_change_count = 0;
+        app.last_pinned_prefix_hash =
+            Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string());
+
+        let result = cache(&mut app, Some("stats"));
+        let msg = result.message.expect("cache stats produces a message");
+
+        assert!(msg.contains("Stability: 100%"), "got: {msg}");
+        assert!(msg.contains("stable (no prefix changes"), "got: {msg}");
+        assert!(msg.contains("Pinned hash: a1b2c3d4e5f6"), "got: {msg}");
+        assert!(
+            msg.contains("Drift:       none (hash stable)"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cache_stats_warns_on_prefix_change() {
+        let mut app = create_test_app();
+        app.prefix_stability_pct = Some(67);
+        app.prefix_checks_total = 3;
+        app.prefix_change_count = 1;
+        app.last_prefix_change_desc =
+            Some("prefix cache invalidated: system prompt changed".to_string());
+        app.last_pinned_prefix_hash = Some(
+            "deadbeef0000deadbeef0000deadbeef0000deadbeef0000deadbeef0000deadbeef".to_string(),
+        );
+
+        let result = cache(&mut app, Some("stats"));
+        let msg = result.message.expect("cache stats produces a message");
+
+        assert!(msg.contains("Stability: 67%"), "got: {msg}");
+        assert!(msg.contains("WARNING — prefix has changed"), "got: {msg}");
+        assert!(msg.contains("system prompt changed"), "got: {msg}");
+        assert!(msg.contains("Drift:       WARNING"), "got: {msg}");
+        assert!(msg.contains("1 change detected"), "got: {msg}");
+    }
+
+    #[test]
+    fn cache_stats_shows_cache_hit_summary() {
+        let mut app = create_test_app();
+        app.prefix_stability_pct = Some(100);
+        app.prefix_checks_total = 1;
+        app.last_pinned_prefix_hash =
+            Some("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234".to_string());
+
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            cache_hit_tokens: Some(8_000),
+            cache_miss_tokens: Some(2_000),
+            reasoning_replay_tokens: None,
+            recorded_at: Instant::now(),
+        });
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 5_000,
+            output_tokens: 500,
+            cache_hit_tokens: Some(4_500),
+            cache_miss_tokens: Some(500),
+            reasoning_replay_tokens: None,
+            recorded_at: Instant::now(),
+        });
+
+        let result = cache(&mut app, Some("stats"));
+        let msg = result.message.expect("cache stats produces a message");
+
+        assert!(msg.contains("Turns recorded: 2"), "got: {msg}");
+        // Total: 12,500 hit out of 15,000 cache-aware = 83.3%
+        assert!(msg.contains("83.3%"), "got: {msg}");
+    }
+
+    #[test]
+    fn cache_stats_low_hit_rate_shows_note() {
+        let mut app = create_test_app();
+        app.prefix_stability_pct = Some(100);
+        app.prefix_checks_total = 1;
+        app.last_pinned_prefix_hash =
+            Some("abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234".to_string());
+
+        app.push_turn_cache_record(TurnCacheRecord {
+            input_tokens: 10_000,
+            output_tokens: 1_000,
+            cache_hit_tokens: Some(1_000),
+            cache_miss_tokens: Some(9_000),
+            reasoning_replay_tokens: None,
+            recorded_at: Instant::now(),
+        });
+
+        let result = cache(&mut app, Some("stats"));
+        let msg = result.message.expect("cache stats produces a message");
+
+        // 10% hit rate → below 80% threshold
+        assert!(msg.contains("10.0%"), "got: {msg}");
+        assert!(
+            msg.contains("cache hit rate is low"),
+            "should show low-hit-rate advisory, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_tokens_handles_all_scales() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_000), "1.0K");
+        assert_eq!(format_tokens(15_500), "15.5K");
+        assert_eq!(format_tokens(1_000_000), "1.0M");
+        assert_eq!(format_tokens(2_500_000), "2.5M");
+    }
 }
 
 /// Remove last message pair (user + assistant).
@@ -1590,15 +2286,18 @@ pub fn patch_undo(app: &mut App) -> CommandResult {
     }
 
     // Show diff stat so the user knows what changed.
-    let diff_stat = std::process::Command::new("git")
-        .args(["diff", "--stat"])
-        .current_dir(&workspace)
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { None } else { Some(s) }
-        });
+    let diff_stat = Git::command()
+        .map(|mut git| {
+            git.args(["diff", "--stat"])
+                .current_dir(&workspace)
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if s.is_empty() { None } else { Some(s) }
+                })
+        })
+        .unwrap_or(None);
 
     let short = &target.id.as_str()[..target.id.as_str().len().min(8)];
     let summary = match diff_stat {
@@ -1669,11 +2368,17 @@ pub fn edit(app: &mut App) -> CommandResult {
 pub fn diff(app: &mut App) -> CommandResult {
     let workspace = app.workspace.clone();
 
-    let name_only_output = std::process::Command::new("git")
+    let Some(mut name_only_cmd) = Git::command() else {
+        return CommandResult::error("git not found on PATH");
+    };
+    let Some(mut stat_cmd) = Git::command() else {
+        return CommandResult::error("git not found on PATH");
+    };
+    let name_only_output = name_only_cmd
         .args(["diff", "--name-only"])
         .current_dir(&workspace)
         .output();
-    let stat_output = std::process::Command::new("git")
+    let stat_output = stat_cmd
         .args(["diff", "--stat"])
         .current_dir(&workspace)
         .output();

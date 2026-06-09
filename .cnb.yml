@@ -38,6 +38,7 @@
       script: |
         set -eu
         ./scripts/release/check-versions.sh
+        ./scripts/release/check-ohos-deps.sh
         cargo fmt --all -- --check
         cargo check --workspace --all-targets --locked
         cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -75,6 +76,7 @@
       script: |
         set -eu
         ./scripts/release/check-versions.sh
+        ./scripts/release/check-ohos-deps.sh
         cargo fmt --all -- --check
         cargo check --workspace --all-targets --locked
         cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -123,6 +125,7 @@ $:
             apt-get install -y git libdbus-1-dev nodejs pkg-config
 
             ./scripts/release/check-versions.sh
+            ./scripts/release/check-ohos-deps.sh
             cargo build --release --locked -p deepseek-cli -p deepseek-tui
 
             mkdir -p target/cnb-release

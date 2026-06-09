@@ -3,7 +3,7 @@
 
 environments:
   - name: lighthouse-hk
-    description: Deploy CodeWhale to Tencent Lighthouse Hong Kong.
+    description: Deploy DeepSeek to Tencent Lighthouse Hong Kong.
     env:
       name: lighthouse-hk
     button:

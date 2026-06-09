@@ -1,5 +1,5 @@
 [Unit]
-Description=CodeWhale Feishu/Lark Phone Bridge
+Description=DeepSeek Feishu/Lark Phone Bridge
 Wants=network-online.target deepseek-runtime.service
 After=network-online.target deepseek-runtime.service
 
@@ -8,7 +8,9 @@ Type=simple
 User=deepseek
 Group=deepseek
 WorkingDirectory=/opt/deepseek/bridge
-EnvironmentFile=/etc/deepseek/feishu-bridge.env
+# Legacy /etc/deepseek is loaded first for old installs; /etc/deepseek wins.
+EnvironmentFile=-/etc/deepseek/feishu-bridge.env
+EnvironmentFile=-/etc/deepseek/feishu-bridge.env
 ExecStart=/usr/bin/node /opt/deepseek/bridge/src/index.mjs
 Restart=on-failure
 RestartSec=5

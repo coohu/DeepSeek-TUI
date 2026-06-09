@@ -38,7 +38,7 @@ const MODE_ROWS: &[ModeRow] = &[
         mode: AppMode::Yolo,
         number: '3',
         name: "YOLO",
-        hint: "Shell + trust + auto-approve",
+        hint: "Auto-approve; shell enabled",
     },
 ];
 
@@ -149,7 +149,7 @@ impl ModalView for ModePickerView {
 
         let mut lines = Vec::with_capacity(MODE_ROWS.len() + 1);
         lines.push(Line::from(Span::styled(
-            "Choose how CodeWhale should operate:",
+            "Choose how DeepSeek should operate:",
             Style::default().fg(palette::TEXT_MUTED),
         )));
 

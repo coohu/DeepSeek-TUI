@@ -9,11 +9,14 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
+use std::path::{Path, PathBuf};
+
 use serde_json::Value;
 
 use crate::client::DeepSeekClient;
 use crate::models::Tool;
 
+use super::schema_canonicalize;
 use super::schema_sanitize;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -219,9 +222,11 @@ impl ToolRegistry {
         tools.sort_by(|a, b| a.name().cmp(b.name()));
         tools
             .into_iter()
+            .filter(|tool| tool.model_visible())
             .map(|tool| {
                 let mut schema = tool.input_schema();
                 schema_sanitize::sanitize(&mut schema);
+                schema_canonicalize::canonicalize_schema(&mut schema);
                 Tool {
                     tool_type: None,
                     name: tool.name().to_string(),
@@ -388,6 +393,90 @@ impl ToolRegistry {
         self.tools.clear();
         self.invalidate_api_cache();
     }
+
+    /// Remove a tool from the registry by name. Returns `true` if the tool
+    /// was present and removed, `false` if no tool with that name existed.
+    pub fn remove_tool(&mut self, name: &str) -> bool {
+        let existed = self.tools.remove(name).is_some();
+        if existed {
+            self.invalidate_api_cache();
+        }
+        existed
+    }
+
+    /// Apply config.toml tool overrides to this registry.
+    ///
+    /// For each entry in `overrides`:
+    /// - `Disabled` removes the tool.
+    /// - `Script` / `Command` replaces the tool with the user's implementation.
+    ///
+    /// `plugin_dir` is used as the base for relative script paths.
+    pub fn apply_overrides(
+        &mut self,
+        overrides: &std::collections::HashMap<String, crate::config::ToolOverride>,
+        plugin_dir: &Path,
+    ) {
+        for (tool_name, override_cfg) in overrides {
+            match override_cfg {
+                crate::config::ToolOverride::Disabled => {
+                    if self.remove_tool(tool_name) {
+                        tracing::info!("Tool '{}' disabled via config override", tool_name);
+                    } else {
+                        tracing::warn!("Cannot disable tool '{}': not registered", tool_name);
+                    }
+                }
+                _ => {
+                    // Script and Command overrides create replacement tools.
+                    use crate::tools::plugin::tool_from_override;
+                    match tool_from_override(tool_name, override_cfg, plugin_dir) {
+                        Some(replacement) => {
+                            self.register(replacement);
+                            tracing::info!("Tool '{}' replaced via config override", tool_name);
+                        }
+                        None => {
+                            if self.remove_tool(tool_name) {
+                                tracing::warn!(
+                                    "Tool '{}' override did not create a replacement; removed the original tool to avoid override fallthrough",
+                                    tool_name
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "Tool '{}' override did not create a replacement and no registered tool existed",
+                                    tool_name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load and register plugin tools from a directory.
+    ///
+    /// Each script with valid frontmatter (`# name:`, `# description:`, etc.)
+    /// becomes a registered `ScriptPluginTool`. Tools whose name matches an
+    /// already-registered tool will overwrite it.
+    pub fn load_plugins(&mut self, plugin_dir: &Path) {
+        if !plugin_dir.exists() {
+            tracing::debug!(
+                "Plugin directory {} does not exist, skipping",
+                plugin_dir.display()
+            );
+            return;
+        }
+        let plugins = crate::tools::plugin::load_plugin_tools(plugin_dir);
+        let count = plugins.len();
+        for tool in plugins {
+            self.register(tool);
+        }
+        if count > 0 {
+            tracing::info!(
+                "Loaded {count} plugin tool(s) from {}",
+                plugin_dir.display()
+            );
+        }
+    }
 }
 
 /// Builder for constructing a `ToolRegistry` with common tools.
@@ -524,7 +613,9 @@ impl ToolRegistryBuilder {
     #[must_use]
     pub fn with_test_runner_tool(self) -> Self {
         use super::test_runner::RunTestsTool;
+        use super::verifier::RunVerifiersTool;
         self.with_tool(Arc::new(RunTestsTool))
+            .with_tool(Arc::new(RunVerifiersTool))
     }
 
     /// Include structured data validation tool (`validate_data`).
@@ -542,6 +633,10 @@ impl ToolRegistryBuilder {
     }
 
     /// Include durable task, gate, PR-attempt, GitHub, and automation tools.
+    ///
+    /// Shell-related task tools (`task_shell_start`, `task_shell_wait`) are
+    /// *not* included here — use [`with_runtime_task_shell_tools`] to register
+    /// them when `allow_shell` is true.
     #[must_use]
     pub fn with_runtime_task_tools(self) -> Self {
         use super::automation::{
@@ -555,7 +650,6 @@ impl ToolRegistryBuilder {
         use super::tasks::{
             PrAttemptListTool, PrAttemptPreflightTool, PrAttemptReadTool, PrAttemptRecordTool,
             TaskCancelTool, TaskCreateTool, TaskGateRunTool, TaskListTool, TaskReadTool,
-            TaskShellStartTool, TaskShellWaitTool,
         };
 
         self.with_tool(Arc::new(TaskCreateTool))
@@ -563,8 +657,6 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(TaskReadTool))
             .with_tool(Arc::new(TaskCancelTool))
             .with_tool(Arc::new(TaskGateRunTool))
-            .with_tool(Arc::new(TaskShellStartTool))
-            .with_tool(Arc::new(TaskShellWaitTool))
             .with_tool(Arc::new(GithubIssueContextTool))
             .with_tool(Arc::new(GithubPrContextTool))
             .with_tool(Arc::new(PrAttemptRecordTool))
@@ -582,6 +674,18 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(GithubCommentTool))
             .with_tool(Arc::new(GithubCloseIssueTool))
             .with_tool(Arc::new(GithubClosePrTool))
+    }
+
+    /// Include shell-related task tools (`task_shell_start`, `task_shell_wait`).
+    ///
+    /// These are gated behind `allow_shell` because `task_shell_start`
+    /// delegates directly to `ExecShellTool`, providing the same shell
+    /// execution capability as `exec_shell`.
+    #[must_use]
+    pub fn with_runtime_task_shell_tools(self) -> Self {
+        use super::tasks::{TaskShellStartTool, TaskShellWaitTool};
+        self.with_tool(Arc::new(TaskShellStartTool))
+            .with_tool(Arc::new(TaskShellWaitTool))
     }
 
     /// Include only read-only durable task, PR-attempt, GitHub, and automation
@@ -603,17 +707,30 @@ impl ToolRegistryBuilder {
             .with_tool(Arc::new(AutomationReadTool))
     }
 
-    /// Include web search tools.
+    /// Include web search and fetch tools.
+    ///
+    /// These are feature-gated behind `Feature::WebSearch` in `tool_setup.rs`.
+    /// `finance` is registered separately via `with_finance_tool()` and is
+    /// NOT gated behind the web-search feature.
     #[must_use]
     pub fn with_web_tools(self) -> Self {
         use super::fetch_url::FetchUrlTool;
-        use super::finance::FinanceTool;
         use super::web_run::WebRunTool;
         use super::web_search::WebSearchTool;
         self.with_tool(Arc::new(WebSearchTool))
             .with_tool(Arc::new(FetchUrlTool))
-            .with_tool(Arc::new(FinanceTool::new()))
             .with_tool(Arc::new(WebRunTool))
+    }
+
+    /// Include the `finance` market-data tool.
+    ///
+    /// This tool is registered unconditionally for agent modes and is NOT
+    /// gated behind `Feature::WebSearch` (it fetches financial data, not
+    /// web search results).
+    #[must_use]
+    pub fn with_finance_tool(self) -> Self {
+        use super::finance::FinanceTool;
+        self.with_tool(Arc::new(FinanceTool::new()))
     }
 
     /// Register the `image_analyze` vision tool.
@@ -660,6 +777,22 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
+    /// Include Xiaomi MiMo speech/TTS tools (`speech`, `tts`).
+    #[must_use]
+    pub fn with_speech_tools(
+        self,
+        client: Option<DeepSeekClient>,
+        output_dir: Option<PathBuf>,
+    ) -> Self {
+        use super::speech::SpeechTool;
+        self.with_tool(Arc::new(SpeechTool::new(
+            "speech",
+            client.clone(),
+            output_dir.clone(),
+        )))
+        .with_tool(Arc::new(SpeechTool::new("tts", client, output_dir)))
+    }
+
     /// Include persistent RLM session tools.
     #[must_use]
     pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
@@ -688,14 +821,6 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(ReviewTool::new(client, model)))
     }
 
-    /// Include the `recall_archive` tool — searches prior cycle archives
-    /// produced by the checkpoint-restart system (issue #127).
-    #[must_use]
-    pub fn with_recall_archive_tool(self) -> Self {
-        use super::recall_archive::RecallArchiveTool;
-        self.with_tool(Arc::new(RecallArchiveTool))
-    }
-
     /// Include note tool.
     #[must_use]
     pub fn with_note_tool(self) -> Self {
@@ -720,6 +845,30 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RememberTool))
     }
 
+    /// Include the slop ledger tools (#2127) — durable tracking of
+    /// unresolved architectural residue: append, query, update, export.
+    /// Registered unconditionally; the ledger JSON file is auto-created
+    /// on first append.
+    #[must_use]
+    pub fn with_slop_ledger_tools(self) -> Self {
+        use crate::slop_ledger::{
+            SlopLedgerAppendTool, SlopLedgerExportTool, SlopLedgerQueryTool, SlopLedgerUpdateTool,
+        };
+        self.with_tool(Arc::new(SlopLedgerAppendTool))
+            .with_tool(Arc::new(SlopLedgerQueryTool))
+            .with_tool(Arc::new(SlopLedgerUpdateTool))
+            .with_tool(Arc::new(SlopLedgerExportTool))
+    }
+
+    /// Read-only subset of slop ledger tools (#2127) for plan mode:
+    /// only query and export — no append or update.
+    #[must_use]
+    pub fn with_slop_ledger_read_only_tools(self) -> Self {
+        use crate::slop_ledger::{SlopLedgerExportTool, SlopLedgerQueryTool};
+        self.with_tool(Arc::new(SlopLedgerQueryTool))
+            .with_tool(Arc::new(SlopLedgerExportTool))
+    }
+
     /// Include the `notify` tool — model-callable desktop notification
     /// (#1322). Routes through the existing `tui::notifications` OSC 9 /
     /// BEL pipeline so the user's `[notifications].method` config is
@@ -740,7 +889,6 @@ impl ToolRegistryBuilder {
     /// MCP tools are marked `defer_loading` by default (except discovery
     /// helpers) to keep the model-visible catalog compact.
     #[must_use]
-    #[allow(dead_code)]
     pub fn with_mcp_tools(
         mut self,
         mcp_pool: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpPool>>,
@@ -760,17 +908,21 @@ impl ToolRegistryBuilder {
         self
     }
 
-    /// Include all agent tools (file tools + shell + note + search + patch).
+    /// Include all agent tools (file tools + shell + note + search).
+    ///
+    /// Web and patch tools are NOT registered here — callers must add them
+    /// via `.with_web_tools()` and `.with_patch_tools()` after checking
+    /// feature flags (see `tool_setup.rs`). This prevents double-registration
+    /// when `tool_setup.rs` conditionally registers them on top of
+    /// `with_agent_tools`.
     #[must_use]
     pub fn with_agent_tools(self, allow_shell: bool) -> Self {
         let builder = self
             .with_file_tools()
             .with_note_tool()
             .with_search_tools()
-            .with_web_tools()
             .with_user_input_tool()
             .with_parallel_tool()
-            .with_patch_tools()
             .with_git_tools()
             .with_git_history_tools()
             .with_diagnostics_tool()
@@ -783,10 +935,11 @@ impl ToolRegistryBuilder {
             .with_runtime_task_tools()
             .with_revert_turn_tool()
             .with_pandoc_tools()
-            .with_image_ocr_tools();
+            .with_image_ocr_tools()
+            .with_finance_tool();
 
         if allow_shell {
-            builder.with_shell_tools()
+            builder.with_shell_tools().with_runtime_task_shell_tools()
         } else {
             builder
         }
@@ -814,12 +967,14 @@ impl ToolRegistryBuilder {
         todo_list: super::todo::SharedTodoList,
         plan_state: super::plan::SharedPlanState,
     ) -> Self {
+        let speech_client = client.clone();
+        let speech_output_dir = runtime.speech_output_dir.clone();
         self.with_agent_tools(allow_shell)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client, model)
-            .with_recall_archive_tool()
+            .with_speech_tools(speech_client, speech_output_dir)
             .with_subagent_tools(manager, runtime)
     }
 
@@ -973,11 +1128,13 @@ impl ToolSpec for McpToolAdapter {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use serde_json::{Value, json};
     use tempfile::tempdir;
 
+    use crate::config::ToolOverride;
     use crate::tools::ToolRegistryBuilder;
     use crate::tools::spec::{
         ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
@@ -1044,6 +1201,81 @@ mod tests {
         assert!(registry.contains("test_tool"));
         assert!(!registry.contains("nonexistent"));
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn todo_aliases_stay_callable_but_hidden_from_model_catalog() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let registry = ToolRegistryBuilder::new()
+            .with_todo_tool(crate::tools::todo::new_shared_todo_list())
+            .build(ctx);
+
+        for alias in ["todo_write", "todo_add", "todo_update", "todo_list"] {
+            assert!(registry.contains(alias), "{alias} should remain callable");
+        }
+
+        let api_names = registry
+            .to_api_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<Vec<_>>();
+
+        for canonical in [
+            "checklist_write",
+            "checklist_add",
+            "checklist_update",
+            "checklist_list",
+        ] {
+            assert!(
+                api_names.iter().any(|name| name == canonical),
+                "{canonical} should stay model-visible"
+            );
+        }
+        for alias in ["todo_write", "todo_add", "todo_update", "todo_list"] {
+            assert!(
+                api_names.iter().all(|name| name != alias),
+                "{alias} should be hidden from the model catalog"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_overrides_removes_original_when_replacement_is_missing() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let mut registry = ToolRegistryBuilder::new()
+            .with_read_only_file_tools()
+            .build(ctx);
+
+        assert!(registry.contains("read_file"));
+        assert!(registry.contains("list_dir"));
+
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "read_file".to_string(),
+            ToolOverride::Script {
+                path: "missing-wrapper.sh".to_string(),
+                args: None,
+            },
+        );
+
+        registry.apply_overrides(&overrides, tmp.path());
+
+        assert!(!registry.contains("read_file"));
+        assert!(registry.contains("list_dir"));
+    }
+
+    #[test]
+    fn builder_registers_speech_alias_tools() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let registry = ToolRegistryBuilder::new()
+            .with_speech_tools(None, None)
+            .build(ctx);
+
+        assert!(registry.contains("speech"));
+        assert!(registry.contains("tts"));
     }
 
     #[test]
@@ -1359,11 +1591,26 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_with_web_tools_includes_finance() {
+    fn test_builder_with_web_tools_no_longer_includes_finance() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
         let registry = ToolRegistryBuilder::new().with_web_tools().build(ctx);
+
+        // finance was moved to with_finance_tool() in v0.8.49;
+        // with_web_tools() now only registers web search / fetch / web.run
+        assert!(registry.contains("web_search"));
+        assert!(registry.contains("fetch_url"));
+        assert!(registry.contains("web.run"));
+        assert!(!registry.contains("finance"));
+    }
+
+    #[test]
+    fn test_builder_with_finance_tool() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let registry = ToolRegistryBuilder::new().with_finance_tool().build(ctx);
 
         assert!(registry.contains("finance"));
     }
@@ -1378,5 +1625,87 @@ mod tests {
             .build(ctx);
 
         assert!(registry.contains("finance"));
+    }
+
+    #[test]
+    fn agent_tools_with_allow_shell_false_excludes_shell_tools() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let registry = ToolRegistryBuilder::new()
+            .with_agent_tools(false)
+            .build(ctx);
+
+        assert!(
+            !registry.contains("exec_shell"),
+            "exec_shell should be excluded when allow_shell is false"
+        );
+        assert!(
+            !registry.contains("task_shell_start"),
+            "task_shell_start should be excluded when allow_shell is false"
+        );
+        assert!(
+            !registry.contains("task_shell_wait"),
+            "task_shell_wait should be excluded when allow_shell is false"
+        );
+    }
+
+    #[test]
+    fn agent_tools_with_allow_shell_true_includes_shell_tools() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let registry = ToolRegistryBuilder::new().with_agent_tools(true).build(ctx);
+
+        assert!(
+            registry.contains("exec_shell"),
+            "exec_shell should be included when allow_shell is true"
+        );
+        assert!(
+            registry.contains("task_shell_start"),
+            "task_shell_start should be included when allow_shell is true"
+        );
+        assert!(
+            registry.contains("task_shell_wait"),
+            "task_shell_wait should be included when allow_shell is true"
+        );
+    }
+
+    /// #2683 — `exec_wait` and `exec_interact` are legacy aliases for
+    /// `exec_shell_wait` and `exec_shell_interact`. They must remain
+    /// callable (for saved transcript replay) but hidden from the
+    /// model-facing catalog.
+    #[test]
+    fn shell_alias_tools_hidden_from_model_catalog() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let registry = ToolRegistryBuilder::new().with_shell_tools().build(ctx);
+
+        // Legacy aliases stay callable.
+        for alias in ["exec_wait", "exec_interact"] {
+            assert!(registry.contains(alias), "{alias} should remain callable");
+        }
+
+        let api_names: Vec<String> = registry
+            .to_api_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        // Canonical names are model-visible.
+        for canonical in ["exec_shell_wait", "exec_shell_interact"] {
+            assert!(
+                api_names.iter().any(|n| n == canonical),
+                "{canonical} should be model-visible"
+            );
+        }
+
+        // Legacy aliases are hidden.
+        for alias in ["exec_wait", "exec_interact"] {
+            assert!(
+                api_names.iter().all(|n| n != alias),
+                "{alias} should be hidden from the model catalog"
+            );
+        }
     }
 }

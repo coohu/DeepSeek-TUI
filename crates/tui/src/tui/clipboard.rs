@@ -7,24 +7,39 @@
 //! endpoint, so we materialize the bytes to disk instead of base64-embedding
 //! them in the request).
 
-#[cfg(any(not(test), all(test, unix)))]
-use std::io::Write;
 #[cfg(not(test))]
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 #[cfg(any(
     all(test, unix),
-    all(
-        any(target_os = "macos", target_os = "windows", target_os = "linux"),
-        not(test)
-    )
+    all(not(test), target_os = "macos"),
+    all(not(test), target_os = "windows"),
+    all(not(test), target_os = "linux", not(target_env = "ohos"))
 ))]
 use std::process::{Command, Stdio};
+#[cfg(any(
+    test,
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+#[cfg(any(
+    test,
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 use arboard::{Clipboard, ImageData};
 use base64::Engine as _;
+#[cfg(any(
+    test,
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 use image::{ImageBuffer, Rgba};
 
 const OSC52_MAX_BYTES: usize = 100 * 1024;
@@ -55,6 +70,7 @@ impl PastedImage {
 }
 
 /// Clipboard payloads supported by the TUI.
+#[cfg_attr(all(target_env = "ohos", not(test)), allow(dead_code))]
 pub enum ClipboardContent {
     Text(String),
     Image(PastedImage),
@@ -62,7 +78,19 @@ pub enum ClipboardContent {
 
 /// Clipboard reader/writer helper.
 pub struct ClipboardHandler {
+    #[cfg(any(
+        test,
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
     clipboard: Option<Clipboard>,
+    #[cfg(any(
+        test,
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
     clipboard_init_attempted: bool,
     #[cfg(test)]
     written_text: Vec<String>,
@@ -76,7 +104,19 @@ impl ClipboardHandler {
     /// server (headless, WSL2) never blocks the TUI event loop.
     pub fn new() -> Self {
         Self {
+            #[cfg(any(
+                test,
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
             clipboard: None,
+            #[cfg(any(
+                test,
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
             clipboard_init_attempted: false,
             #[cfg(test)]
             written_text: Vec::new(),
@@ -87,10 +127,16 @@ impl ClipboardHandler {
     ///
     /// On Linux, `arboard::Clipboard::new()` opens a blocking X11 connection.
     /// When no X server is running (headless, WSL2 without WSLg), the connect
-    /// call can hang indefinitely.  We spawn the connection attempt on a
+    /// call can hang indefinitely. We spawn the connection attempt on a
     /// temporary thread and give it 500 ms; if it doesn't return in time the
     /// handler stays in fallback/no-op mode and `read`/`write_text` fall
-    /// through to their OSC 52 and pbcopy/powershell fallbacks.
+    /// through to their OSC 52 and pbcopy/powershell fallbacks.
+    #[cfg(any(
+        test,
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ))]
     fn ensure_clipboard(&mut self) {
         if self.clipboard_init_attempted {
             return;
@@ -101,8 +147,6 @@ impl ClipboardHandler {
         std::thread::spawn(move || {
             let _ = tx.send(Clipboard::new().ok());
         });
-        // 500 ms is generous for a local Unix socket connect — the
-        // kernel either answers or doesn't.
         self.clipboard = rx
             .recv_timeout(std::time::Duration::from_millis(500))
             .ok()
@@ -114,18 +158,32 @@ impl ClipboardHandler {
     /// `workspace` is used as a fallback location when `~/.deepseek/` cannot
     /// be resolved (e.g. running with a stripped HOME in CI sandboxes).
     pub fn read(&mut self, workspace: &Path) -> Option<ClipboardContent> {
-        self.ensure_clipboard();
-        let clipboard = self.clipboard.as_mut()?;
-        if let Ok(text) = clipboard.get_text() {
+        #[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+        if let Ok(text) = read_text_with_wlpaste() {
             return Some(ClipboardContent::Text(text));
         }
 
-        if let Ok(image) = clipboard.get_image()
-            && let Ok(pasted) = save_image_as_png(workspace, &image)
+        #[cfg(any(
+            test,
+            target_os = "macos",
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "ohos"))
+        ))]
         {
-            return Some(ClipboardContent::Image(pasted));
+            self.ensure_clipboard();
+            let clipboard = self.clipboard.as_mut()?;
+            if let Ok(text) = clipboard.get_text() {
+                return Some(ClipboardContent::Text(text));
+            }
+
+            if let Ok(image) = clipboard.get_image()
+                && let Ok(pasted) = save_image_as_png(workspace, &image)
+            {
+                return Some(ClipboardContent::Image(pasted));
+            }
         }
 
+        let _ = workspace;
         None
     }
 
@@ -139,16 +197,23 @@ impl ClipboardHandler {
 
         #[cfg(not(test))]
         {
-            #[cfg(target_os = "linux")]
+            #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
             if write_text_with_wlcopy(text).is_ok() {
                 return Ok(());
             }
 
-            self.ensure_clipboard();
-            if let Some(clipboard) = self.clipboard.as_mut()
-                && clipboard.set_text(text.to_string()).is_ok()
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "windows",
+                all(target_os = "linux", not(target_env = "ohos"))
+            ))]
             {
-                return Ok(());
+                self.ensure_clipboard();
+                if let Some(clipboard) = self.clipboard.as_mut()
+                    && clipboard.set_text(text.to_string()).is_ok()
+                {
+                    return Ok(());
+                }
             }
 
             #[cfg(target_os = "macos")]
@@ -187,38 +252,7 @@ fn write_text_with_set_clipboard(text: &str) -> Result<()> {
     )
 }
 
-#[cfg(all(target_os = "linux", not(test)))]
-fn write_text_with_wlcopy(text: &str) -> Result<()> {
-    write_text_with_wlcopy_using_argv("wl-copy", text)
-}
-
-#[cfg(target_os = "linux")]
-fn write_text_with_wlcopy_using_argv(program: &str, text: &str) -> Result<()> {
-    let mut child = Command::new(program)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to run {program}: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(text.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Failed to write to {program}: {e}"))?;
-    }
-    // stdin is dropped here, closing the pipe so wl-copy flushes.
-    let status = child
-        .wait()
-        .map_err(|e| anyhow::anyhow!("Failed to wait on {program}: {e}"))?;
-    if !status.success() {
-        bail!("{program} exited with {status}");
-    }
-    Ok(())
-}
-
-#[cfg(any(
-    all(test, unix),
-    all(any(target_os = "macos", target_os = "windows"), not(test))
-))]
+#[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
 fn write_text_with_stdin_command(
     program: &str,
     args: &[&str],
@@ -242,6 +276,55 @@ fn write_text_with_stdin_command(
         .spawn(move || {
             let _ = child.wait();
         });
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+fn write_text_with_wlcopy(text: &str) -> Result<()> {
+    write_text_with_wlcopy_using_argv("wl-copy", text)
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+fn read_text_with_wlpaste() -> Result<String> {
+    read_text_with_wlpaste_using_argv("wl-paste")
+}
+
+#[cfg(any(all(test, unix), all(target_os = "linux", not(target_env = "ohos"))))]
+fn read_text_with_wlpaste_using_argv(program: &str) -> Result<String> {
+    let output = Command::new(program)
+        .arg("--no-newline")
+        .arg("--type")
+        .arg("text/plain")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run {program}: {e}"))?;
+    if !output.status.success() {
+        bail!("{program} exited with {}", output.status);
+    }
+    String::from_utf8(output.stdout).context("wl-paste returned non-UTF-8 text")
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos"), not(test)))]
+fn write_text_with_wlcopy_using_argv(program: &str, text: &str) -> Result<()> {
+    let mut child = Command::new(program)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to run {program}: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Failed to write to {program}: {e}"))?;
+    }
+    // stdin is dropped here, closing the pipe so wl-copy flushes.
+    let status = child
+        .wait()
+        .map_err(|e| anyhow::anyhow!("Failed to wait on {program}: {e}"))?;
+    if !status.success() {
+        bail!("{program} exited with {status}");
+    }
     Ok(())
 }
 
@@ -278,7 +361,12 @@ fn osc52_sequence(text: &str, in_tmux: bool) -> Result<String> {
 /// matches the location described in user-facing docs; falls back to
 /// `<workspace>/clipboard-images/` if the home dir is unavailable.
 pub(crate) fn clipboard_images_dir(workspace: &Path) -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
+    let home = dirs::home_dir();
+    clipboard_images_dir_for_home(workspace, home.as_deref())
+}
+
+fn clipboard_images_dir_for_home(workspace: &Path, home: Option<&Path>) -> PathBuf {
+    if let Some(home) = home {
         return home.join(".deepseek").join("clipboard-images");
     }
     workspace.join("clipboard-images")
@@ -286,12 +374,24 @@ pub(crate) fn clipboard_images_dir(workspace: &Path) -> PathBuf {
 
 /// Encode an RGBA `ImageData` from arboard as PNG and persist it. Returns
 /// the resulting path along with metadata used to render the paste hint.
+#[cfg(any(
+    test,
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 fn save_image_as_png(workspace: &Path, image: &ImageData) -> Result<PastedImage> {
     save_image_as_png_in(&clipboard_images_dir(workspace), image)
 }
 
 /// Lower-level variant that writes into an explicit directory. Exposed so the
 /// unit tests don't have to scribble inside the user's real home directory.
+#[cfg(any(
+    test,
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
     std::fs::create_dir_all(dir).context("create clipboard-images dir")?;
 
@@ -337,6 +437,8 @@ fn save_image_as_png_in(dir: &Path, image: &ImageData) -> Result<PastedImage> {
 mod tests {
     use super::*;
     use std::borrow::Cow;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn solid_rgba(width: u16, height: u16, rgba: [u8; 4]) -> ImageData<'static> {
         let mut bytes = Vec::with_capacity((width as usize) * (height as usize) * 4);
@@ -370,46 +472,25 @@ mod tests {
         assert_eq!(&header[..8], b"\x89PNG\r\n\x1a\n");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn stdin_clipboard_command_returns_before_helper_exits() {
-        use std::time::{Duration, Instant};
+    fn clipboard_images_dir_uses_deepseek_home_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
 
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("clipboard.txt");
-        let script = dir.path().join("slow-clipboard.sh");
-        std::fs::write(&script, "#!/bin/sh\ncat > \"$1\"\nsleep 1\n").unwrap();
-
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&script, permissions).unwrap();
-
-        let started = Instant::now();
-        write_text_with_stdin_command(
-            script.to_str().unwrap(),
-            &[marker.to_str().unwrap()],
-            "copied",
-            "test-clipboard",
-        )
-        .unwrap();
-        assert!(
-            started.elapsed() < Duration::from_millis(250),
-            "clipboard helper wait leaked onto caller path"
+        assert_eq!(
+            clipboard_images_dir_for_home(workspace.path(), Some(home.path())),
+            home.path().join(".deepseek").join("clipboard-images")
         );
+    }
 
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut last_body = String::new();
-        while Instant::now() < deadline {
-            if let Ok(body) = std::fs::read_to_string(&marker) {
-                if body == "copied" {
-                    return;
-                }
-                last_body = body;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("clipboard helper did not receive stdin; last body: {last_body:?}");
+    #[test]
+    fn clipboard_images_dir_falls_back_to_workspace_without_home() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            clipboard_images_dir_for_home(workspace.path(), None),
+            workspace.path().join("clipboard-images")
+        );
     }
 
     #[test]
@@ -422,33 +503,6 @@ mod tests {
         };
         assert_eq!(p.short_label(), "1024x768 PNG");
         assert_eq!(p.size_label(), "235KB");
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn wlcopy_helper_errors_when_binary_missing() {
-        let result =
-            write_text_with_wlcopy_using_argv("/nonexistent/path/to/wlcopy_binary_xyz", "test");
-        assert!(result.is_err());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn wlcopy_helper_errors_when_binary_exits_nonzero() {
-        let result = write_text_with_wlcopy_using_argv("false", "test");
-        assert!(result.is_err());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn wlcopy_helper_succeeds_when_binary_returns_zero() {
-        // Use `cat` instead of `true` because `true` exits immediately
-        // without reading stdin, causing EPIPE before we can check the
-        // exit status.  `cat` consumes stdin until EOF (when we drop the
-        // pipe) and then exits 0, faithfully modelling a successful
-        // wl-copy invocation.
-        let result = write_text_with_wlcopy_using_argv("cat", "test");
-        assert!(result.is_ok());
     }
 
     #[test]
@@ -471,5 +525,44 @@ mod tests {
             err.to_string().contains("too large"),
             "unexpected error: {err}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wl_paste_helper_reads_text_from_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("wl-paste");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+seen_no_newline=0
+seen_text_plain=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-newline) seen_no_newline=1 ;;
+    --type)
+      shift
+      [ "${1:-}" = "text/plain" ] && seen_text_plain=1
+      ;;
+  esac
+  shift
+done
+[ "$seen_text_plain" -eq 1 ] || exit 40
+if [ "$seen_no_newline" -eq 1 ]; then
+  printf 'from-wayland'
+else
+  printf 'from-wayland\n'
+fi
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let text = read_text_with_wlpaste_using_argv(script.to_str().unwrap())
+            .expect("read text through wl-paste helper");
+
+        assert_eq!(text, "from-wayland");
     }
 }

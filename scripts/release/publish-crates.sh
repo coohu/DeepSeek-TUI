@@ -15,6 +15,7 @@ case "${mode}" in
 esac
 
 packages=("${release_crates[@]}")
+crates_user_agent="DeepSeek release publish check (https://github.com/coohu/deepseek-tui)"
 
 workspace_version=""
 workspace_deepseek_packages=()
@@ -122,7 +123,7 @@ package_has_workspace_deps() {
 crate_version_exists() {
   local crate_name="$1"
   local crate_version="$2"
-  curl -fsSL "https://crates.io/api/v1/crates/${crate_name}/${crate_version}" >/dev/null 2>&1
+  curl -fsSL -A "${crates_user_agent}" "https://crates.io/api/v1/crates/${crate_name}/${crate_version}" >/dev/null 2>&1
 }
 
 wait_for_crate_version() {

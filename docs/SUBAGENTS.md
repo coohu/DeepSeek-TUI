@@ -18,6 +18,19 @@ The `type` field on `agent_open` selects a system-prompt posture for the child
 (`agent_type` is accepted as a compatibility alias). Each role is a distinct
 stance toward the work — not just a different label.
 
+## Maintainer posture
+
+Sub-agents help DeepSeek move faster, but the parent agent still owns the
+maintainer decision. Use children to gather evidence, review patches, and run
+verification while keeping the community posture in
+[`AGENT_ETHOS.md`](AGENT_ETHOS.md): issues are open intake, PR gates are
+review-load controls, and harvested work needs clear contributor credit.
+
+When a child reviews community work, the parent should still inspect the PR
+diff, linked issues, tests, and CI before merging, harvesting, closing, or
+deferring it. A sub-agent's result is a working set, not a substitute for
+stewardship.
+
 | Role          | Stance                                 | Writes? | Shell posture | Typical use                                  |
 |---------------|----------------------------------------|---------|---------------|----------------------------------------------|
 | `general`     | flexible; do whatever the parent says  | yes     | yes           | the default; multi-step tasks                |
@@ -86,10 +99,11 @@ The model can spell each role multiple ways:
 |---------------|------------------------------------------------------------------|
 | `general`     | `worker`, `default`, `general-purpose`                           |
 | `explore`     | `explorer`, `exploration`                                        |
-| `plan`        | `planning`, `awaiter`                                            |
-| `review`      | `reviewer`, `code-review`                                        |
+| `plan`        | `planning`, `planner`, `awaiter`                                 |
+| `review`      | `reviewer`, `code-review`, `code_review`                         |
 | `implementer` | `implement`, `implementation`, `builder`                         |
 | `verifier`    | `verify`, `verification`, `validator`, `tester`                  |
+| `tool_agent`  | `tool-agent`, `toolagent`, `executor`, `execution`, `fin`        |
 | `custom`      | (none; explicit `allowed_tools` array required)                  |
 
 All matching is case-insensitive. Unknown values produce a typed
@@ -126,6 +140,22 @@ api_timeout_secs = 900  # 15 minutes; clamped to 1..=1800
 
 Values are clamped to `1..=1800`. `0` and `unset` keep the legacy
 `120` second default, so existing installs see no behavior change.
+
+## Stale-agent heartbeat (#2614)
+
+Running agents also track manager-visible progress. If a child stops emitting
+progress for the heartbeat window, the manager auto-cancels it, releases its
+sub-agent slot, and keeps the cancelled record inspectable via `agent_eval` /
+`agent_list`. The default is 5 minutes:
+
+```toml
+[subagents]
+heartbeat_timeout_secs = 300  # clamped to 30..=3600
+```
+
+The effective heartbeat is kept at least 30 seconds above
+`api_timeout_secs`, so a configured long model request is not cancelled before
+its own request timeout can fire.
 
 ## Lifecycle
 

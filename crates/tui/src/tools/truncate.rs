@@ -45,7 +45,7 @@ use crate::tools::spec::ToolResult;
 #[cfg(test)]
 use std::path::Path;
 
-/// Name of the spillover directory under `~/.deepseek/`.
+/// Name of the spillover directory under the DeepSeek home.
 pub const SPILLOVER_DIR_NAME: &str = "tool_outputs";
 
 /// Default threshold above which a tool result is a candidate for
@@ -81,12 +81,9 @@ pub fn spillover_root() -> Option<PathBuf> {
         return Some(root);
     }
 
-    // Prefer .deepseek, fall back to .deepseek
-    let primary = dirs::home_dir()?.join(".deepseek").join(SPILLOVER_DIR_NAME);
-    if primary.exists() {
-        return Some(primary);
-    }
-    Some(dirs::home_dir()?.join(".deepseek").join(SPILLOVER_DIR_NAME))
+    let home = dirs::home_dir()?;
+    let primary = home.join(".deepseek").join(SPILLOVER_DIR_NAME);
+    Some(primary)
 }
 
 /// Override the spillover root for tests without mutating `$HOME`.
@@ -284,7 +281,7 @@ pub fn apply_spillover(result: &mut ToolResult, tool_id: &str) -> Option<PathBuf
 
 /// Apply spillover and emit a session-scoped artifact reference.
 ///
-/// The legacy `~/.deepseek/tool_outputs/<tool-id>.txt` file is still written
+/// The home-level `tool_outputs/<tool-id>.txt` file is still written
 /// so `retrieve_tool_result ref=<tool-id>` keeps working during the
 /// transition. The canonical artifact content is also written under
 /// `~/.deepseek/sessions/<session-id>/artifacts/`, and the inline tool result
@@ -838,7 +835,7 @@ mod tests {
                 tmp.path()
                     .join(".deepseek/tool_outputs/call-big.txt")
                     .exists(),
-                "legacy spillover file should remain during transition"
+                "home-level spillover file should remain during transition"
             );
 
             assert!(result.content.starts_with("[artifact: exec_shell]"));

@@ -55,6 +55,7 @@ test("known platforms are unaffected by alias map", () => {
   for (const [platform, arch, expectedCodeWhale] of [
     ["linux", "x64", "deepseek-linux-x64"],
     ["darwin", "arm64", "deepseek-macos-arm64"],
+    ["linux", "riscv64", "deepseek-linux-riscv64"],
     ["win32", "x64", "deepseek-windows-x64.exe"],
   ]) {
     withMockedOs(platform, arch, () => {
@@ -63,4 +64,13 @@ test("known platforms are unaffected by alias map", () => {
       assert.equal(result.deepseek, expectedCodeWhale);
     });
   }
+});
+
+test("allAssetNames includes every matrix entry", () => {
+  const { allAssetNames, allReleaseAssetNames } = require(ARTIFACTS_PATH);
+  const assetNames = allAssetNames();
+  assert.ok(assetNames.includes("deepseek-windows-x64.exe"));
+  assert.ok(assetNames.includes("deepseek-tui-windows-x64.exe"));
+  assert.ok(assetNames.includes("deepseek.bat"));
+  assert.ok(allReleaseAssetNames().includes("deepseek.bat"));
 });

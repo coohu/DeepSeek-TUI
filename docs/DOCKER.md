@@ -1,6 +1,6 @@
 # Docker
 
-CodeWhale publishes a multi-arch Linux image to GitHub Container Registry
+DeepSeek publishes a multi-arch Linux image to GitHub Container Registry
 for each release.
 
 ```bash
@@ -34,7 +34,7 @@ docker run --rm -it \
 ```
 
 Replace `vX.Y.Z` with a tag from
-[GitHub Releases](https://github.com/Hmbown/CodeWhale/releases).
+[GitHub Releases](https://github.com/coohu/deepseek-tui/releases).
 
 ## Default image contract
 
@@ -43,7 +43,7 @@ images:
 
 - the container runs as the non-root `deepseek` user with UID/GID `1000:1000`
 - the image does not grant passwordless `sudo`
-- the image is meant to run CodeWhale against mounted workspaces, not to mutate
+- the image is meant to run DeepSeek against mounted workspaces, not to mutate
   the base operating system at runtime
 - user state belongs in a volume mounted at `/home/deepseek/.deepseek`
 
@@ -57,7 +57,7 @@ explicit toolbox image instead of changing the default image contract.
 The repository includes an example
 [`docs/examples/Dockerfile.toolbox`](examples/Dockerfile.toolbox) that extends
 the official image with passwordless `sudo` and common development packages.
-Build it with a pinned CodeWhale tag when you want repeatable project
+Build it with a pinned DeepSeek tag when you want repeatable project
 environments:
 
 ```bash
@@ -84,7 +84,7 @@ docker run --rm -it \
   deepseek-toolbox:my-project
 ```
 
-Inside this opt-in image, CodeWhale can use commands such as
+Inside this opt-in image, DeepSeek can use commands such as
 `sudo apt-get update` and `sudo apt-get install -y <package>`. For repeatable
 containers, prefer baking those packages into the toolbox Dockerfile instead of
 letting a long-lived container drift.
@@ -92,6 +92,26 @@ letting a long-lived container drift.
 Do not bake API keys, SSH private keys, or other secrets into custom images.
 Pass API keys at runtime and mount any SSH material deliberately, preferably
 read-only and only for projects that need it.
+
+### Compose toolbox template
+
+If you prefer a repeatable `docker compose` entry point, use
+[`docs/examples/compose.toolbox.yml`](examples/compose.toolbox.yml). It builds
+the toolbox image from [`docs/examples/Dockerfile.toolbox`](examples/Dockerfile.toolbox)
+and keeps the project state volume explicit:
+
+```bash
+CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
+CODEWHALE_TOOLBOX_IMAGE=deepseek-toolbox:my-project \
+CODEWHALE_HOME_VOLUME=deepseek-my-project-home \
+CODEWHALE_WORKSPACE="$PWD" \
+docker compose -f docs/examples/compose.toolbox.yml run --rm deepseek
+```
+
+Use a different `CODEWHALE_TOOLBOX_IMAGE` and `CODEWHALE_HOME_VOLUME` for each
+project that needs an independent toolchain or independent `.deepseek` state.
+The Compose file also shows opt-in, read-only mounts for SSH material and local
+CA certificates; keep those commented out unless the project needs them.
 
 ## Multiple independent projects
 
@@ -119,13 +139,12 @@ it is intentionally outside the core Docker image.
 
 ## Project bootstrap scripts
 
-CodeWhale does not automatically execute `.deepseek/setup.sh` or
-`.deepseek/setup.sh`. If you keep one of those files as a local project
-recipe, run it explicitly. For shared team setup, prefer a committed project
-script or the toolbox Dockerfile so the environment can be reviewed and
-rebuilt.
+DeepSeek does not automatically execute `.deepseek/setup.sh` or legacy
+`.deepseek/setup.sh`. If you keep one of those files as a local project recipe,
+run it explicitly. For shared team setup, prefer a committed project script or
+the toolbox Dockerfile so the environment can be reviewed and rebuilt.
 
-For example, to run a committed bootstrap script before starting CodeWhale:
+For example, to run a committed bootstrap script before starting DeepSeek:
 
 ```bash
 docker run --rm -it \
@@ -207,9 +226,10 @@ registry.
 ## Volumes
 
 Mount `/home/deepseek/.deepseek` to persist sessions, config, skills, memory,
-and the offline queue across container restarts. A Docker-managed named volume
-is the safest default because Docker creates it with ownership the container can
-write:
+and the offline queue across container restarts. The image also keeps
+`/home/deepseek/.deepseek` available for legacy compatibility. A
+Docker-managed named volume is the safest default because Docker creates it with
+ownership the container can write:
 
 ```bash
 -v deepseek-home:/home/deepseek/.deepseek

@@ -14,9 +14,9 @@
 //! make path discovery resilient to quoting, leading `./`, and
 //! trailing `:line` markers.
 
+use crate::dependencies::{ExternalTool, Git};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::tui::app::App;
 use crate::tui::app::ToolDetailRecord;
@@ -28,10 +28,15 @@ use crate::tui::file_picker::FilePickerView;
 /// per-session relevance ranks (modified, @-mentioned, tool-touched).
 pub(super) fn open_file_picker(app: &mut App) {
     let relevance = build_relevance(app);
-    app.view_stack.push(FilePickerView::new_with_relevance(
-        &app.workspace,
-        relevance,
-    ));
+    // Honor the configured `mention_walk_depth` (0 = unlimited) so the picker
+    // and `@`-mention completion agree, and files in deeply nested trees stay
+    // discoverable (#2488).
+    app.view_stack
+        .push(FilePickerView::new_with_relevance_and_depth(
+            &app.workspace,
+            relevance,
+            app.mention_walk_depth,
+        ));
 }
 
 pub(super) fn build_relevance(app: &App) -> FilePickerRelevance {
@@ -70,7 +75,10 @@ pub(super) fn build_relevance(app: &App) -> FilePickerRelevance {
 }
 
 fn modified_workspace_paths(workspace: &Path) -> Vec<String> {
-    let Ok(output) = Command::new("git")
+    let Some(mut cmd) = Git::command() else {
+        return Vec::new();
+    };
+    let Ok(output) = cmd
         .arg("-C")
         .arg(workspace)
         .args(["status", "--short", "--untracked-files=normal"])

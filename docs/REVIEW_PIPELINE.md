@@ -1,8 +1,8 @@
-\# CodeWhale Review Pipeline
+\# DeepSeek Review Pipeline
 
 
 
-Welcome to CodeWhale! We receive a high volume of community PRs. To ensure a smooth and fast review process, please review our pipeline expectations below. 
+Welcome to DeepSeek! We receive a high volume of community PRs. To ensure a smooth and fast review process, please review our pipeline expectations below. 
 
 
 
@@ -80,5 +80,5 @@ After your code is merged, the following automated actions occur:
 
 
 
-Thank you for contributing to CodeWhale!
+Thank you for contributing to DeepSeek!
 

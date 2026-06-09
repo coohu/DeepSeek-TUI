@@ -92,14 +92,9 @@ else
   fail=1
 fi
 
-# Legacy `` deprecation shim package. Best-effort check —
-# absence after the transition release is expected and not fatal.
-if legacy_version="$(npm view "@${version}" version 2>/dev/null)"; then
-  echo "npm @${legacy_version} (deprecation shim) is published."
-fi
-
+crates_user_agent="DeepSeek release check (https://github.com/coohu/deepseek-tui)"
 for crate in "${release_crates[@]}"; do
-  if curl -fsSL "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
+  if curl -fsSL -A "${crates_user_agent}" "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
     echo "crates.io ${crate}@${version} is published."
   else
     echo "crates.io ${crate}@${version} is not published." >&2

@@ -149,7 +149,7 @@ impl ToolSpec for RetrieveToolResultTool {
 /// 3. `sha:<64-hex>` or bare 64-hex — content-addressed wire dedup, `sha_<hex>.txt`.
 /// 4. `tool_result:<x>` — `<x>` is any of the above after the prefix.
 /// 5. `artifacts/<file>.txt` or `<file>.txt` — relative paths.
-/// 6. Absolute paths under `~/.deepseek/`.
+/// 6. Absolute paths under the DeepSeek home.
 ///
 /// The error message on a miss enumerates which forms were tried so the
 /// model can correct course without a second blind guess.
@@ -202,7 +202,7 @@ fn resolve_spillover_reference(reference: &str, session_id: &str) -> Result<Path
         // `retrieve_tool_result`. canonicalize() would happily
         // follow such a link and then pass the `starts_with(root)`
         // check because of the resolved-then-compare order. The
-        // legacy `~/.deepseek/tool_outputs/` dir is engine-only and
+        // home-level `~/.deepseek/tool_outputs/` dir is engine-only and
         // never carried this concern; session artifact dirs hold
         // arbitrary tool output and need the guard.
         if let Ok(meta) = std::fs::symlink_metadata(&candidate)

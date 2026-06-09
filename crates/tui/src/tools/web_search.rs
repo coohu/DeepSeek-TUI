@@ -1,12 +1,14 @@
 //! Web search tool backed by multiple providers: Bing HTML scrape, DuckDuckGo
-//! (HTML scrape with Bing fallback), Tavily API, Bocha (博查) API, and
-//! Metaso API (<https://metaso.cn>).
+//! (HTML scrape with Bing fallback), Tavily API, Bocha (博查) API,
+//! Metaso API (<https://metaso.cn>), Baidu AI Search, Volcengine Ark, and
+//! Sofya (<https://sofya.co>).
 //!
 //! This is the primary web search surface for agents. For browsing workflows
 //! (page open, click, screenshot) use a direct URL approach instead.
 //!
 //! Set `[search]` in config.toml to switch providers:
-//!   provider = "duckduckgo"  # or tavily/bocha/metaso
+//!   provider = "duckduckgo"  # or tavily/bocha/metaso/baidu/volcengine/sofya
+//!   base_url = "https://search.example/html/"  # optional DDG-compatible URL
 //!   api_key = "tvly-..."
 
 use super::spec::{
@@ -22,11 +24,14 @@ use serde_json::{Value, json};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const DUCKDUCKGO_HOST: &str = "html.duckduckgo.com";
+const DUCKDUCKGO_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const BING_HOST: &str = "www.bing.com";
 const TAVILY_ENDPOINT: &str = "https://api.tavily.com/search";
 const BOCHA_ENDPOINT: &str = "https://api.bochaai.com/v1/ai/search";
 const METASO_ENDPOINT: &str = "https://metaso.cn/api/v1";
+const BAIDU_ENDPOINT: &str = "https://qianfan.baidubce.com/v2/ai_search/web_search";
+const VOLCENGINE_RESPONSES_ENDPOINT: &str = "https://ark.cn-beijing.volces.com/api/v3/responses";
+const SOFYA_ENDPOINT: &str = "https://sofya.co/v1/search";
 /// Intentionally public default key provided by Metaso for open-source/community use.
 /// Last-resort fallback after config and env var. Rate-limited to ~100 searches/day.
 const METASO_DEFAULT_API_KEY: &str = "mk-E384C1DD5E8501BB7EFE27C949AFDE5B";
@@ -57,6 +62,7 @@ static TAG_RE: OnceLock<Regex> = OnceLock::new();
 static BING_RESULT_RE: OnceLock<Regex> = OnceLock::new();
 static BING_TITLE_RE: OnceLock<Regex> = OnceLock::new();
 static BING_SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
+static BEARER_TOKEN_RE: OnceLock<Regex> = OnceLock::new();
 
 fn get_title_re() -> &'static Regex {
     TITLE_RE.get_or_init(|| {
@@ -99,6 +105,13 @@ fn get_bing_snippet_re() -> &'static Regex {
     })
 }
 
+fn get_bearer_token_re() -> &'static Regex {
+    BEARER_TOKEN_RE.get_or_init(|| {
+        Regex::new(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+            .expect("bearer token regex pattern is valid")
+    })
+}
+
 const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS: usize = 10;
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
@@ -129,7 +142,7 @@ impl ToolSpec for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web and return ranked results with URLs and snippets. Default backend is DuckDuckGo with Bing fallback; set `[search] provider = \"bing\" | \"tavily\" | \"bocha\"` in config.toml to switch backends. Use this instead of scraping search engines with `curl` in `exec_shell`. For a known canonical URL, prefer `fetch_url` directly."
+        "Search the web and return ranked results with URLs and snippets. Default backend is DuckDuckGo with Bing fallback; set `[search] provider = \"bing\" | \"tavily\" | \"bocha\" | \"metaso\" | \"baidu\" | \"volcengine\" | \"sofya\"` in config.toml to switch backends, or `[search] base_url` for a DuckDuckGo-compatible endpoint. Use this instead of scraping search engines with `curl` in `exec_shell`. For a known canonical URL, prefer `fetch_url` directly."
     }
 
     fn input_schema(&self) -> Value {
@@ -176,6 +189,10 @@ impl ToolSpec for WebSearchTool {
         ApprovalRequirement::Auto
     }
 
+    fn supports_parallel(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
         let query = extract_search_query(&input)?;
         if query.is_empty() {
@@ -185,6 +202,15 @@ impl ToolSpec for WebSearchTool {
             usize::try_from(optional_search_max_results(&input)).unwrap_or(DEFAULT_MAX_RESULTS);
         let max_results = max_results.clamp(1, MAX_RESULTS);
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_TIMEOUT_MS).min(60_000);
+
+        if configured_search_base_url(context.search_base_url.as_deref()).is_some()
+            && !matches!(context.search_provider, SearchProvider::DuckDuckGo)
+        {
+            return Err(ToolError::invalid_input(format!(
+                "[search].base_url is only supported with provider = \"duckduckgo\"; current provider is \"{}\"",
+                context.search_provider.as_str()
+            )));
+        }
 
         // Dispatch to the configured API-backed search providers before
         // building the HTML-scraping client used by Bing/DuckDuckGo.
@@ -210,11 +236,32 @@ impl ToolSpec for WebSearchTool {
                     .run_metaso_search(&query, max_results, timeout_ms, context)
                     .await;
             }
+            SearchProvider::Baidu => {
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "qianfan.baidubce.com")?;
+                return self
+                    .run_baidu_search(&query, max_results, timeout_ms, context)
+                    .await;
+            }
+            SearchProvider::Volcengine => {
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "ark.cn-beijing.volces.com")?;
+                return self
+                    .run_volcengine_search(&query, max_results, timeout_ms, context)
+                    .await;
+            }
+            SearchProvider::Sofya => {
+                let decider = context.network_policy.as_ref();
+                check_policy(decider, "sofya.co")?;
+                return self
+                    .run_sofya_search(&query, max_results, timeout_ms, context)
+                    .await;
+            }
             SearchProvider::Bing | SearchProvider::DuckDuckGo => {}
         }
 
         let decider = context.network_policy.as_ref();
-        let client = reqwest::Client::builder()
+        let client = crate::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .user_agent(USER_AGENT)
             .build()
@@ -237,13 +284,16 @@ impl ToolSpec for WebSearchTool {
         }
 
         // Per-domain network policy gate (#135). The "host" for web search is
-        // the upstream search engine domain — DuckDuckGo first, Bing on
-        // fallback. We gate DuckDuckGo here; Bing is gated separately inside
-        // the fallback path so a deny on one engine doesn't block the other.
-        check_policy(decider, DUCKDUCKGO_HOST)?;
+        // the upstream search engine domain — DuckDuckGo-compatible first,
+        // Bing on fallback. We gate the configured endpoint here; Bing is
+        // gated separately inside the fallback path so a deny on one engine
+        // doesn't silently allow the other.
+        let (url, duckduckgo_host) =
+            duckduckgo_search_url(context.search_base_url.as_deref(), &query)?;
+        let allow_bing_fallback =
+            duckduckgo_allows_bing_fallback(context.search_base_url.as_deref());
+        check_policy(decider, &duckduckgo_host)?;
 
-        let encoded = url_encode(&query);
-        let url = format!("https://html.duckduckgo.com/html/?q={encoded}");
         let resp = client
             .get(&url)
             .header(
@@ -269,7 +319,11 @@ impl ToolSpec for WebSearchTool {
         }
 
         let mut results = parse_duckduckgo_results(&body, max_results);
-        let mut source = "duckduckgo";
+        let mut source = if allow_bing_fallback {
+            "duckduckgo".to_string()
+        } else {
+            duckduckgo_host.clone()
+        };
         let mut message_suffix: Option<&str> = None;
 
         // When Bing returned zero and we fell through to DuckDuckGo, surface
@@ -278,15 +332,21 @@ impl ToolSpec for WebSearchTool {
             message_suffix = Some("Bing returned no results; used DuckDuckGo fallback");
         }
 
-        if results.is_empty() {
-            let duckduckgo_blocked = is_duckduckgo_challenge(&body);
+        let duckduckgo_blocked = is_duckduckgo_challenge(&body);
+        if results.is_empty() && duckduckgo_blocked && !allow_bing_fallback {
+            return Err(ToolError::execution_failed(format!(
+                "DuckDuckGo-compatible search endpoint at {duckduckgo_host} returned a bot challenge; check the private search service, credentials, or network policy"
+            )));
+        }
+
+        if results.is_empty() && allow_bing_fallback {
             // Bing is a separate host — gate it independently so a deny on
             // DuckDuckGo doesn't silently let Bing through (and vice versa).
             check_policy(decider, BING_HOST)?;
             match run_bing_search(&client, &query, max_results).await {
                 Ok(fallback_results) if !fallback_results.is_empty() => {
                     results = fallback_results;
-                    source = "bing";
+                    source = "bing".to_string();
                     message_suffix = Some(if duckduckgo_blocked {
                         "DuckDuckGo returned a bot challenge; used Bing fallback"
                     } else {
@@ -313,7 +373,7 @@ impl ToolSpec for WebSearchTool {
 
 fn search_tool_result(
     query: String,
-    source: &'static str,
+    source: impl Into<String>,
     results: Vec<WebSearchEntry>,
     message_suffix: Option<&str>,
 ) -> Result<ToolResult, ToolError> {
@@ -327,7 +387,7 @@ fn search_tool_result(
 
     let response = WebSearchResponse {
         query,
-        source: source.to_string(),
+        source: source.into(),
         count: results.len(),
         message,
         results,
@@ -354,7 +414,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = reqwest::Client::builder()
+        let client = crate::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -434,6 +494,88 @@ impl WebSearchTool {
         ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
+    /// Search via Sofya web search API (<https://sofya.co>).
+    ///
+    /// Sofya returns full extracted page content rather than snippets. The API
+    /// key (`ay_live_...`) comes from `[search] api_key`, falling back to the
+    /// `SOFYA_API_KEY` env var, and is sent as a `Bearer` token.
+    async fn run_sofya_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        timeout_ms: u64,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let env_key = std::env::var("SOFYA_API_KEY").ok();
+        let api_key = context
+            .search_api_key
+            .as_deref()
+            .or(env_key.as_deref())
+            .ok_or_else(|| {
+                ToolError::execution_failed(
+                    "Sofya search requires an API key. Set `[search] api_key = \"ay_live_...\"` in config.toml or the SOFYA_API_KEY env var.",
+                )
+            })?;
+
+        let client = crate::tls::reqwest_client_builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
+
+        let payload = json!({
+            "query": query,
+            "max_results": max_results,
+        });
+
+        let resp = client
+            .post(SOFYA_ENDPOINT)
+            .header("Content-Type", "application/json")
+            .bearer_auth(api_key)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Sofya search request failed: {e}"))
+            })?;
+
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read Sofya response: {e}"))
+        })?;
+
+        if !status.is_success() {
+            let truncated = truncate_error_body(&body);
+            return Err(ToolError::execution_failed(format!(
+                "Sofya search failed: HTTP {} — {truncated}",
+                status.as_u16()
+            )));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to parse Sofya response: {e}"))
+        })?;
+
+        let results = parse_sofya_results(&parsed, max_results);
+
+        let message = if results.is_empty() {
+            "No results found".to_string()
+        } else {
+            format!("Found {} result(s)", results.len())
+        };
+
+        let response = WebSearchResponse {
+            query: query.to_string(),
+            source: "sofya".to_string(),
+            count: results.len(),
+            message,
+            results,
+        };
+
+        ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+
     /// Search via Bocha AI Search API (<https://bochaai.com>).
     async fn run_bocha_search(
         &self,
@@ -451,7 +593,7 @@ impl WebSearchTool {
                 )
             })?;
 
-        let client = reqwest::Client::builder()
+        let client = crate::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -560,7 +702,7 @@ impl WebSearchTool {
             .or(env_key.as_deref())
             .unwrap_or(METASO_DEFAULT_API_KEY);
 
-        let client = reqwest::Client::builder()
+        let client = crate::tls::reqwest_client_builder()
             .timeout(Duration::from_millis(timeout_ms))
             .build()
             .map_err(|e| {
@@ -645,6 +787,197 @@ impl WebSearchTool {
 
         search_tool_result(query.to_string(), "metaso", results, None)
     }
+
+    /// Search via Baidu AI Search API (<https://qianfan.baidubce.com>).
+    async fn run_baidu_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        timeout_ms: u64,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let env_key = std::env::var("BAIDU_SEARCH_API_KEY").ok();
+        let api_key = context
+            .search_api_key
+            .as_deref()
+            .or(env_key.as_deref())
+            .ok_or_else(|| {
+                ToolError::execution_failed(
+                    "Baidu search requires an API key. Set `BAIDU_SEARCH_API_KEY` or `[search] api_key` in config.toml.",
+                )
+            })?;
+
+        let client = crate::tls::reqwest_client_builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
+
+        let payload = baidu_search_payload(query, max_results);
+
+        let resp = client
+            .post(BAIDU_ENDPOINT)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Baidu search request failed: {e}"))
+            })?;
+
+        let status = resp.status();
+        let body = resp.text().await.map_err(|e| {
+            ToolError::execution_failed(format!("Failed to read Baidu response: {e}"))
+        })?;
+
+        if !status.is_success() {
+            let msg = match status.as_u16() {
+                401 | 403 => "Baidu search API key rejected — check BAIDU_SEARCH_API_KEY or `[search] api_key` in config.toml".to_string(),
+                429 => "Baidu search rate-limited — wait and retry, or check your Baidu AI Search quota".to_string(),
+                _ => {
+                    let truncated = truncate_error_body(&body);
+                    format!("Baidu search failed: HTTP {} — {truncated}", status.as_u16())
+                }
+            };
+            return Err(ToolError::execution_failed(msg));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            ToolError::execution_failed(format!("Failed to parse Baidu response: {e}"))
+        })?;
+
+        if let Some(error) = baidu_error_message(&parsed) {
+            return Err(ToolError::execution_failed(error));
+        }
+
+        let results = parse_baidu_results(&parsed, max_results);
+        search_tool_result(query.to_string(), "baidu", results, None)
+    }
+
+    /// Search via Volcengine Ark Responses API web_search tool.
+    /// Uses strict JSON prompt constraints to extract structured results
+    /// from the model's search-augmented response.
+    ///
+    /// Overrides the user-supplied timeout to a minimum of 90 s because the
+    /// Responses API pipeline (web search → model inference → JSON generation)
+    /// is inherently slower than simple search-API round-trips.  A separate
+    /// `connect_timeout` of 15 s lets DNS/TLS failures surface quickly.
+    /// Transient transport errors are retried twice with exponential backoff.
+    async fn run_volcengine_search(
+        &self,
+        query: &str,
+        max_results: usize,
+        timeout_ms: u64,
+        context: &ToolContext,
+    ) -> Result<ToolResult, ToolError> {
+        let volc_key = std::env::var("VOLCENGINE_API_KEY").ok();
+        let volc_ark_key = std::env::var("VOLCENGINE_ARK_API_KEY").ok();
+        let ark_key = std::env::var("ARK_API_KEY").ok();
+        let api_key = context
+            .search_api_key
+            .as_deref()
+            .or(volc_key.as_deref())
+            .or(volc_ark_key.as_deref())
+            .or(ark_key.as_deref())
+            .ok_or_else(|| {
+                ToolError::execution_failed(
+                    "Volcengine search requires an API key. Set `[search] api_key`, \
+                     or VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY env var.",
+                )
+            })?;
+
+        // Volcengine Responses API pipeline (search + model inference) is
+        // slow, so enforce a floor of 90 s. The caller's value is used only
+        // when it exceeds 90_000 ms.
+        let effective_timeout = timeout_ms.max(90_000);
+
+        let client = crate::tls::reqwest_client_builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_millis(effective_timeout))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .http2_keep_alive_interval(Some(Duration::from_secs(15)))
+            .http2_keep_alive_timeout(Duration::from_secs(20))
+            .user_agent(USER_AGENT)
+            .build()
+            .map_err(|e| {
+                ToolError::execution_failed(format!("Failed to build HTTP client: {e}"))
+            })?;
+
+        let payload = volcengine_search_payload(query, max_results);
+
+        // Retry transient transport errors (DNS, connection reset, timeout)
+        // up to 2 times with exponential backoff: 1 s, 2 s.
+        let mut last_err: Option<ToolError> = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(1000 * (1 << (attempt - 1)))).await;
+            }
+
+            match client
+                .post(VOLCENGINE_RESPONSES_ENDPOINT)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .json(&payload)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.map_err(|e| {
+                        ToolError::execution_failed(format!(
+                            "Failed to read Volcengine response: {e}"
+                        ))
+                    })?;
+
+                    if !status.is_success() {
+                        let msg = match status.as_u16() {
+                            401 | 403 => "Volcengine API key rejected — check `[search] api_key` in config.toml or VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY".to_string(),
+                            429 => "Volcengine API rate-limited — wait and retry, or check your quota".to_string(),
+                            _ => {
+                                let truncated = truncate_error_body(&body);
+                                format!("Volcengine search failed: HTTP {} — {truncated}", status.as_u16())
+                            }
+                        };
+                        return Err(ToolError::execution_failed(msg));
+                    }
+
+                    let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+                        ToolError::execution_failed(format!(
+                            "Failed to parse Volcengine response: {e}"
+                        ))
+                    })?;
+
+                    if let Some(error) = volcengine_error_message(&parsed) {
+                        return Err(ToolError::execution_failed(error));
+                    }
+
+                    let response_text = volcengine_extract_text(&parsed).ok_or_else(|| {
+                        ToolError::execution_failed("Volcengine response contains no output text")
+                    })?;
+
+                    let results = parse_volcengine_results(&response_text, max_results);
+                    return search_tool_result(query.to_string(), "volcengine", results, None);
+                }
+                Err(e) => {
+                    let is_transient = e.is_timeout() || e.is_connect();
+                    if !is_transient || attempt == 2 {
+                        return Err(ToolError::execution_failed(format!(
+                            "Volcengine search request failed: {e}"
+                        )));
+                    }
+                    last_err = Some(ToolError::execution_failed(format!(
+                        "Volcengine search request failed (attempt {}/3): {e}",
+                        attempt + 1
+                    )));
+                }
+            }
+        }
+
+        // Unreachable — the final iteration always returns above.
+        Err(last_err.unwrap_or_else(|| {
+            ToolError::execution_failed("Volcengine search: unexpected retry exit")
+        }))
+    }
 }
 
 fn truncate_error_body(body: &str) -> String {
@@ -662,10 +995,225 @@ fn truncate_error_body(body: &str) -> String {
 
 fn sanitize_error_body(body: &str) -> String {
     let stripped = strip_html_tags(body);
-    stripped
+    let visible: String = stripped
         .chars()
         .filter(|c| !c.is_control() || c.is_ascii_whitespace())
+        .collect();
+    get_bearer_token_re()
+        .replace_all(&visible, "Bearer [REDACTED]")
+        .to_string()
+}
+
+fn parse_baidu_results(parsed: &Value, max_results: usize) -> Vec<WebSearchEntry> {
+    parsed
+        .get("references")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flat_map(|arr| arr.iter())
+        .filter_map(|item| {
+            let title = item
+                .get("title")
+                .or_else(|| item.get("name"))
+                .and_then(|s| s.as_str())?
+                .trim();
+            let url = item
+                .get("url")
+                .or_else(|| item.get("link"))
+                .and_then(|s| s.as_str())?
+                .trim();
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            let snippet = item
+                .get("content")
+                .or_else(|| item.get("snippet"))
+                .or_else(|| item.get("summary"))
+                .and_then(|s| s.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            Some(WebSearchEntry {
+                title: title.to_string(),
+                url: url.to_string(),
+                snippet,
+            })
+        })
+        .take(max_results)
         .collect()
+}
+
+fn baidu_error_message(parsed: &Value) -> Option<String> {
+    let code = parsed
+        .get("error_code")
+        .or_else(|| parsed.get("code"))
+        .and_then(|v| v.as_i64())?;
+    if code == 0 {
+        return None;
+    }
+    let message = parsed
+        .get("error_msg")
+        .or_else(|| parsed.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown error");
+    Some(format!("Baidu search API error (code {code}: {message})"))
+}
+
+fn parse_sofya_results(parsed: &Value, max_results: usize) -> Vec<WebSearchEntry> {
+    parsed
+        .get("results")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flat_map(|arr| arr.iter())
+        .filter_map(|item| {
+            let title = item.get("title")?.as_str()?.to_string();
+            let url = item.get("url")?.as_str()?.to_string();
+            let snippet = first_non_empty_string(item, &["content", "description"]);
+            Some(WebSearchEntry {
+                title,
+                url,
+                snippet,
+            })
+        })
+        .take(max_results)
+        .collect()
+}
+
+fn first_non_empty_string(item: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        item.get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn baidu_search_payload(query: &str, max_results: usize) -> Value {
+    json!({
+        "messages": [
+            {
+                "role": "user",
+                "content": query,
+            }
+        ],
+        "search_source": "baidu_search_v2",
+        "resource_type_filter": [
+            {
+                "type": "web",
+                "top_k": max_results,
+            }
+        ],
+    })
+}
+
+fn volcengine_search_payload(query: &str, max_results: usize) -> Value {
+    json!({
+        "model": "doubao-seed-2-0-lite-260428",
+        "stream": false,
+        "tools": [{"type": "web_search"}],
+        "input": [{
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": format!(
+                    "Search the web for: {query}\n\n\
+                     CRITICAL: Respond ONLY with a valid JSON object. No markdown, no explanation.\n\
+                     Schema: {{\"results\":[{{\"title\":\"...\",\"url\":\"https://...\",\"snippet\":\"...\"}}]}}\n\
+                     - results: 1-{max_results} most relevant pages\n\
+                     - title: page title (required)\n\
+                     - url: full URL starting with https:// (required)\n\
+                     - snippet: 1-2 sentence factual summary (required)\n\
+                     - If zero results: {{\"results\":[]}}\n\
+                     - Your entire response must be valid, parseable JSON."
+                )
+            }]
+        }]
+    })
+}
+
+/// Extracts the model's text response from a Volcengine Responses API output.
+fn volcengine_extract_text(parsed: &Value) -> Option<String> {
+    parsed
+        .get("output")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flat_map(|arr| arr.iter().rev())
+        .find(|item| item.get("type").and_then(|t| t.as_str()) == Some("message"))
+        .and_then(|msg| msg.get("content").and_then(|c| c.as_array()))
+        .and_then(|content| {
+            content
+                .iter()
+                .find(|c| c.get("text").and_then(|t| t.as_str()).is_some())
+        })
+        .and_then(|c| c.get("text").and_then(|t| t.as_str()))
+        .map(|s| s.to_string())
+}
+
+/// Checks for business-logic errors in a Volcengine Responses API response.
+fn volcengine_error_message(parsed: &Value) -> Option<String> {
+    let error = parsed.get("error")?;
+    let code = error
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let message = error
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("no details");
+    Some(format!("Volcengine API error (code {code}: {message})"))
+}
+
+/// Parses Volcengine model-generated JSON results into `WebSearchEntry` items.
+fn parse_volcengine_results(response_text: &str, max_results: usize) -> Vec<WebSearchEntry> {
+    let json_text = extract_json_block(response_text).unwrap_or(response_text);
+
+    let parsed: Value = match serde_json::from_str(json_text) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    parsed
+        .get("results")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flat_map(|arr| arr.iter())
+        .filter_map(|item| {
+            let title = item.get("title").and_then(|s| s.as_str())?.trim();
+            let url = item.get("url").and_then(|s| s.as_str())?.trim();
+            if title.is_empty() || url.is_empty() {
+                return None;
+            }
+            let snippet = item
+                .get("snippet")
+                .and_then(|s| s.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            Some(WebSearchEntry {
+                title: title.to_string(),
+                url: url.to_string(),
+                snippet,
+            })
+        })
+        .take(max_results)
+        .collect()
+}
+
+/// Attempts to extract a JSON block from text that may be wrapped in
+/// markdown fences (```json ... ```) or contain surrounding commentary.
+fn extract_json_block(text: &str) -> Option<&str> {
+    if let Some(start) = text.find("```json") {
+        let inner = &text[start + 7..];
+        if let Some(end) = inner.find("```") {
+            return Some(inner[..end].trim());
+        }
+    }
+    if let Some(start) = text.find('{')
+        && let Some(end) = text.rfind('}')
+    {
+        return Some(&text[start..=end]);
+    }
+    None
 }
 
 fn extract_search_query(input: &Value) -> Result<String, ToolError> {
@@ -901,6 +1449,14 @@ fn normalize_url(href: &str) -> String {
 }
 
 fn normalize_bing_url(href: &str) -> String {
+    // Bing wraps every SERP result URL in a `/ck/a?...&u=<base64>` click-tracking
+    // redirect, and in the raw HTML the separators are `&amp;` entities. Without
+    // decoding entities first, `extract_query_param` looks for `u` but the actual
+    // key is `amp;u`, so the real URL is never recovered: every result collapses to
+    // a `bing.com` root domain, which the spam heuristic then rejects — yielding
+    // zero results for the default Bing backend. Decode entities before parsing.
+    let href = decode_html_entities(href);
+    let href = href.as_str();
     if let Some(encoded) = extract_query_param(href, "u") {
         let decoded = percent_decode(&encoded);
         let token = decoded.strip_prefix("a1").unwrap_or(&decoded);
@@ -922,6 +1478,31 @@ fn normalize_bing_url(href: &str) -> String {
         return format!("https://www.bing.com{href}");
     }
     href.to_string()
+}
+
+fn duckduckgo_search_url(
+    base_url: Option<&str>,
+    query: &str,
+) -> Result<(String, String), ToolError> {
+    let raw = configured_search_base_url(base_url).unwrap_or(DUCKDUCKGO_ENDPOINT);
+    let mut url = reqwest::Url::parse(raw).map_err(|err| {
+        ToolError::invalid_input(format!(
+            "Invalid DuckDuckGo-compatible search base_url: {err}"
+        ))
+    })?;
+    url.query_pairs_mut().append_pair("q", query);
+    let host = url.host_str().ok_or_else(|| {
+        ToolError::invalid_input("DuckDuckGo-compatible search base_url must include a host")
+    })?;
+    Ok((url.to_string(), host.to_string()))
+}
+
+fn configured_search_base_url(base_url: Option<&str>) -> Option<&str> {
+    base_url.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn duckduckgo_allows_bing_fallback(base_url: Option<&str>) -> bool {
+    configured_search_base_url(base_url).is_none()
 }
 
 fn normalize_text(text: &str) -> String {
@@ -1026,11 +1607,23 @@ fn extract_query_param(url: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, decode_html_entities,
-        extract_search_query, is_likely_spam_results, optional_search_max_results, root_domain,
-        sanitize_error_body, truncate_error_body,
+        ERROR_BODY_PREVIEW_BYTES, WebSearchEntry, WebSearchTool, baidu_search_payload,
+        decode_html_entities, duckduckgo_search_url, extract_search_query, is_likely_spam_results,
+        normalize_bing_url, optional_search_max_results, parse_baidu_results, parse_sofya_results,
+        root_domain, sanitize_error_body, truncate_error_body, volcengine_extract_text,
     };
     use serde_json::json;
+
+    // Regression guard: Bing /ck/a redirect hrefs are HTML-entity-encoded
+    // (`&amp;`). normalize_bing_url must decode entities before extracting the
+    // `u=` base64 payload, otherwise the real URL is never recovered and the
+    // result's root domain collapses to bing.com (then dropped as spam → 0
+    // results for the default Bing backend).
+    #[test]
+    fn bing_ckurl_with_html_entities_decodes_real_url() {
+        let href = "https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9ydXN0LWxhbmcub3JnLw&amp;ntb=1";
+        assert_eq!(normalize_bing_url(href), "https://rust-lang.org/");
+    }
 
     fn entry(url: &str) -> WebSearchEntry {
         WebSearchEntry {
@@ -1295,6 +1888,173 @@ mod tests {
         assert_eq!(sanitized, "error");
     }
 
+    #[test]
+    fn sanitize_error_body_redacts_bearer_tokens() {
+        let body = r#"{"error":"bad token","authorization":"Bearer test-token/with+chars="}"#;
+
+        let sanitized = sanitize_error_body(body);
+
+        assert!(!sanitized.contains("test-token/with+chars="));
+        assert!(sanitized.contains("Bearer [REDACTED]"));
+    }
+
+    #[test]
+    fn parse_baidu_references_extracts_ranked_results() {
+        let body = json!({
+            "references": [
+                {
+                    "title": "Rust 官方文档",
+                    "url": "https://www.rust-lang.org/",
+                    "content": "Rust 是一门注重性能和可靠性的语言。"
+                },
+                {
+                    "title": "Cargo Book",
+                    "url": "https://doc.rust-lang.org/cargo/",
+                    "snippet": "Cargo is Rust's package manager."
+                }
+            ]
+        });
+
+        let results = parse_baidu_results(&body, 10);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Rust 官方文档");
+        assert_eq!(results[0].url, "https://www.rust-lang.org/");
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("Rust 是一门注重性能和可靠性的语言。")
+        );
+        assert_eq!(results[1].title, "Cargo Book");
+        assert_eq!(results[1].url, "https://doc.rust-lang.org/cargo/");
+        assert_eq!(
+            results[1].snippet.as_deref(),
+            Some("Cargo is Rust's package manager.")
+        );
+    }
+
+    #[test]
+    fn parse_baidu_references_skips_incomplete_entries() {
+        let body = json!({
+            "references": [
+                {"title": "No URL", "content": "missing url"},
+                {"url": "https://example.com/no-title", "content": "missing title"},
+                {"title": "Valid", "url": "https://example.com/valid"}
+            ]
+        });
+
+        let results = parse_baidu_results(&body, 10);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Valid");
+        assert_eq!(results[0].url, "https://example.com/valid");
+        assert_eq!(results[0].snippet, None);
+    }
+
+    #[test]
+    fn baidu_search_payload_uses_official_search_source() {
+        let payload = baidu_search_payload("Rust cargo workspace", 3);
+
+        assert_eq!(
+            payload.get("search_source").and_then(|v| v.as_str()),
+            Some("baidu_search_v2")
+        );
+        assert_eq!(
+            payload
+                .get("messages")
+                .and_then(|v| v.as_array())
+                .and_then(|messages| messages.first())
+                .and_then(|message| message.get("content"))
+                .and_then(|v| v.as_str()),
+            Some("Rust cargo workspace")
+        );
+        assert_eq!(
+            payload
+                .get("resource_type_filter")
+                .and_then(|v| v.as_array())
+                .and_then(|filters| filters.first())
+                .and_then(|filter| filter.get("top_k"))
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn parse_sofya_results_falls_back_to_description_for_empty_content() {
+        let body = json!({
+            "results": [
+                {
+                    "title": "Full content",
+                    "url": "https://example.com/full",
+                    "content": "full extracted page content",
+                    "description": "unused description"
+                },
+                {
+                    "title": "Null content",
+                    "url": "https://example.com/null",
+                    "content": null,
+                    "description": "description for null content"
+                },
+                {
+                    "title": "Empty content",
+                    "url": "https://example.com/empty",
+                    "content": "",
+                    "description": "description for empty content"
+                },
+                {
+                    "title": "Whitespace content",
+                    "url": "https://example.com/blank",
+                    "content": "   ",
+                    "description": "description for blank content"
+                },
+                {
+                    "title": "No snippet",
+                    "url": "https://example.com/no-snippet"
+                }
+            ]
+        });
+
+        let results = parse_sofya_results(&body, 10);
+
+        assert_eq!(results.len(), 5);
+        assert_eq!(
+            results[0].snippet.as_deref(),
+            Some("full extracted page content")
+        );
+        assert_eq!(
+            results[1].snippet.as_deref(),
+            Some("description for null content")
+        );
+        assert_eq!(
+            results[2].snippet.as_deref(),
+            Some("description for empty content")
+        );
+        assert_eq!(
+            results[3].snippet.as_deref(),
+            Some("description for blank content")
+        );
+        assert_eq!(results[4].snippet, None);
+    }
+
+    #[test]
+    fn volcengine_extract_text_skips_non_text_content_blocks() {
+        let body = json!({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "reasoning", "summary": "thinking first"},
+                        {"type": "output_text", "text": "{\"results\":[]}"}
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            volcengine_extract_text(&body).as_deref(),
+            Some("{\"results\":[]}")
+        );
+    }
+
     #[tokio::test]
     async fn tavily_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
         // Trust-boundary pin: if a user has opted into Tavily but
@@ -1342,6 +2102,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn baidu_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        let prev = std::env::var_os("BAIDU_SEARCH_API_KEY");
+        unsafe { std::env::remove_var("BAIDU_SEARCH_API_KEY") };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Baidu;
+        ctx.search_api_key = None;
+        let err = WebSearchTool
+            .execute(json!({"query": "anything"}), &ctx)
+            .await
+            .expect_err("missing api_key must surface as ToolError");
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var("BAIDU_SEARCH_API_KEY", value) },
+            None => unsafe { std::env::remove_var("BAIDU_SEARCH_API_KEY") },
+        }
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Baidu") && msg.contains("API key"),
+            "error must name the provider and missing key; got `{msg}`"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn sofya_provider_without_api_key_surfaces_clear_error_not_silent_fallback() {
+        // Same trust-boundary pin as Tavily/Bocha: opting into Sofya without a
+        // key must surface a ToolError naming the provider, not silently fall
+        // through to DuckDuckGo.
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        // This test holds the process-env lock through the awaited tool
+        // execution because the tool reads SOFYA_API_KEY during that call.
+        let _guard = crate::test_support::lock_test_env();
+        let prev = std::env::var_os("SOFYA_API_KEY");
+        unsafe { std::env::remove_var("SOFYA_API_KEY") };
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Sofya;
+        ctx.search_api_key = None;
+        let err = WebSearchTool
+            .execute(json!({"query": "anything"}), &ctx)
+            .await
+            .expect_err("missing api_key must surface as ToolError");
+
+        match prev {
+            Some(value) => unsafe { std::env::set_var("SOFYA_API_KEY", value) },
+            None => unsafe { std::env::remove_var("SOFYA_API_KEY") },
+        }
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Sofya") && msg.contains("API key"),
+            "error must name the provider and missing key; got `{msg}`"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn volcengine_provider_without_api_key_lists_supported_env_fallbacks() {
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        // This test intentionally keeps the process-env lock through the
+        // awaited tool execution because the tool reads env fallbacks during
+        // that call. Dropping the lock before await would reintroduce races
+        // with other env-mutating tests.
+        let _guard = crate::test_support::lock_test_env();
+        let prev_volc = std::env::var_os("VOLCENGINE_API_KEY");
+        let prev_volc_ark = std::env::var_os("VOLCENGINE_ARK_API_KEY");
+        let prev_ark = std::env::var_os("ARK_API_KEY");
+        unsafe {
+            std::env::remove_var("VOLCENGINE_API_KEY");
+            std::env::remove_var("VOLCENGINE_ARK_API_KEY");
+            std::env::remove_var("ARK_API_KEY");
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Volcengine;
+        ctx.search_api_key = None;
+        let err = WebSearchTool
+            .execute(json!({"query": "anything"}), &ctx)
+            .await
+            .expect_err("missing api_key must surface as ToolError");
+
+        match prev_volc {
+            Some(value) => unsafe { std::env::set_var("VOLCENGINE_API_KEY", value) },
+            None => unsafe { std::env::remove_var("VOLCENGINE_API_KEY") },
+        }
+        match prev_volc_ark {
+            Some(value) => unsafe { std::env::set_var("VOLCENGINE_ARK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("VOLCENGINE_ARK_API_KEY") },
+        }
+        match prev_ark {
+            Some(value) => unsafe { std::env::set_var("ARK_API_KEY", value) },
+            None => unsafe { std::env::remove_var("ARK_API_KEY") },
+        }
+
+        let msg = err.to_string();
+        assert!(msg.contains("Volcengine") && msg.contains("API key"));
+        assert!(msg.contains("VOLCENGINE_API_KEY"));
+        assert!(msg.contains("VOLCENGINE_ARK_API_KEY"));
+        assert!(msg.contains("ARK_API_KEY"));
+        assert!(!msg.contains("DEEPSEEK_SEARCH_API_KEY"));
+    }
+
+    #[tokio::test]
     async fn metaso_provider_uses_built_in_key_when_no_config_key_set() {
         // Unlike Tavily/Bocha, Metaso falls back to a built-in default, so
         // the call should NOT return an API-key-related error — it should
@@ -1364,6 +2239,132 @@ mod tests {
         assert!(
             !msg.contains("API key"),
             "should not complain about missing API key (built-in default); got `{msg}`"
+        );
+    }
+
+    #[test]
+    fn duckduckgo_compatible_url_uses_custom_base_url_and_preserves_query() {
+        let (url, host) = duckduckgo_search_url(
+            Some("https://search.internal.example/html/?region=us"),
+            "rust async",
+        )
+        .expect("custom duckduckgo-compatible url");
+
+        assert_eq!(host, "search.internal.example");
+        assert_eq!(
+            url,
+            "https://search.internal.example/html/?region=us&q=rust+async"
+        );
+    }
+
+    #[test]
+    fn custom_duckduckgo_endpoint_disables_public_bing_fallback() {
+        assert!(super::duckduckgo_allows_bing_fallback(None));
+        assert!(super::duckduckgo_allows_bing_fallback(Some("   ")));
+        assert!(!super::duckduckgo_allows_bing_fallback(Some(
+            "https://search.internal.example/html/"
+        )));
+    }
+
+    #[tokio::test]
+    async fn custom_duckduckgo_results_report_custom_host_source() {
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/html/"))
+            .and(query_param("q", "rust async"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"
+                <html><body>
+                  <a class="result__a" href="https://example.com/rust">Rust async</a>
+                  <div class="result__snippet">Async Rust result</div>
+                </body></html>
+                "#,
+            ))
+            .mount(&server)
+            .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::DuckDuckGo;
+        let base_url = format!("{}/html/", server.uri());
+        let expected_host = reqwest::Url::parse(&base_url)
+            .expect("mock server url")
+            .host_str()
+            .expect("mock server host")
+            .to_string();
+        ctx.search_base_url = Some(base_url);
+
+        let result = WebSearchTool
+            .execute(json!({"query": "rust async"}), &ctx)
+            .await
+            .expect("custom endpoint should return results");
+        let value: serde_json::Value =
+            serde_json::from_str(&result.content).expect("web search json response");
+
+        assert_eq!(value["source"].as_str(), Some(expected_host.as_str()));
+        assert_eq!(value["count"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn custom_duckduckgo_challenge_returns_actionable_error() {
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/html/"))
+            .and(query_param("q", "rust async"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<html><body><div class="anomaly-modal">Unfortunately, bots use DuckDuckGo too</div></body></html>"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::DuckDuckGo;
+        ctx.search_base_url = Some(format!("{}/html/", server.uri()));
+
+        let err = WebSearchTool
+            .execute(json!({"query": "rust async"}), &ctx)
+            .await
+            .expect_err("custom endpoint challenge should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DuckDuckGo-compatible search endpoint")
+                && msg.contains("bot challenge")
+                && msg.contains("private search service"),
+            "got `{msg}`"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_base_url_with_non_duckduckgo_provider_is_explicit_error() {
+        use crate::config::SearchProvider;
+        use crate::tools::spec::{ToolContext, ToolSpec};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.search_provider = SearchProvider::Tavily;
+        ctx.search_base_url = Some("https://search.internal.example/html/".to_string());
+
+        let err = WebSearchTool
+            .execute(json!({"query": "rust async"}), &ctx)
+            .await
+            .expect_err("non-duckduckgo provider with base_url should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("[search].base_url")
+                && msg.contains("provider = \"duckduckgo\"")
+                && msg.contains("tavily"),
+            "got `{msg}`"
         );
     }
 }

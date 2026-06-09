@@ -1,11 +1,16 @@
 # deepseek
 
-Install and run CodeWhale, the agentic terminal for open-source and open-weight coding
-models, from GitHub release artifacts.
+Install and run DeepSeek, the agentic terminal for DeepSeek and other
+OpenAI-compatible coding models, from GitHub release artifacts.
 
-> Previously published as ``. See `docs/REBRAND.md` in the upstream
-> repository for the migration notes; the legacy `` npm package
-> remains a deprecation shim through the v0.8.x transition.
+This npm package is a small launcher: it downloads the matching native
+DeepSeek binaries for your platform and exposes the `deepseek` and
+`deepseek-tui` commands. The application state and credentials still live in
+DeepSeek's normal config files, not inside `node_modules`.
+
+> Previously published as `deepseek-tui`. See `docs/REBRAND.md` in the upstream
+> repository for the migration notes; the legacy `deepseek-tui` npm package is
+> deprecated and receives no further releases.
 
 ## Install
 
@@ -22,10 +27,9 @@ npm install deepseek
 npx deepseek --help
 ```
 
-`postinstall` tries to download platform binaries into `bin/downloads/` and
-exposes `deepseek` and `deepseek-tui` commands. If GitHub release assets are
-temporarily unreachable, install continues and the wrapper retries the download
-on first run.
+`postinstall` tries to download platform binaries into `bin/downloads/`. If
+GitHub release assets are temporarily unreachable, install continues and the
+wrapper retries the download on first run.
 
 ## First run
 
@@ -35,10 +39,12 @@ deepseek doctor
 deepseek
 ```
 
-The `deepseek` facade and `deepseek-tui` binary share `~/.deepseek/config.toml`
-for DeepSeek auth and default model settings. Common TUI commands are available
-directly through the facade, including `deepseek doctor`, `deepseek models`,
-`deepseek sessions`, and `deepseek resume --last`.
+The `deepseek` facade and `deepseek-tui` binary share
+`~/.deepseek/config.toml` for DeepSeek auth and default model settings. Legacy
+`~/.deepseek/config.toml` installs are still read as a compatibility fallback.
+Common TUI commands are available directly through the facade, including
+`deepseek doctor`, `deepseek models`, `deepseek sessions`, and
+`deepseek resume --last`.
 
 The app talks to DeepSeek's documented OpenAI-compatible Chat Completions API.
 Set `DEEPSEEK_BASE_URL` only if you need the China endpoint or DeepSeek beta
@@ -70,22 +76,20 @@ Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
 shipped as prebuilts. Unsupported platforms, checksum failures, and glibc
 compatibility problems still fail with a clear error pointing you at
 `cargo install deepseek-cli deepseek-tui --locked` and the full
-[docs/INSTALL.md](https://github.com/Hmbown/CodeWhale/blob/main/docs/INSTALL.md)
+[docs/INSTALL.md](https://github.com/coohu/deepseek-tui/blob/main/docs/INSTALL.md)
 build-from-source guide.
 
-## Configuration
+## Wrapper configuration
 
-- Default binary version comes from `codewhaleBinaryVersion` in `package.json`
-  (with `deepseekBinaryVersion` as a backward-compat fallback).
-- Set `DEEPSEEK_TUI_VERSION` or `DEEPSEEK_VERSION` to override the release version.
-- Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/CodeWhale`).
-- Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to use an internal or mirrored
-  release-asset directory when GitHub Releases is unavailable. The directory
-  must contain `deepseek-artifacts-sha256.txt` and the platform binaries.
-- Set `DEEPSEEK_TUI_FORCE_DOWNLOAD=1` to force download even when the cached binary is already present.
-- Set `DEEPSEEK_TUI_DISABLE_INSTALL=1` to skip install-time download.
-- Set `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` to make install-time retryable download
-  failures warn and exit `0` instead of failing `npm install`.
+| Setting | What it does |
+| --- | --- |
+| `codewhaleBinaryVersion` in `package.json` | Default native binary version. `deepseekBinaryVersion` is still read as a backward-compat fallback. |
+| `DEEPSEEK_TUI_VERSION` or `DEEPSEEK_VERSION` | Override the GitHub release version to download. |
+| `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` | Override the source repo. Defaults to `coohu/deepseek-tui`. |
+| `DEEPSEEK_TUI_RELEASE_BASE_URL` | Use an internal or mirrored release-asset directory when GitHub Releases is unavailable. The directory must contain `deepseek-artifacts-sha256.txt` and the platform binaries. |
+| `DEEPSEEK_TUI_FORCE_DOWNLOAD=1` | Force download even when the cached binary is already present. |
+| `DEEPSEEK_TUI_DISABLE_INSTALL=1` | Skip install-time download. |
+| `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` | Make install-time retryable download failures warn and exit `0` instead of failing `npm install`. |
 
 ## Release integrity
 

@@ -15,13 +15,13 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
   for the same backing operation are a model trap — the LLM will alternate
   between them and the cache hit rate suffers.
 
-## Current surface (v0.8.35)
+## Current surface (v0.8.49)
 
 ### File operations
 
 | Tool | Niche |
 |---|---|
-| `read_file` | Read a UTF-8 file. PDFs auto-extracted via `pdftotext` (poppler) when available; `pages: "1-5"` slices large docs. |
+| `read_file` | Read a UTF-8 file. PDFs auto-extracted via bundled pure-Rust extractor (no Poppler install required); `pages: "1-5"` slices large docs. |
 | `list_dir` | Structured, gitignore-aware listing. Preferred over `exec_shell("ls")`. |
 | `write_file` | Create or overwrite a file. |
 | `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. |
@@ -35,10 +35,15 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 |---|---|
 | `grep_files` | Regex search file contents within the workspace; structured matches + context lines. Pure-Rust (`regex` crate), no `rg`/`grep` shell-out. |
 | `file_search` | Fuzzy-match filenames (not contents). Use when you know roughly the name. |
-| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, and Bocha are selectable in config. Ranked snippets + `ref_id` for citation. |
+| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, and Baidu are selectable in config. Ranked snippets + `ref_id` for citation. |
 | `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. |
 
 ### Shell
+
+Shell tools appear in the model-visible tool catalog only when shell access is
+enabled for the active session or profile. In Agent mode that usually means
+`allow_shell = true`; YOLO enables shell access automatically. Plan mode keeps
+shell execution off.
 
 | Tool | Niche |
 |---|---|
@@ -63,6 +68,13 @@ controls for live jobs. Jobs are process-local; after restart, live process
 state is not reattached, and any remembered detached entries must be marked
 stale rather than presented as live processes.
 
+Shell permission policy is evaluated by `crates/execpolicy`. Deny prefixes are
+checked before trusted prefixes and block matching commands regardless of layer.
+Trusted prefixes only skip approval in modes that permit trust shortcuts. Typed
+ask records are currently a narrow foundation: when one matches under
+`AskForApproval::Never`, the command is rejected because the runtime cannot ask
+the user; existing allow/deny behavior is otherwise unchanged.
+
 ### MCP manager and palette discovery
 
 MCP server configuration is surfaced in the TUI through `/mcp` and the
@@ -85,6 +97,7 @@ to the model, such as `mcp_<server>_<tool>`.
 | `git_diff` | Inspect working-tree or staged diffs. |
 | `diagnostics` | Workspace, git, sandbox, and toolchain info in one call. |
 | `run_tests` | `cargo test` with optional args. |
+| `run_verifiers` | Run independent verifier gates in parallel across detected Rust, Node, Python, and Go projects, with optional custom `program` + `args` gates for other ecosystems. |
 
 ### Task management and durable work
 
@@ -97,8 +110,23 @@ to the model, such as `mcp_<server>_<tool>`.
 | `task_cancel` | Cancel a queued or running durable task. Approval-required. |
 | `checklist_write` | Granular progress under the active thread/task. Checklist state is subordinate to the durable task. |
 | `checklist_add` / `checklist_update` / `checklist_list` | Single-item checklist operations. |
-| `todo_write` / `todo_add` / `todo_update` / `todo_list` | Compatibility aliases for the checklist tools. Existing sessions keep working, but new prompts should use `checklist_*`. |
 | `note` | One-off important fact for later. |
+
+The legacy `todo_write`, `todo_add`, `todo_update`, and `todo_list` names are
+hidden compatibility aliases for saved transcript replay. They remain callable
+by exact name, but they are not part of the model-visible catalog; compatibility
+results include `_deprecation.use_instead = checklist_*` and
+`_deprecation.removed_in = 0.9.0`.
+
+`update_plan` accepts both the legacy shape (`explanation` plus `plan` steps)
+and a richer PlanArtifact shape for Plan mode review. The richer fields are
+optional and should be filled only when grounded in evidence: `title`,
+`objective`, `context_summary`, `sources_used`, `critical_files`,
+`constraints`, `recommended_approach`, `verification_plan`,
+`risks_and_unknowns`, and `handoff_packet`. The transcript card, Plan-mode
+confirmation prompt, `/relay`, and fork-state handoff all render the same
+artifact so a plan can be reviewed, accepted, revised, replayed, or delegated
+without losing its source context.
 
 ### Verification gates and artifacts
 
@@ -215,6 +243,12 @@ Aliases: `/batonpass`, `/接力`.
 Use it before a long break, compaction, or moving work to a fresh session. The
 relay should preserve the goal, current Work checklist item, changed files,
 decisions, verification state, and one concrete next action.
+Treat it as the deliberate counterpart to automatic compaction: both exist to
+preserve continuity for the next session or sub-agent, but `/relay` lets the
+current agent inspect live evidence and choose the durable handoff facts
+explicitly. When `update_plan` has a rich PlanArtifact, `/relay` includes that
+strategy metadata so manual relay, fork-state, and compacted continuity do not
+drift into separate stories.
 
 ### Parallel fan-out: cost-class caps
 
@@ -243,6 +277,20 @@ prompting and tool catalogs. Do not use these names in new active guidance:
 
 The old one-shot `rlm` model-facing tool is also replaced by persistent
 `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` sessions.
+
+v0.9.0 adds the following hidden-compat aliases (#2682, #2683):
+
+| Hidden alias | Canonical replacement | Status |
+|---|---|---|
+| `todo_write` | `checklist_write` | Hidden, returns `_deprecation` metadata |
+| `todo_add` | `checklist_add` | Hidden, returns `_deprecation` metadata |
+| `todo_update` | `checklist_update` | Hidden, returns `_deprecation` metadata |
+| `todo_list` | `checklist_list` | Hidden, returns `_deprecation` metadata |
+| `exec_wait` | `exec_shell_wait` | Hidden, callable for replay |
+| `exec_interact` | `exec_shell_interact` | Hidden, callable for replay |
+
+All hidden aliases remain registered and callable so saved transcripts can
+replay without teaching new sessions the deprecated spelling.
 
 Historical compatibility results may include a `_deprecation` block shaped
 like this:
@@ -280,7 +328,7 @@ rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_op
 rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/tui/src/prompts crates/tui/src/tools
 ```
 
-The canonical v0.8.35 live names are:
+The canonical live names (since v0.8.35, still current in v0.8.49):
 
 - `handle_read`
 - `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
@@ -290,6 +338,33 @@ The registry should not actively advertise the legacy one-shot names
 `agent_spawn`, `agent_wait`, `agent_result`, or the old foreground `rlm` tool
 outside legacy/removal notes. Historical changelog entries and compatibility
 code may still mention them.
+
+## Additional registered tools (v0.8.49)
+
+The category tables above cover the most commonly used tools. The full
+registry also includes these model-visible tools:
+
+| Tool | Niche |
+|---|---|
+| `web.run` | Browser-based web interaction (JavaScript-rendered pages, form filling) |
+| `multi_tool_use.parallel` | Execute multiple independent tools in a single turn |
+| `request_user_input` | Prompt the user for input mid-turn |
+| `git_show` / `git_log` / `git_blame` | Inspect commit details, history, and line authorship |
+| `load_skill` | Load a skill by id from the installed skill set |
+| `revert_turn` | Roll back the workspace to a pre-turn snapshot |
+| `pandoc_convert` | Convert between document formats via pandoc (gated by binary presence) |
+| `validate_data` | Validate JSON or TOML against a schema |
+| `code_execution` | Execute Python code in an isolated sandbox |
+| `review` | Code review with structured feedback |
+| `project_map` | Generate a structural map of the project workspace |
+| `remember` | Store a persistent fact in user memory (gated by `memory_enabled`) |
+| `image_analyze` | Vision-model image understanding (gated by `[vision_model]` config) |
+| `image_ocr` | Extract text from images via local OCR |
+| `finance` | Fetch market data and stock quotes |
+
+MCP tools, plugin-provided tools, and feature-gated tools may also be
+visible depending on runtime configuration. Use `deepseek tools list` or
+the TUI `/tools` palette to inspect the active catalog.
 
 ## Why we don't ship a single `bash` tool
 

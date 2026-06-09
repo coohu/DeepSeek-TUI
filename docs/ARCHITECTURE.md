@@ -156,7 +156,7 @@ drives turns through Chat Completions.
   - `mod.rs` - `LspManager` — lazy per-language transport pool + config
   - `client.rs` - `StdioLspTransport` — JSON-RPC over stdio with `didOpen`/`didChange`/`publishDiagnostics`
   - `diagnostics.rs` - Diagnostic types, severity, and HTML-block renderer
-  - `registry.rs` - Language detection and default server map (rust-analyzer, pyright, gopls, clangd, typescript-language-server)
+  - `registry.rs` - Language detection and default server map (rust-analyzer, pyright, gopls, clangd, typescript-language-server, jdtls, vue-language-server)
   - Wired into the engine via `core/engine/lsp_hooks.rs` — called after every successful edit
 
 ### Security
@@ -174,6 +174,7 @@ drives turns through Chat Completions.
 - **`utils.rs`** - Common utilities
 - **`logging.rs`** - Logging infrastructure
 - **`compaction.rs`** - Context compaction for long conversations
+- **`purge.rs`** - Agent-driven context purging (surgical message removal/rewriting)
 - **`pricing.rs`** - Cost estimation
 - **`prompts.rs`** - System prompt templates
 - **`project_doc.rs`** - Project documentation handling
@@ -241,7 +242,8 @@ ordinary durable tasks.
 3. Engine events are mapped to item lifecycle events (`item.started|item.delta|item.completed`)
 4. Interrupt/steer operations apply to the active turn only
 5. Compaction (auto/manual) is emitted as `context_compaction` item lifecycle
-6. Clients replay history and resume with `/v1/threads/{id}/events?since_seq=<n>`
+6. Purge (agent-driven) is emitted as `context_purge` item lifecycle
+7. Clients replay history and resume with `/v1/threads/{id}/events?since_seq=<n>`
 
 ### Durable Schema Gates
 
@@ -293,7 +295,7 @@ command = "echo 'Running tool: $TOOL_NAME'"
 
 ## Configuration Files
 
-- `~/.deepseek/config.toml` - Main configuration
+- `~/.deepseek/config.toml` - Main configuration (`~/.deepseek/config.toml` is still read as a legacy fallback)
 - `/etc/deepseek/managed_config.toml` - Optional managed defaults layer (Unix)
 - `/etc/deepseek/requirements.toml` - Optional allowed-policy constraints (Unix)
 - `~/.deepseek/mcp.json` - MCP server configuration

@@ -3,6 +3,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::models::{ContentBlock, Message};
 use anyhow::{Context, Result};
@@ -208,6 +209,63 @@ pub fn flush_and_sync(writer: &mut std::io::BufWriter<std::fs::File>) -> std::io
     writer.get_ref().sync_all()
 }
 
+/// Open a URL in the system's default browser.
+///
+/// Dispatches to the platform-appropriate opener:
+/// - macOS: `open`
+/// - Linux: `xdg-open`
+/// - Windows: `cmd /C start ""`
+/// - Other: returns an error.
+///
+/// This is the single entry point for URL opening — every call site in
+/// the codebase should use this instead of hardcoding `Command::new("open")`,
+/// `Command::new("xdg-open")`, or `Command::new("cmd")`.
+pub fn open_url(url: &str) -> Result<()> {
+    let mut command = browser_open_command(url)?;
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("failed to launch browser command: {e}"))
+}
+
+fn browser_open_command(url: &str) -> Result<Command> {
+    if url.trim().is_empty() {
+        return Err(anyhow::anyhow!("browser URL cannot be empty"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        command.arg(url);
+        Ok(command)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        Ok(command)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "start", "", url]);
+        Ok(cmd)
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "windows"
+    )))]
+    Err(anyhow::anyhow!(
+        "browser opening is unsupported on this platform"
+    ))
+}
+
 /// Spawn a tokio task with panic supervision.
 ///
 /// Wraps the future in `AssertUnwindSafe` + `catch_unwind`. On panic:
@@ -228,13 +286,7 @@ where
         use futures_util::FutureExt;
         let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
         if let Err(panic_info) = result {
-            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic".to_string()
-            };
+            let msg = panic_message(&*panic_info);
             tracing::error!(
                 target: "panic",
                 "Task '{name}' panicked at {}: {msg}",
@@ -244,6 +296,32 @@ where
             let _ = write_panic_dump(name, location, &msg);
         }
     })
+}
+
+/// Extract a human-readable message from a caught panic payload (the `Err`
+/// value of `catch_unwind`). Mirrors how the panic hook formats `&str` and
+/// `String` payloads so crash dumps stay consistent across call sites.
+#[must_use]
+pub fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+/// Record a panic that was caught at a call site (via `catch_unwind`) rather
+/// than by a task supervisor. Logs it on the `panic` target and writes a
+/// best-effort crash dump to `~/.deepseek/crashes/`, so diagnostics land in
+/// the same place `spawn_supervised` writes them even when the caller recovers
+/// and keeps running.
+#[track_caller]
+pub fn record_caught_panic(name: &'static str, message: &str) {
+    let location = std::panic::Location::caller();
+    tracing::error!(target: "panic", "Task '{name}' panicked at {location}: {message}");
+    let _ = write_panic_dump(name, location, message);
 }
 
 /// Write a panic dump file to `~/.deepseek/crashes/`.
@@ -308,13 +386,7 @@ where
     tokio::task::spawn_blocking(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         if let Err(panic_info) = result {
-            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic".to_string()
-            };
+            let msg = panic_message(&*panic_info);
             tracing::error!(
                 target: "panic",
                 "Blocking task '{name}' panicked at {location}: {msg}",
@@ -431,7 +503,8 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
                 ContentBlock::ToolResult { content, .. } => total += content.len(),
                 ContentBlock::ServerToolUse { .. }
                 | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. } => {}
+                | ContentBlock::CodeExecutionToolResult { .. }
+                | ContentBlock::ImageUrl { .. } => {}
             }
         }
     }
@@ -772,5 +845,64 @@ mod project_mapping_tests {
             .strip_prefix("Project with key files: ")
             .expect("prefix");
         assert_eq!(suffix, "Makefile, README.md");
+    }
+
+    // ===================================================================
+    // open_url tests
+    // ===================================================================
+
+    #[test]
+    fn open_url_builds_platform_command_without_spawning() {
+        let command = super::browser_open_command("https://example.com").expect("command");
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(command.get_program(), "open");
+            assert_eq!(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                vec!["https://example.com"]
+            );
+        }
+
+        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+        {
+            assert_eq!(command.get_program(), "xdg-open");
+            assert_eq!(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                vec!["https://example.com"]
+            );
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(command.get_program(), "cmd");
+            assert_eq!(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>(),
+                vec!["/C", "start", "", "https://example.com"]
+            );
+        }
+    }
+
+    #[test]
+    fn open_url_rejects_empty_url_gracefully() {
+        // An empty URL should fail with a clear error, not panic.
+        let result = super::browser_open_command("");
+        match result {
+            Ok(_) => panic!("empty URL should not build an opener command"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(!msg.is_empty(), "error message must not be empty");
+                assert!(msg.contains("empty"), "unexpected error message: {msg}");
+            }
+        }
     }
 }

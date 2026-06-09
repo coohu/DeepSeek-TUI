@@ -27,17 +27,49 @@ jobs:
           node-version: 20
       - name: Check version drift
         run: ./scripts/release/check-versions.sh
+      - name: Check OHOS dependency graph
+        run: ./scripts/release/check-ohos-deps.sh
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
+      - name: Install Linux system dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --workspace --all-features --locked -- -D warnings
+      - name: Check provider registry drift
+        run: python3 scripts/check-provider-registry.py
+      - name: Check harvested contributor credit
+        if: github.event_name != 'schedule'
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags origin "${{ github.base_ref }}"
+            RANGE="origin/${{ github.base_ref }}..HEAD"
+          elif [[ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          else
+            RANGE="HEAD~1..HEAD"
+          fi
+          python3 scripts/check-coauthor-trailers.py \
+            --author-map .github/AUTHOR_MAP \
+            --range "$RANGE" \
+            --check-authors
       - name: Linux clippy location
         run: echo "Linux clippy/test gates run on CNB for mirrored fix/*, rebrand/*, work/v*, and main branches."
 
@@ -100,6 +132,27 @@ jobs:
       - name: Linux smoke location
         if: runner.os == 'Linux'
         run: echo "Linux npm wrapper smoke runs on CNB for mirrored first-party branches."
+
+  mobile-smoke:
+    name: Mobile runtime smoke
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux system dependencies
+        run: |
+          for i in 1 2 3 4 5; do
+            sudo apt-get update && break
+            echo "apt-get update failed (attempt $i); retrying in 15s"
+            sleep 15
+          done
+          sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
+      - name: Run mobile smoke tests
+        run: ./scripts/mobile-smoke.sh
 
   # Check documentation builds without warnings
   docs:

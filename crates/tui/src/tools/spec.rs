@@ -1,4 +1,4 @@
-//! Tool specification traits for the CodeWhale agent system.
+//! Tool specification traits for the DeepSeek agent system.
 //!
 //! This module defines the core abstractions for tools:
 //! - `ToolSpec`: The main trait that all tools must implement
@@ -165,9 +165,12 @@ pub struct ToolContext {
     /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
     /// `[search] provider` in config.toml.
     pub search_provider: crate::config::SearchProvider,
-    /// API key for Tavily, Bocha, or Metaso. `None` for Bing or DuckDuckGo.
+    /// API key for Tavily, Bocha, Metaso, or Baidu. `None` for Bing or DuckDuckGo.
     /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
+    /// Baidu also falls back to `BAIDU_SEARCH_API_KEY`.
     pub search_api_key: Option<String>,
+    /// Optional DuckDuckGo-compatible HTML endpoint override for `web_search`.
+    pub search_base_url: Option<String>,
 
     /// Per-session workshop variable store (#548). Holds the raw content of
     /// the most recent large-tool routing event so the parent can call
@@ -209,6 +212,7 @@ impl ToolContext {
             large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            search_base_url: None,
             workshop_vars: None,
         }
     }
@@ -246,6 +250,7 @@ impl ToolContext {
             large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            search_base_url: None,
             workshop_vars: None,
         }
     }
@@ -283,6 +288,7 @@ impl ToolContext {
             large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
+            search_base_url: None,
             workshop_vars: None,
         }
     }
@@ -661,6 +667,14 @@ pub trait ToolSpec: Send + Sync {
     /// but not sent to the model until explicitly activated via tool search.
     fn defer_loading(&self) -> bool {
         false
+    }
+
+    /// Returns whether this tool should be advertised in the model-facing
+    /// catalog. Hidden compatibility tools remain registered and executable
+    /// by name so saved transcripts can replay without teaching new sessions
+    /// the deprecated spelling.
+    fn model_visible(&self) -> bool {
+        true
     }
 
     /// Execute the tool with the given input and context.

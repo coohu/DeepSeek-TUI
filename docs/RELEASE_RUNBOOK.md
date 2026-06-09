@@ -1,4 +1,4 @@
-# CodeWhale Release Runbook
+# DeepSeek Release Runbook
 
 This runbook is the source of truth for shipping Rust crates, GitHub release assets,
 and the `deepseek` npm wrapper.
@@ -25,6 +25,7 @@ Current packaging note:
   - `deepseek-core`
   - `deepseek-app-server`
   - `deepseek-tui-core`
+  - `deepseek-whaleflow`
 
 ## Version Coordination
 
@@ -119,20 +120,22 @@ configured.
    `main` and letting `auto-tag.yml` create the tag — see the npm wrapper
    release section below for the `RELEASE_TAG_PAT` requirement).
 4. Publish crates in this order with `./scripts/release/publish-crates.sh publish`:
-   - `deepseek-secrets`
-   - `deepseek-config`
+   - `deepseek-mcp`
    - `deepseek-protocol`
+   - `deepseek-release`
+   - `deepseek-secrets`
    - `deepseek-state`
-   - `deepseek-agent`
+   - `deepseek-tui-core`
+   - `deepseek-whaleflow`
    - `deepseek-execpolicy`
    - `deepseek-hooks`
-   - `deepseek-mcp`
    - `deepseek-tools`
+   - `deepseek-config`
+   - `deepseek-agent`
+   - `deepseek-tui`
    - `deepseek-core`
    - `deepseek-app-server`
-   - `deepseek-tui-core`
    - `deepseek-cli`
-   - `deepseek-tui`
 5. Wait for each published crate version to appear on crates.io before publishing dependents.
 
 The publish helper is idempotent for reruns: already-published crate versions are skipped.
@@ -202,6 +205,18 @@ remote add cnb …`, then `git push cnb vX.Y.Z`).
 
 ## Recovery and Rollback
 
+- User-facing rollback:
+  - npm: `npm install -g deepseek@X.Y.Z`
+  - Cargo: `cargo install deepseek-cli --version X.Y.Z --locked --force`
+    and `cargo install deepseek-tui --version X.Y.Z --locked --force`
+  - manual assets: download binaries or the platform archive plus the matching
+    `deepseek-artifacts-sha256.txt` or `deepseek-bundles-sha256.txt`
+    manifest from `https://github.com/coohu/deepseek-tui/releases/tag/vX.Y.Z`
+  - workspace files: use `/restore list [N]` and `/restore <N>` for side-git
+    snapshots; this does not change the installed binary version or rewrite
+    conversation history
+  - keep [docs/INSTALL.md](INSTALL.md#roll-back-to-a-previous-release) in sync
+    with these commands
 - Crates publish partially:
   - rerun `./scripts/release/publish-crates.sh publish`
   - already-published crate versions will be skipped

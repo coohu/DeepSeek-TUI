@@ -2,13 +2,12 @@
 //!
 //! Tracks conversation history, token usage, and session metadata.
 
-use crate::cycle_manager::CycleBriefing;
 use crate::models::{Message, SystemPrompt, Usage};
 use crate::prefix_cache::PrefixStabilityManager;
 use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::prompt_zones::FrozenPrefix;
 use crate::tui::approval::ApprovalMode;
 use crate::working_set::WorkingSet;
-use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
 /// Session state for the engine.
@@ -32,8 +31,8 @@ pub struct Session {
 
     /// System prompt (optional)
     pub system_prompt: Option<SystemPrompt>,
-    /// True when `system_prompt` came from an explicit runtime API override
-    /// and should not be replaced by mode/context refreshes.
+    /// True when `system_prompt` is a persisted/runtime-supplied prefix that
+    /// should not be replaced by mode/context refreshes.
     pub system_prompt_override: bool,
     /// Hash of the last assembled stable system prompt. Used to avoid
     /// replacing `system_prompt` when unchanged.
@@ -74,23 +73,23 @@ pub struct Session {
     /// Repo-aware working set for context management.
     pub working_set: WorkingSet,
 
-    /// Number of cycle boundaries crossed in this session (issue #124). The
-    /// active cycle index is `cycle_count + 1` (cycles are 1-based for users).
-    pub cycle_count: u32,
-
-    /// UTC start time of the *current* cycle. Updated when the engine resets
-    /// the conversation buffer. Used by archive headers and the `/cycles`
-    /// command's display.
-    pub current_cycle_started: DateTime<Utc>,
-
-    /// Briefings produced at past cycle boundaries, in chronological order.
-    /// Bounded growth: one entry per cycle, briefing capped at ~3,000 tokens.
-    pub cycle_briefings: Vec<CycleBriefing>,
-
     /// Prefix-cache stability monitor (inspired by Reasonix's Pillar 1).
     /// Tracks the immutable prefix fingerprint and detects drift across turns.
     /// Set during engine construction; None until the first system prompt assembly.
     pub prefix_stability: Option<PrefixStabilityManager>,
+
+    /// Three-zone immutable prefix baseline (#2264). Frozen on the first
+    /// request of the session; verified against the current system+tool
+    /// state before every subsequent request. None until the first turn.
+    pub frozen_prefix: Option<FrozenPrefix>,
+
+    /// Monotonic counter bumped on every direct mutation of `messages`.
+    /// Consumed by [`crate::core::engine::token_estimate_cache::TokenEstimateCache`]
+    /// to memoize the per-turn token estimate without re-walking the message
+    /// list. Defaults to 0; bumped in [`Session::add_message`],
+    /// [`Session::replace_messages`], and at every other mutation site in
+    /// `core/engine.rs` / `core/engine/capacity_flow.rs`.
+    pub messages_revision: u64,
 }
 
 /// Cumulative usage statistics for a session.
@@ -162,16 +161,35 @@ impl Session {
             },
             last_system_prompt_hash: None,
             working_set: WorkingSet::default(),
-            cycle_count: 0,
-            current_cycle_started: Utc::now(),
-            cycle_briefings: Vec::new(),
             prefix_stability: None,
+            frozen_prefix: None,
+            messages_revision: 0,
         }
     }
 
     /// Add a message to the conversation
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
+        self.messages_revision = self.messages_revision.saturating_add(1);
+    }
+
+    /// Replace the entire message history. Used by session resume and
+    /// capacity interventions. Bumps `messages_revision` exactly once even
+    /// when the new history has a different length, so downstream caches
+    /// invalidate atomically.
+    #[allow(dead_code)]
+    pub fn replace_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+        self.messages_revision = self.messages_revision.saturating_add(1);
+    }
+
+    /// Bump `messages_revision` without otherwise mutating the message list.
+    /// Reserved for sites that mutate the message list in place (e.g. an
+    /// in-place rewrite of a content block). Most call sites do not need
+    /// this — prefer [`add_message`](Self::add_message) and
+    /// [`replace_messages`](Self::replace_messages).
+    pub fn bump_messages_revision(&mut self) {
+        self.messages_revision = self.messages_revision.saturating_add(1);
     }
 
     /// Rebuild the working set from current messages (best effort).

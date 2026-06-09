@@ -1,0 +1,126 @@
+{
+  "name": "deepseek-vscode",
+  "displayName": "DeepSeek",
+  "description": "Official DeepSeek VS Code integration scaffold for local runtime attach and terminal launch.",
+  "version": "0.8.53",
+  "publisher": "deepseek",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coohu/deepseek-tui.git",
+    "directory": "extensions/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:deepseek.openTerminal",
+    "onCommand:deepseek.startRuntime",
+    "onCommand:deepseek.checkRuntime",
+    "onCommand:deepseek.refreshAgentView",
+    "onCommand:deepseek.refreshSnapshots",
+    "onCommand:deepseek.openRuntimeDocs",
+    "onView:deepseek.runtimeStatus"
+  ],
+  "main": "./out/extension.js",
+  "files": [
+    "out",
+    "media",
+    "README.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepseek.openTerminal",
+        "title": "DeepSeek: Open Terminal"
+      },
+      {
+        "command": "deepseek.startRuntime",
+        "title": "DeepSeek: Start Local Runtime"
+      },
+      {
+        "command": "deepseek.checkRuntime",
+        "title": "DeepSeek: Check Runtime"
+      },
+      {
+        "command": "deepseek.refreshAgentView",
+        "title": "DeepSeek: Refresh Agent View"
+      },
+      {
+        "command": "deepseek.refreshSnapshots",
+        "title": "DeepSeek: Refresh Restore Points"
+      },
+      {
+        "command": "deepseek.openRuntimeDocs",
+        "title": "DeepSeek: Open Runtime API Docs"
+      }
+    ],
+    "configuration": {
+      "title": "DeepSeek",
+      "properties": {
+        "deepseek.commandPath": {
+          "type": "string",
+          "default": "deepseek",
+          "description": "Command or absolute path used to launch DeepSeek."
+        },
+        "deepseek.runtimeHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Local host used for DeepSeek runtime attach checks."
+        },
+        "deepseek.runtimePort": {
+          "type": "number",
+          "default": 7878,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Local port used for DeepSeek runtime attach checks."
+        },
+        "deepseek.runtimeToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional bearer token for authenticated runtime endpoints."
+        },
+        "deepseek.agentViewRefreshIntervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "maximum": 300,
+          "description": "Seconds between read-only Agent View refreshes. Set to 0 to disable automatic refresh."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "deepseek",
+          "title": "DeepSeek",
+          "icon": "media/deepseek.svg"
+        }
+      ]
+    },
+    "views": {
+      "deepseek": [
+        {
+          "type": "webview",
+          "id": "deepseek.runtimeStatus",
+          "name": "Agent View"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "check": "npm run compile",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.27",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.7.0",
+    "typescript": "^5.9.3"
+  }
+}

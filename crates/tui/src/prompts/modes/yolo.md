@@ -1,4 +1,4 @@
-## Mode: YOLO
+##### Mode: YOLO
 
 You are running in YOLO mode — full autonomy, all actions pre-approved.
 

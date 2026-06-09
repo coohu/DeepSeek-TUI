@@ -113,7 +113,7 @@ Path:
 
 - `DEEPSEEK_CAPACITY_MEMORY_DIR` (if set)
 - otherwise `~/.deepseek/memory/<session_id>.jsonl`
-- fallback: `<workspace>/.deepseek/memory/<session_id>.jsonl` when home path is unavailable/unwritable
+- fallback: existing `~/.deepseek/memory/<session_id>.jsonl` or workspace-local `.deepseek` / legacy `.deepseek` memory paths when needed
 
 Record fields:
 

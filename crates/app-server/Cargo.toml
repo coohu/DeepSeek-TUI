@@ -10,19 +10,21 @@ description = "Codex-style app-server transport for DeepSeek workspace architect
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
-deepseek-agent = { path = "../agent", version = "0.8.46" }
-deepseek-config = { path = "../config", version = "0.8.46" }
-deepseek-core = { path = "../core", version = "0.8.46" }
-deepseek-execpolicy = { path = "../execpolicy", version = "0.8.46" }
-deepseek-hooks = { path = "../hooks", version = "0.8.46" }
-deepseek-mcp = { path = "../mcp", version = "0.8.46" }
-deepseek-protocol = { path = "../protocol", version = "0.8.46" }
-deepseek-state = { path = "../state", version = "0.8.46" }
-deepseek-tools = { path = "../tools", version = "0.8.46" }
+deepseek-agent = { path = "../agent", version = "0.8.54" }
+deepseek-config = { path = "../config", version = "0.8.54" }
+deepseek-core = { path = "../core", version = "0.8.54" }
+deepseek-execpolicy = { path = "../execpolicy", version = "0.8.54" }
+deepseek-hooks = { path = "../hooks", version = "0.8.54" }
+deepseek-mcp = { path = "../mcp", version = "0.8.54" }
+deepseek-protocol = { path = "../protocol", version = "0.8.54" }
+deepseek-state = { path = "../state", version = "0.8.54" }
+deepseek-tools = { path = "../tools", version = "0.8.54" }
 serde.workspace = true
 serde_json.workspace = true
+rustls.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

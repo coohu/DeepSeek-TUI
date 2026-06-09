@@ -4,6 +4,11 @@ use crate::tools::spec::ToolContext;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
+#[cfg(windows)]
+use windows::Win32::Foundation::{DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HANDLE};
+#[cfg(windows)]
+use windows::Win32::System::Threading::GetCurrentProcess;
+
 // `env_lock` exists only to serialize Unix-only env-mutating tests.
 // Windows builds gate that test out, so the helper would be dead code
 // under `-Dwarnings` if the import + helper were unconditional.
@@ -16,11 +21,44 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
+
+#[cfg(windows)]
+const JOB_OBJECT_QUERY_ACCESS: u32 = 0x0004;
+
+#[cfg(windows)]
+fn duplicate_job_without_terminate_access(job: WindowsJob) -> WindowsJob {
+    let process = unsafe { GetCurrentProcess() };
+    let mut limited_handle = HANDLE::default();
+
+    unsafe {
+        DuplicateHandle(
+            process,
+            job.handle,
+            process,
+            &mut limited_handle,
+            JOB_OBJECT_QUERY_ACCESS,
+            false,
+            DUPLICATE_HANDLE_OPTIONS(0),
+        )
+        .expect("duplicate job handle without terminate access");
+    }
+
+    drop(job);
+    WindowsJob {
+        handle: limited_handle,
+    }
+}
+
 fn echo_command(message: &str) -> String {
     format!("echo {message}")
 }
 
 fn sleep_command(seconds: u64) -> String {
+    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    if dispatcher.kind().is_powershell() {
+        return format!("Start-Sleep -Seconds {seconds}");
+    }
     #[cfg(windows)]
     {
         let ping_count = seconds.saturating_add(1);
@@ -33,6 +71,10 @@ fn sleep_command(seconds: u64) -> String {
 }
 
 fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
+    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    if dispatcher.kind().is_powershell() {
+        return format!("Start-Sleep -Seconds {seconds}; echo {message}");
+    }
     #[cfg(windows)]
     {
         let ping_count = seconds.saturating_add(1);
@@ -45,6 +87,10 @@ fn sleep_then_echo_command(seconds: u64, message: &str) -> String {
 }
 
 fn echo_stdin_command() -> String {
+    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    if dispatcher.kind().is_powershell() {
+        return "[Console]::In.ReadToEnd()".to_string();
+    }
     #[cfg(windows)]
     {
         "more".to_string()
@@ -88,6 +134,20 @@ fn failed_network_shell_result(stdout: &str, stderr: &str) -> ShellResult {
     }
 }
 
+fn wait_for_completed_shell(manager: &mut ShellManager, task_id: &str) -> ShellResult {
+    let deadline = Instant::now() + Duration::from_millis(BACKGROUND_COMPLETION_WAIT_MS);
+
+    loop {
+        let result = manager
+            .get_output(task_id, true, 1_000)
+            .expect("get_output");
+        if result.status != ShellStatus::Running || Instant::now() >= deadline {
+            return result;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
@@ -107,7 +167,7 @@ fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
 
     let result = manager
         .execute_with_options_env(
-            "printf '%s\\n%s\\n' \"${DEEPSEEK_CHILD_ENV_SHELL_SECRET-unset}\" \"${DEEPSEEK_CHILD_ENV_EXPLICIT-unset}\"",
+            "sh -c 'printf \"%s\\n%s\\n\" \"${DEEPSEEK_CHILD_ENV_SHELL_SECRET-unset}\" \"${DEEPSEEK_CHILD_ENV_EXPLICIT-unset}\"'",
             None,
             5000,
             false,
@@ -161,10 +221,7 @@ fn test_background_execution() {
         .task_id
         .expect("background execution should return task_id");
 
-    // Wait for completion
-    let final_result = manager
-        .get_output(&task_id, true, 5000)
-        .expect("get_output");
+    let final_result = wait_for_completed_shell(&mut manager, &task_id);
 
     assert_eq!(final_result.status, ShellStatus::Completed);
     assert!(final_result.stdout.contains("done"));
@@ -227,6 +284,40 @@ fn test_write_stdin_streams_output() {
         .get_output_delta(&task_id, false, 0)
         .expect("get_output_delta");
     assert!(delta2.result.stdout.is_empty());
+}
+
+#[test]
+#[cfg(all(unix, not(target_env = "ohos")))]
+fn background_tty_command_has_controlling_terminal() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let result = manager
+        .execute_with_options(
+            "sh -c 'exec 3<>/dev/tty && printf tty-ok && exec 3>&-'",
+            None,
+            5000,
+            true,
+            None,
+            true,
+            Some(ExecutionSandboxPolicy::DangerFullAccess),
+        )
+        .expect("execute tty command");
+
+    let task_id = result
+        .task_id
+        .expect("background tty execution should return task_id");
+
+    let done = manager
+        .get_output(&task_id, true, 10_000)
+        .expect("get tty command output");
+
+    assert_eq!(done.status, ShellStatus::Completed);
+    assert_eq!(done.exit_code, Some(0));
+    assert!(
+        done.stdout.contains("tty-ok"),
+        "tty output should confirm /dev/tty opened; got {done:?}"
+    );
 }
 
 #[test]
@@ -712,7 +803,7 @@ async fn test_completed_background_shell_releases_process_handles() {
             json!({
                 "task_id": task_id.clone(),
                 "wait": true,
-                "timeout_ms": 5_000
+                "timeout_ms": BACKGROUND_COMPLETION_WAIT_MS
             }),
             &ctx,
         )
@@ -721,6 +812,8 @@ async fn test_completed_background_shell_releases_process_handles() {
 
     assert!(result.success);
     let mut manager = shell_manager.lock().expect("shell manager lock");
+    let result = wait_for_completed_shell(&mut manager, &task_id);
+    assert_eq!(result.status, ShellStatus::Completed);
     let shell = manager.processes.get_mut(&task_id).expect("tracked shell");
     shell.poll();
     assert_eq!(shell.status, ShellStatus::Completed);
@@ -876,6 +969,177 @@ fn test_orphaned_subprocess_does_not_block_collect_output() {
     assert_eq!(done.status, ShellStatus::Completed);
 }
 
+#[cfg(unix)]
+#[test]
+fn foreground_shell_does_not_block_on_orphaned_subprocess_pipe() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let started = std::time::Instant::now();
+    let result = manager
+        .execute("sh -c 'sleep 100 &'", None, 5000, false)
+        .expect("foreground execute must complete, not hang");
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "foreground execute blocked on descendant pipe handles"
+    );
+    assert_eq!(result.status, ShellStatus::Completed);
+}
+
+// Windows equivalent of the orphaned pipe-handle regression. `cmd /c start /b`
+// launches a descendant process that inherits stdout/stderr and outlives the
+// shell. Job-object cleanup must terminate that descendant before reader-thread
+// joins, otherwise get_output() blocks until ping exits.
+#[cfg(windows)]
+#[test]
+fn background_collection_does_not_block_on_detached_descendant_pipe() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let result = manager
+        .execute(
+            r#"cmd /c start "" /b ping 127.0.0.1 -n 4"#,
+            None,
+            5000,
+            true,
+        )
+        .expect("execute");
+    let task_id = result.task_id.expect("task id");
+
+    let started = std::time::Instant::now();
+    let done = manager
+        .get_output(&task_id, true, 3000)
+        .expect("get_output must complete, not hang");
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(6),
+        "get_output blocked on descendant pipe handles"
+    );
+    assert_eq!(done.status, ShellStatus::Completed);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_job_terminate_denied_falls_back_to_child_kill() {
+    let mut child = Command::new("ping")
+        .args(["127.0.0.1", "-n", "20"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn ping");
+
+    let job = WindowsJob::attach_to_child(&child).expect("attach job");
+    let limited_job = duplicate_job_without_terminate_access(job);
+
+    assert!(
+        limited_job.terminate().is_err(),
+        "limited job handle should not allow TerminateJobObject"
+    );
+
+    terminate_child_and_close_windows_job(Some(limited_job), &mut child)
+        .expect("fallback child kill");
+
+    let status = child
+        .wait_timeout(std::time::Duration::from_secs(3))
+        .expect("wait after fallback kill");
+    assert!(
+        status.is_some(),
+        "fallback child kill should terminate child"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_job_close_releases_foreground_reader_threads_when_terminate_denied() {
+    let mut child = Command::new("ping")
+        .args(["127.0.0.1", "-n", "8"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ping");
+
+    let job = WindowsJob::attach_to_child(&child).expect("attach job");
+    let limited_job = duplicate_job_without_terminate_access(job);
+    assert!(
+        limited_job.terminate().is_err(),
+        "limited job handle should not allow TerminateJobObject"
+    );
+
+    let stdout_handle = child.stdout.take().expect("stdout pipe");
+    let stderr_handle = child.stderr.take().expect("stderr pipe");
+    let stdout_thread = std::thread::spawn(move || {
+        let mut reader = stdout_handle;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut reader = stderr_handle;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+
+    let started = std::time::Instant::now();
+    terminate_and_close_windows_job(Some(limited_job));
+    let _ = stdout_thread.join().unwrap_or_default();
+    let _ = stderr_thread.join().unwrap_or_default();
+    let status = child
+        .wait_timeout(std::time::Duration::from_secs(3))
+        .expect("wait after kill-on-close");
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "reader joins waited for natural descendant exit instead of kill-on-close"
+    );
+    assert!(status.is_some(), "kill-on-close should terminate child");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_job_kill_on_close_releases_reader_threads_when_terminate_denied() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let result = manager
+        .execute(
+            r#"cmd /c start "" /b ping 127.0.0.1 -n 8"#,
+            None,
+            5000,
+            true,
+        )
+        .expect("execute");
+    let task_id = result.task_id.expect("task id");
+
+    {
+        let shell = manager
+            .processes
+            .get_mut(&task_id)
+            .expect("background shell");
+        let job = shell.windows_job.take().expect("windows job attached");
+        let limited_job = duplicate_job_without_terminate_access(job);
+        assert!(
+            limited_job.terminate().is_err(),
+            "limited job handle should not allow TerminateJobObject"
+        );
+        shell.windows_job = Some(limited_job);
+    }
+
+    let started = std::time::Instant::now();
+    let done = manager
+        .get_output(&task_id, true, 3000)
+        .expect("get_output must complete via kill-on-close fallback");
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "get_output waited for natural descendant exit instead of kill-on-close"
+    );
+    assert_eq!(done.status, ShellStatus::Completed);
+}
+
 #[test]
 fn test_list_jobs_cleans_up_completed_old_processes() {
     let tmp = tempdir().expect("tempdir");
@@ -910,41 +1174,48 @@ fn issue_1691_quoted_commit_message_round_trips() {
         Duration::from_secs(5),
     );
 
-    #[cfg(not(windows))]
-    {
-        // `sh -c <cmd>`: the whole command (with quotes) is a single argv
-        // entry. `sh` then POSIX-tokenizes it → correct git argv. We never
-        // split the command string ourselves.
-        assert_eq!(spec.program, "sh");
-        assert_eq!(spec.args, ["-c".to_string(), cmd.to_string()]);
-        assert_eq!(spec.args.len(), 2);
-
-        // push_shell_args is a faithful pass-through on Unix.
-        let mut built = Command::new(&spec.program);
-        push_shell_args(&mut built, &spec.program, &spec.args);
-        let got: Vec<String> = built
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(got, ["-c".to_string(), cmd.to_string()]);
-    }
-
-    #[cfg(windows)]
-    {
-        // `cmd /C <payload>`: payload carries the quotes verbatim. The fix
-        // routes /C + payload through `raw_arg` so `cmd.exe` (not MSVCRT)
-        // parses it, matching what a terminal does.
-        assert_eq!(spec.program, "cmd");
+    let dispatcher = crate::shell_dispatcher::global_dispatcher();
+    // The whole command (with quotes) is a single argv entry. The actual
+    // shell binary can vary by platform, but the payload itself must stay
+    // intact in one shell arg. We never split the command string ourselves.
+    assert_eq!(spec.program, dispatcher.kind().binary());
+    if dispatcher.kind().is_powershell() {
+        assert_eq!(
+            spec.args,
+            [
+                dispatcher.kind().command_flag().to_string(),
+                "-Command".to_string(),
+                format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {cmd}")
+            ]
+        );
+    } else if matches!(dispatcher.kind(), crate::shell_dispatcher::ShellKind::Cmd) {
         assert_eq!(
             spec.args,
             ["/C".to_string(), format!("chcp 65001 >NUL & {cmd}")]
         );
-        let mut built = Command::new(&spec.program);
-        push_shell_args(&mut built, &spec.program, &spec.args);
-        let got: Vec<String> = built
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(got, spec.args);
+    } else {
+        assert_eq!(
+            spec.args,
+            [
+                dispatcher.kind().command_flag().to_string(),
+                cmd.to_string()
+            ]
+        );
     }
+    assert_eq!(
+        spec.args.len(),
+        if dispatcher.kind().is_powershell() {
+            3
+        } else {
+            2
+        }
+    );
+
+    let mut built = Command::new(&spec.program);
+    push_shell_args(&mut built, &spec.program, &spec.args);
+    let got: Vec<String> = built
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(got, spec.args);
 }

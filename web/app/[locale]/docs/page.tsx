@@ -6,14 +6,15 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   const { locale } = await params;
   const isZh = locale === "zh";
   return {
-    title: isZh ? "文档 · CodeWhale" : "Docs · CodeWhale",
+    title: isZh ? "文档 · DeepSeek" : "Docs · DeepSeek",
     description: isZh
-      ? "CodeWhale 的工作原理：模式、工具、沙箱、MCP、配置、钩子。"
-      : "How CodeWhale works: modes, tools, sandbox, MCP, config, hooks.",
+      ? "DeepSeek 的工作原理：嵌套宪法、模式、工具、沙箱、MCP、配置、钩子。"
+      : "How DeepSeek works: ego, conflict law, evidence, modes, tools, sandbox, MCP, config, hooks.",
   };
 }
 
 const sectionsEn = [
+  { id: "constitution", label: "Constitution" },
   { id: "modes", label: "Modes" },
   { id: "tools", label: "Tools" },
   { id: "approval", label: "Approval & Sandbox" },
@@ -26,6 +27,7 @@ const sectionsEn = [
 ];
 
 const sectionsZh = [
+  { id: "constitution", label: "宪法" },
   { id: "modes", label: "模式" },
   { id: "tools", label: "工具" },
   { id: "approval", label: "审批与沙箱" },
@@ -56,8 +58,9 @@ export default async function DocsPage({ params }: { params: Promise<{ locale: s
               文档 <span className="font-cjk text-indigo text-5xl ml-2">Documentation</span>
             </h1>
             <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-[1.9] tracking-wide">
-              工作原理简述。完整的架构讲解请参阅仓库中的
-              <Link href="https://github.com/coohu//blob/main/docs/ARCHITECTURE.md" className="body-link mx-1">docs/ARCHITECTURE.md</Link>。
+              工作原理简述：先有 Agent 自我模型，再有嵌套权威系统，最后才是模式、工具和 provider。
+              完整的架构讲解请参阅仓库中的
+              <Link href="https://github.com/coohu/deepseek-tui/blob/main/docs/ARCHITECTURE.md" className="body-link mx-1">docs/ARCHITECTURE.md</Link>。
             </p>
           </section>
 
@@ -79,6 +82,35 @@ export default async function DocsPage({ params }: { params: Promise<{ locale: s
             </aside>
 
             <article className="lg:col-span-9 space-y-14 min-w-0">
+
+              {/* 宪法 */}
+              <section id="constitution" className="scroll-mt-32">
+                <h2 className="font-display text-3xl mb-1">
+                  嵌套宪法 <span className="font-cjk text-indigo text-2xl ml-2">Constitution</span>
+                </h2>
+                <p className="text-ink-soft mt-3 leading-[1.9] tracking-wide">
+                  DeepSeek 先给 Agent 一个可追责的地址，再给上下文冲突一套法律。全局 Constitution 处理 truth、user agency、行动和验证；
+                  仓库可以通过 <code className="inline">.deepseek/constitution.json</code> 增加本地 law；
+                  runtime policy 再把模式、审批、沙箱、成本和工具边界落到代码里。
+                </p>
+                <div className="hairline-t hairline-b mt-6 grid md:grid-cols-3 col-rule">
+                  {[
+                    { name: "Identity", cn: "自我", desc: "Agent 是当前终端、工作区和会话里的实例；责任先有地址。" },
+                    { name: "Authority", cn: "权威", desc: "当前用户请求、运行时规则、仓库本地 law、实时证据、记忆、个性和旧交接各有顺位。" },
+                    { name: "Evidence", cn: "证据", desc: "工具输出、文件内容、测试结果和诊断反馈是事实来源；没有证据就不声明完成。" },
+                  ].map((row) => (
+                    <div key={row.name} className="p-5">
+                      <div className="font-display text-lg text-indigo mb-1">{row.name} <span className="font-cjk text-sm ml-1.5">{row.cn}</span></div>
+                      <p className="text-sm text-ink-soft leading-[1.9] tracking-wide">{row.desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-4 text-sm text-ink-soft leading-[1.9] tracking-wide">
+                  普通项目说明仍放在 <code className="inline">AGENTS.md</code>；DeepSeek 专属的冲突解决和验证策略放在
+                  <code className="inline">.deepseek/constitution.json</code>。详见
+                  <Link href="https://github.com/coohu/deepseek-tui/blob/main/docs/CONFIGURATION.md#project-instructions--repo-authority" className="body-link mx-1">repo authority docs</Link>。
+                </p>
+              </section>
 
               {/* 模式 */}
               <section id="modes" className="scroll-mt-32">
@@ -184,6 +216,11 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
                 <p className="mt-4 text-sm text-ink-soft">
                   完整参考：<Link className="body-link" href="https://github.com/coohu//blob/main/config.example.toml">config.example.toml</Link>。
                 </p>
+                <p className="mt-3 text-sm text-ink-soft leading-[1.9]">
+                  <code className="inline">message_submit</code> hooks run before a user message is sent to the model. A non-background hook can print
+                  <code className="inline">{'{"text":"replacement"}'}</code> on stdout to replace the message; <code className="inline">text</code> must be non-empty. Exit with code <code className="inline">2</code> to block the submission.
+                  <code className="inline">shell_env</code> keeps its existing <code className="inline">KEY=VALUE</code> stdout contract.
+                </p>
               </section>
 
               {/* MCP */}
@@ -230,7 +267,7 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
                   Fin 智能路由 <span className="font-cjk text-indigo text-2xl ml-2">Fin</span>
                 </h2>
                 <p className="text-ink-soft mt-3 leading-[1.9] tracking-wide">
-                  Fin 是 CodeWhale 的模型自动路由层。它会分析每个任务的特征——复杂度、上下文大小、工具需求——然后自动将请求分发到最合适的模型后端。
+                  Fin 是 DeepSeek 的模型自动路由层。它会分析每个任务的特征——复杂度、上下文大小、工具需求——然后自动将请求分发到最合适的模型后端。
                 </p>
                 <div className="hairline-t hairline-b mt-6 grid md:grid-cols-2 col-rule">
                   {[
@@ -265,7 +302,7 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
                   ))}
                 </div>
                 <p className="mt-5 text-ink-soft leading-[1.9] tracking-wide">
-                  开放模型平台方向：CodeWhale 正在扩展对
+                  开放模型平台方向：DeepSeek 正在扩展对
                   <strong> OpenRouter</strong>、<strong> Hugging Face</strong> 和<strong> 自托管</strong> 模型的支持，
                   为您提供完全自主的模型选择——从云端 API 到本地部署均可覆盖。
                 </p>
@@ -309,8 +346,9 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
               Documentation <span className="font-cjk text-indigo text-5xl ml-2">文档</span>
             </h1>
             <p className="mt-5 max-w-3xl text-ink-soft text-lg leading-relaxed">
-              The short version of how it works. For the full architecture walk-through, see
-              <Link href="https://github.com/coohu//blob/main/docs/ARCHITECTURE.md" className="body-link mx-1">docs/ARCHITECTURE.md</Link>
+              The short version of how it works: identity first, nested authority next, then modes, tools, and providers.
+              For the full architecture walk-through, see
+              <Link href="https://github.com/coohu/deepseek-tui/blob/main/docs/ARCHITECTURE.md" className="body-link mx-1">docs/ARCHITECTURE.md</Link>
               in the repo.
             </p>
           </section>
@@ -333,6 +371,35 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
             </aside>
 
             <article className="lg:col-span-9 space-y-14 min-w-0">
+
+              <section id="constitution" className="scroll-mt-32">
+                <h2 className="font-display text-3xl mb-1">
+                  Nested Constitution <span className="font-cjk text-indigo text-2xl ml-2">宪法</span>
+                </h2>
+                <p className="text-ink-soft mt-3 leading-relaxed">
+                  DeepSeek gives the agent an accountable address before it hands over the tool list. The global Constitution handles truth,
+                  user agency, action, and verification. Repositories can add local law through
+                  <code className="inline">.deepseek/constitution.json</code>. Runtime policy then turns modes, approvals,
+                  sandboxing, cost limits, and tool boundaries into code.
+                </p>
+                <div className="hairline-t hairline-b mt-6 grid md:grid-cols-3 col-rule">
+                  {[
+                    { name: "Identity", cn: "自我", desc: "The agent is an instance in this terminal, workspace, and session. Responsibility gets an address first." },
+                    { name: "Authority", cn: "权威", desc: "Current user request, runtime statutes, repo-local law, live evidence, memory, personality, and old handoffs each have a rank." },
+                    { name: "Evidence", cn: "证据", desc: "Tool output, file contents, tests, and diagnostics are fact sources. Without evidence, the task is not done." },
+                  ].map((row) => (
+                    <div key={row.name} className="p-5">
+                      <div className="font-display text-lg text-indigo mb-1">{row.name} <span className="font-cjk text-sm ml-1.5">{row.cn}</span></div>
+                      <p className="text-sm text-ink-soft leading-relaxed">{row.desc}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-4 text-sm text-ink-soft leading-relaxed">
+                  Put ordinary project instructions in <code className="inline">AGENTS.md</code>. Put DeepSeek-specific conflict
+                  resolution and verification policy in <code className="inline">.deepseek/constitution.json</code>. See the
+                  <Link href="https://github.com/coohu/deepseek-tui/blob/main/docs/CONFIGURATION.md#project-instructions--repo-authority" className="body-link mx-1">repo authority docs</Link>.
+                </p>
+              </section>
 
               <section id="modes" className="scroll-mt-32">
                 <h2 className="font-display text-3xl mb-1">
@@ -434,6 +501,11 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
                 <p className="mt-4 text-sm text-ink-soft">
                   Full reference: <Link className="body-link" href="https://github.com/coohu//blob/main/config.example.toml">config.example.toml</Link>.
                 </p>
+                <p className="mt-3 text-sm text-ink-soft leading-relaxed">
+                  <code className="inline">message_submit</code> hooks run before a user message is sent to the model. A non-background hook can print
+                  <code className="inline">{'{"text":"replacement"}'}</code> on stdout to replace the message; <code className="inline">text</code> must be non-empty. Exit with code <code className="inline">2</code> to block the submission.
+                  <code className="inline">shell_env</code> keeps its existing <code className="inline">KEY=VALUE</code> stdout contract.
+                </p>
               </section>
 
               <section id="mcp" className="scroll-mt-32">
@@ -478,7 +550,7 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
                   Fin <span className="font-cjk text-indigo text-2xl ml-2">智能路由</span>
                 </h2>
                 <p className="text-ink-soft mt-3 leading-relaxed">
-                  Fin is CodeWhale's model auto-routing layer. It analyses each task's profile — complexity, context size, tool needs — and dispatches to the best model backend automatically.
+                  Fin is DeepSeek's model auto-routing layer. It analyses each task's profile — complexity, context size, tool needs — and dispatches to the best model backend automatically.
                 </p>
                 <div className="hairline-t hairline-b mt-6 grid md:grid-cols-2 col-rule">
                   {[
@@ -512,7 +584,7 @@ command = "~/.deepseek/hooks/pre.sh"        # / message_submit / mode_change / o
                   ))}
                 </div>
                 <p className="mt-5 text-ink-soft leading-relaxed">
-                  Open-model platform direction: CodeWhale is expanding support for
+                  Open-model platform direction: DeepSeek is expanding support for
                   <strong> OpenRouter</strong>, <strong> Hugging Face</strong>, and <strong> self-hosted</strong> models,
                   giving you full sovereignty over model choice — from cloud APIs to local deployments.
                 </p>

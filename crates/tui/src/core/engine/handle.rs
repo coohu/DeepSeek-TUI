@@ -38,6 +38,7 @@ impl EngineHandle {
             Ok(token) => token.cancel(),
             Err(poisoned) => poisoned.into_inner().cancel(),
         }
+        crate::retry_status::clear();
     }
 
     /// Check if a request is currently cancelled
@@ -47,6 +48,24 @@ impl EngineHandle {
         match self.cancel_token.lock() {
             Ok(token) => token.is_cancelled(),
             Err(poisoned) => poisoned.into_inner().is_cancelled(),
+        }
+    }
+
+    /// Pause or resume the current pausable command.
+    pub fn set_paused(&self, paused: bool) {
+        match self.shared_paused.lock() {
+            Ok(mut slot) => *slot = paused,
+            Err(poisoned) => *poisoned.into_inner() = paused,
+        }
+    }
+
+    /// Check whether the engine pause gate is set.
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        match self.shared_paused.lock() {
+            Ok(slot) => *slot,
+            Err(poisoned) => *poisoned.into_inner(),
         }
     }
 

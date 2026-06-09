@@ -22,6 +22,10 @@ macOS workbench (or any local supervisor)
 The engine runs as a local-only process. All APIs bind to `localhost` by
 default. No hosted relay, no provider-token custody, no secret leakage.
 
+For a proposed read-only audit export over completed turns, see
+[`docs/RECEIPTS.md`](RECEIPTS.md). That document is a protocol note; the receipt
+CLI/API surfaces are not implemented yet.
+
 ## ACP stdio adapter: `deepseek serve --acp`
 
 `deepseek serve --acp` speaks JSON-RPC 2.0 over newline-delimited stdio for
@@ -68,7 +72,7 @@ deepseek doctor --json
 | `mcp.present` | bool | Whether MCP config exists |
 | `mcp.servers` | array | Per-server health: `{name, enabled, status, detail}` |
 | `skills.selected` | string | Resolved skills directory |
-| `skills.global.path` / `.present` / `.count` | — | DeepSeek global skills dir (`~/.deepseek/skills`) |
+| `skills.global.path` / `.present` / `.count` | — | DeepSeek global skills dir (`~/.deepseek/skills`, with legacy `~/.deepseek/skills` support) |
 | `skills.agents.path` / `.present` / `.count` | — | Workspace `.agents/skills/` dir |
 | `skills.agents_global.path` / `.present` / `.count` | — | agentskills.io global skills dir (`~/.agents/skills`) |
 | `skills.local.path` / `.present` / `.count` | — | `skills/` dir |
@@ -117,6 +121,7 @@ deepseek doctor --json
 
 ```bash
 deepseek serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
+deepseek serve --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
@@ -124,15 +129,34 @@ Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
 
-By default, existing local behavior is unchanged and `/v1/*` routes are not
-authenticated. To require a bearer token for `/v1/*` routes, pass
-`--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting the
-server. `/health` remains public for local process supervision and readiness
-checks.
+`/v1/*` routes require a bearer token unless `--insecure` is explicitly set.
+Pass `--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting
+the server. If neither is set, the process generates a one-time token and prints
+it at startup. `/health` and `/v1/runtime/info` remain public for local
+supervision and bootstrap. `/mobile` returns 404 when mobile mode is disabled;
+when mobile mode is enabled and auth is enabled, `/mobile` returns 401 unless
+the request supplies the runtime token.
 
 Authenticated clients can provide the token as `Authorization: Bearer TOKEN`,
 `X-DeepSeek-Runtime-Token: TOKEN`, or `?token=TOKEN` for EventSource-style
 clients that cannot set custom headers.
+
+### Mobile control page
+
+`deepseek serve --mobile` starts the same HTTP/SSE runtime API and serves a
+phone-friendly control page at `/mobile`. When the bind host is left at the
+default, mobile mode binds to `0.0.0.0`, prints a warning, and prints local/LAN
+URLs. Pass `--host 127.0.0.1` to keep the mobile page loopback-only. If a
+runtime token is generated or supplied, the printed mobile URL includes it as a
+query parameter; the page stores it locally and removes it from the address bar.
+The static HTML page contains no secrets, but it is still token-gated when auth
+is enabled so unauthenticated LAN clients cannot fingerprint the mobile surface.
+
+The mobile page can list/create threads, send prompts, follow live SSE events,
+steer or interrupt an active turn, and resolve normal tool approvals through
+`POST /v1/approvals/{approval_id}`. It is still a local/LAN convenience surface:
+do not expose it directly to the public internet without TLS and a trusted
+fronting layer.
 
 ### Endpoints
 
@@ -153,6 +177,36 @@ clients that cannot set custom headers.
 - `PATCH /v1/threads/{id}` (see body shape below)
 - `POST /v1/threads/{id}/resume`
 - `POST /v1/threads/{id}/fork`
+
+`GET /v1/threads/summary` is the read-only summary surface used by the VS Code
+Agent View. Each item includes `id`, `title`, `preview`, `model`, `mode`,
+`archived`, `updated_at`, `latest_turn_id`, `latest_turn_status`, plus
+workspace metadata:
+
+```json
+{
+  "id": "thread_...",
+  "title": "Implement MCP status count",
+  "preview": "The TUI footer should count project MCP servers...",
+  "model": "deepseek-v4-pro",
+  "mode": "agent",
+  "branch": "feature/runtime-api",
+  "head": "abc1234",
+  "dirty": false,
+  "workspace": "/Users/you/projects/deepseek",
+  "archived": false,
+  "updated_at": "2026-06-06T05:43:00Z",
+  "latest_turn_id": "turn_...",
+  "latest_turn_status": "completed"
+}
+```
+
+`branch` is resolved from the thread workspace at request time and may be
+`null` when the workspace is not a Git repository or the branch cannot be read.
+`head` is the current short Git commit for that workspace when available.
+`dirty` is true when the workspace has staged, unstaged, or untracked changes.
+`workspace` is included so editor clients can show when an agent lane is working
+outside the current VS Code folder.
 
 Thread forks are sibling runtime threads, not an in-place tree projection.
 `thread.forked` events include `source_thread_id`; internal backtrack-aware
@@ -188,8 +242,37 @@ accept an empty string to clear a previously-set value. Added in v0.8.10 (#562):
 - `POST /v1/threads/{id}/turns/{turn_id}/interrupt`
 - `POST /v1/threads/{id}/compact` (manual compaction)
 
+**Approvals**
+- `POST /v1/approvals/{approval_id}` with body
+  `{ "decision": "allow" | "deny", "remember": false }`
+
 **Events** (SSE replay + live stream)
 - `GET /v1/threads/{id}/events?since_seq=<u64>`
+
+**Snapshots** (read-only side-git restore point listing)
+- `GET /v1/snapshots?limit=20`
+
+`/v1/snapshots` lists recent side-git restore points for the runtime workspace.
+It is read-only and does not restore files. `limit` defaults to `20` and must be
+between `1` and `100`.
+
+```json
+[
+  {
+    "id": "snap_...",
+    "label": "post-turn:1",
+    "timestamp": 1780730580
+  }
+]
+```
+
+Runtime API restore/retry/undo/editor-apply mutation endpoints are intentionally
+deferred. GUI clients should treat thread summaries and snapshots as inspection
+surfaces until atomic filesystem + conversation-state mutation semantics are
+specified and tested.
+
+**Receipts** (future read-only audit export)
+- Proposed only: `GET /v1/threads/{thread_id}/turns/{turn_id}/receipt`
 
 **Compatibility stream** (one-shot, backwards-compatible)
 - `POST /v1/stream`
@@ -286,16 +369,19 @@ Events are append-only with a global monotonic `seq` for replay/resume.
 
 ### SSE event stream
 
-The SSE event payload shape:
+The SSE event payload shape for `/v1/threads/{id}/events`:
 
 ```json
 {
+  "schema_version": 1,
   "seq": 42,
-  "timestamp": "2026-02-11T20:18:49.123Z",
+  "event": "item.delta",
+  "kind": "item.delta",
   "thread_id": "thr_1234abcd",
   "turn_id": "turn_5678efgh",
   "item_id": "item_90ab12cd",
-  "event": "item.delta",
+  "timestamp": "2026-02-11T20:18:49.123Z",
+  "created_at": "2026-02-11T20:18:49.123Z",
   "payload": {
     "delta": "partial output",
     "kind": "agent_message"
@@ -303,16 +389,31 @@ The SSE event payload shape:
 }
 ```
 
+Compatibility notes:
+
+- `schema_version` is the HTTP/SSE envelope schema version. It is independent of
+  the runtime store schema used for persisted thread/turn/event records.
+- `event` remains the SSE event name in existing clients; it is preserved as-is.
+- `kind` mirrors `event` in the stable envelope for typed clients.
+- `thread.started`, `turn.started`, and `turn.completed` are emitted as SSE event
+  names exactly as before.
+- `timestamp` remains the canonical event time for schema version 1. `created_at`
+  is an equivalent alias for clients that use `created_at` naming elsewhere; do
+  not require both fields to be present.
+
 Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
-`item.failed`, `item.interrupted`, `approval.required`, `sandbox.denied`,
-`coherence.state`.
+`item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
+`approval.timeout`, `sandbox.denied`, `coherence.state`.
 
 ## Security boundary
 
-- **Localhost only**. The server binds to `127.0.0.1` by default. Set
-  `--host 0.0.0.0` only when you have a reverse-proxy / VPN that
+- **Localhost by default**. The server binds to `127.0.0.1` by default.
+  `--mobile` binds to `0.0.0.0` when no host is supplied so phones on the same
+  LAN can reach it, and the CLI prints a warning for that rebind. Pass
+  `--host 127.0.0.1` for a loopback-only mobile page. Set a non-loopback host
+  only when you trust the network path or have a reverse-proxy / VPN that
   authenticates. The runtime does not provide user isolation or TLS.
 - **Optional token guard**. `--auth-token` or `DEEPSEEK_RUNTIME_TOKEN`
   requires a matching bearer token for `/v1/*` routes. This is a local

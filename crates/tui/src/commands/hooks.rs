@@ -44,8 +44,12 @@ fn events() -> CommandResult {
         (HookEvent::SessionStart, "fires once when the TUI launches"),
         (HookEvent::SessionEnd, "fires once on graceful shutdown"),
         (
+            HookEvent::TurnEnd,
+            "fires after a turn completes (observer-only)",
+        ),
+        (
             HookEvent::MessageSubmit,
-            "fires when the user submits a turn (before model dispatch)",
+            "fires before model dispatch; can transform or block submitted text",
         ),
         (
             HookEvent::ToolCallBefore,
@@ -62,6 +66,14 @@ fn events() -> CommandResult {
         (
             HookEvent::OnError,
             "fires on transport / capacity / tool errors",
+        ),
+        (
+            HookEvent::SubagentSpawn,
+            "fires when a sub-agent starts (observer-only)",
+        ),
+        (
+            HookEvent::SubagentComplete,
+            "fires when a sub-agent completes, fails, or is cancelled (observer-only)",
         ),
     ];
     for (event, desc) in ordered {
@@ -138,6 +150,9 @@ fn event_label(event: HookEvent) -> &'static str {
         HookEvent::ToolCallAfter => "tool_call_after",
         HookEvent::ModeChange => "mode_change",
         HookEvent::OnError => "on_error",
+        HookEvent::TurnEnd => "turn_end",
+        HookEvent::SubagentSpawn => "subagent_spawn",
+        HookEvent::SubagentComplete => "subagent_complete",
         HookEvent::ShellEnv => "shell_env",
     }
 }
@@ -256,11 +271,14 @@ mod tests {
         let positions: Vec<(usize, &str)> = [
             "session_start",
             "session_end",
+            "turn_end",
             "message_submit",
             "tool_call_before",
             "tool_call_after",
             "mode_change",
             "on_error",
+            "subagent_spawn",
+            "subagent_complete",
         ]
         .iter()
         .map(|name| {
@@ -298,6 +316,12 @@ mod tests {
         assert_eq!(event_label(HookEvent::MessageSubmit), "message_submit");
         assert_eq!(event_label(HookEvent::ModeChange), "mode_change");
         assert_eq!(event_label(HookEvent::OnError), "on_error");
+        assert_eq!(event_label(HookEvent::TurnEnd), "turn_end");
+        assert_eq!(event_label(HookEvent::SubagentSpawn), "subagent_spawn");
+        assert_eq!(
+            event_label(HookEvent::SubagentComplete),
+            "subagent_complete"
+        );
     }
 
     #[test]

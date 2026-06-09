@@ -25,6 +25,7 @@
 use crate::config::RetryPolicy;
 use crate::models::{MessageRequest, MessageResponse, StreamEvent};
 use anyhow::Result;
+use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -81,6 +82,194 @@ pub trait RetryConfigurable {
     fn set_retry_config(&mut self, config: RetryConfig);
 }
 
+// === Authentication diagnostics ===
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AuthenticationErrorContext {
+    pub provider: Option<String>,
+    pub base_url_authority: Option<String>,
+    pub model: Option<String>,
+    pub key_source: Option<String>,
+    pub key_fingerprint: Option<String>,
+    pub key_kind: Option<String>,
+}
+
+impl AuthenticationErrorContext {
+    #[must_use]
+    pub fn new(
+        provider: &str,
+        base_url: &str,
+        model: &str,
+        key_source: &str,
+        api_key: &str,
+    ) -> Self {
+        Self::from_parts(
+            Some(provider),
+            Some(base_url),
+            Some(model),
+            Some(key_source),
+            Some(api_key),
+        )
+    }
+
+    #[must_use]
+    pub fn from_parts(
+        provider: Option<&str>,
+        base_url: Option<&str>,
+        model: Option<&str>,
+        key_source: Option<&str>,
+        api_key: Option<&str>,
+    ) -> Self {
+        let api_key = api_key.and_then(non_empty_trimmed);
+        Self {
+            provider: provider.and_then(non_empty_trimmed).map(str::to_string),
+            base_url_authority: base_url.and_then(base_url_authority),
+            model: model.and_then(non_empty_trimmed).map(str::to_string),
+            key_source: key_source.and_then(non_empty_trimmed).map(str::to_string),
+            key_fingerprint: api_key.map(redacted_key_fingerprint),
+            key_kind: api_key.map(classify_api_key_prefix).map(str::to_string),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.provider.is_none()
+            && self.base_url_authority.is_none()
+            && self.model.is_none()
+            && self.key_source.is_none()
+            && self.key_fingerprint.is_none()
+            && self.key_kind.is_none()
+    }
+
+    fn detail_segments(&self) -> Vec<String> {
+        let mut segments = Vec::new();
+        if let Some(provider) = self.provider.as_deref() {
+            segments.push(format!("provider: {provider}"));
+        }
+        if let Some(authority) = self.base_url_authority.as_deref() {
+            segments.push(format!("base URL authority: {authority}"));
+        }
+        if let Some(model) = self.model.as_deref() {
+            segments.push(format!("model: {model}"));
+        }
+        if let Some(source) = self.key_source.as_deref() {
+            segments.push(format!("key source: {source}"));
+        }
+        if let Some(fingerprint) = self.key_fingerprint.as_deref() {
+            segments.push(format!("key fingerprint: {fingerprint}"));
+        }
+        if let Some(kind) = self.key_kind.as_deref() {
+            segments.push(format!("key type: {kind}"));
+        }
+        segments
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthenticationErrorDetail {
+    message: String,
+    context: Option<AuthenticationErrorContext>,
+}
+
+impl AuthenticationErrorDetail {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            context: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_context(
+        message: impl Into<String>,
+        context: Option<AuthenticationErrorContext>,
+    ) -> Self {
+        let context = context.filter(|context| !context.is_empty());
+        Self {
+            message: message.into(),
+            context,
+        }
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    #[must_use]
+    pub fn to_user_message(&self) -> String {
+        let Some(context) = self.context.as_ref() else {
+            return self.message.clone();
+        };
+        let segments = context.detail_segments();
+        if segments.is_empty() {
+            self.message.clone()
+        } else {
+            format!("{} ({})", self.message, segments.join(", "))
+        }
+    }
+}
+
+impl From<String> for AuthenticationErrorDetail {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+impl From<&str> for AuthenticationErrorDetail {
+    fn from(message: &str) -> Self {
+        Self::new(message)
+    }
+}
+
+#[must_use]
+pub fn classify_api_key_prefix(api_key: &str) -> &'static str {
+    if api_key.starts_with("tp-") {
+        "Xiaomi MiMo Token Plan key"
+    } else {
+        "API key"
+    }
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+fn base_url_authority(base_url: &str) -> Option<String> {
+    let base_url = non_empty_trimmed(base_url)?;
+    let without_scheme = base_url
+        .split_once("://")
+        .map_or(base_url, |(_, rest)| rest);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, authority)| authority);
+    non_empty_trimmed(authority).map(str::to_string)
+}
+
+fn redacted_key_fingerprint(api_key: &str) -> String {
+    let api_key = api_key.trim();
+    let len = api_key.chars().count();
+    match public_key_prefix(api_key) {
+        Some(prefix) => format!("{prefix}... (len={len})"),
+        None => format!("unprefixed (len={len})"),
+    }
+}
+
+fn public_key_prefix(api_key: &str) -> Option<&str> {
+    ["tp-", "sk-", "hf_", "hf-", "ak-", "rk-"]
+        .into_iter()
+        .find(|prefix| api_key.starts_with(prefix))
+}
+
+fn redact_api_key_from_message(message: &str, api_key: Option<&str>) -> String {
+    let Some(api_key) = api_key.and_then(non_empty_trimmed) else {
+        return message.to_string();
+    };
+    message.replace(api_key, "[redacted API key]")
+}
+
 // === LlmError - Classified Error Types ===
 
 /// Classified LLM errors with retryability information.
@@ -106,8 +295,11 @@ pub enum LlmError {
     /// Request timed out
     Timeout(Duration),
 
-    /// Authentication failed (HTTP 401, 403)
-    AuthenticationError(String),
+    /// Authentication failed (HTTP 401, selected HTTP 403)
+    AuthenticationError(AuthenticationErrorDetail),
+
+    /// Authorization or provider-side blocking failed (HTTP 403)
+    AuthorizationError(String),
 
     /// Invalid request parameters (HTTP 400)
     InvalidRequest { status: u16, message: String },
@@ -137,7 +329,10 @@ impl std::fmt::Display for LlmError {
             }
             LlmError::NetworkError(msg) => write!(f, "Network error: {msg}"),
             LlmError::Timeout(d) => write!(f, "Request timed out after {d:?}"),
-            LlmError::AuthenticationError(msg) => write!(f, "Authentication failed: {msg}"),
+            LlmError::AuthenticationError(auth) => {
+                write!(f, "Authentication failed: {}", auth.to_user_message())
+            }
+            LlmError::AuthorizationError(msg) => write!(f, "Authorization failed: {msg}"),
             LlmError::InvalidRequest { status, message } => {
                 write!(f, "Invalid request ({status}): {message}")
             }
@@ -198,7 +393,14 @@ impl LlmError {
                 message: body.to_string(),
                 retry_after: None,
             },
-            401 | 403 => LlmError::AuthenticationError(body.to_string()),
+            401 => Self::authentication_error(body),
+            403 => {
+                if looks_like_authentication_failure(body) {
+                    Self::authentication_error(body)
+                } else {
+                    LlmError::AuthorizationError(body.to_string())
+                }
+            }
             400 => {
                 // Classify 400 errors by examining the response body
                 let body_lower = body.to_lowercase();
@@ -250,6 +452,62 @@ impl LlmError {
         }
     }
 
+    #[must_use]
+    pub fn authentication_error(message: impl Into<String>) -> Self {
+        LlmError::AuthenticationError(AuthenticationErrorDetail::new(message))
+    }
+
+    #[must_use]
+    pub fn authentication_error_with_context(
+        message: impl Into<String>,
+        context: Option<AuthenticationErrorContext>,
+    ) -> Self {
+        LlmError::AuthenticationError(AuthenticationErrorDetail::with_context(message, context))
+    }
+
+    /// Constructs an `LlmError` from HTTP response data plus request context
+    /// that is safe to display when authentication fails.
+    #[must_use]
+    pub fn from_http_response_with_request_context(
+        status: u16,
+        body: &str,
+        provider: Option<&str>,
+        base_url: Option<&str>,
+        model: Option<&str>,
+        key_source: Option<&str>,
+        api_key: Option<&str>,
+    ) -> Self {
+        let body = redact_api_key_from_message(body, api_key);
+        let context =
+            AuthenticationErrorContext::from_parts(provider, base_url, model, key_source, api_key);
+        Self::from_http_response_with_auth_context(status, &body, Some(context))
+    }
+
+    /// Constructs an `LlmError` from HTTP status code and response body, with
+    /// optional structured details for authentication failures.
+    ///
+    /// The `body` passed here must already be safe for user display. Prefer
+    /// [`Self::from_http_response_with_request_context`] when the raw API key is
+    /// available so the response body can be redacted before rendering.
+    #[must_use]
+    pub fn from_http_response_with_auth_context(
+        status: u16,
+        body: &str,
+        auth_context: Option<AuthenticationErrorContext>,
+    ) -> Self {
+        match status {
+            401 => Self::authentication_error_with_context(body, auth_context),
+            403 => {
+                if looks_like_authentication_failure(body) {
+                    Self::authentication_error_with_context(body, auth_context)
+                } else {
+                    LlmError::AuthorizationError(body.to_string())
+                }
+            }
+            _ => Self::from_http_response(status, body),
+        }
+    }
+
     /// Constructs an `LlmError` from HTTP status code, body, and optional Retry-After header.
     pub fn from_http_response_with_retry_after(
         status: u16,
@@ -279,6 +537,189 @@ impl LlmError {
             LlmError::Other(err.to_string())
         }
     }
+}
+
+/// Format provider HTTP error bodies before they are surfaced in the TUI.
+///
+/// Providers sometimes return whole HTML error pages for gateway/WAF blocks.
+/// Passing those pages through raw floods the transcript and can also make a
+/// provider-side 403 look like a broken API key. Keep the useful details and
+/// cap everything else.
+#[must_use]
+pub(crate) fn sanitize_http_error_body(
+    provider_label: Option<&str>,
+    status: u16,
+    body: &str,
+) -> String {
+    if let Some(message) = extract_json_error_message(body) {
+        return truncate_for_error(&collapse_whitespace(&message), 2_000);
+    }
+
+    if is_probably_html(body) {
+        let text = html_to_text(body);
+        let lower = text.to_ascii_lowercase();
+        let provider = provider_label.unwrap_or("Provider");
+
+        // Cloudflare's "Access Denied" interstitial strips the literal word
+        // "cloudflare" once tags are removed (it only survives in `<meta>`
+        // attributes and the `<style>`/`<script>` blocks we discard). Arcee's
+        // 403 page is exactly this shape, so also key off the WAF's stock copy
+        // ("security alert", "contact support") and a Cloudflare error/ray ID.
+        let error_id = extract_cloudflare_error_id(&text);
+        let is_cloudflare = lower.contains("cloudflare");
+        let looks_like_access_denied = lower.contains("access denied")
+            && (is_cloudflare
+                || lower.contains("security alert")
+                || lower.contains("contact support")
+                || lower.contains("contact us")
+                || error_id.is_some());
+        if looks_like_access_denied {
+            let label = if is_cloudflare {
+                "Cloudflare Access Denied"
+            } else {
+                "Access Denied"
+            };
+            let mut message = format!(
+                "{provider} API returned {label} (HTTP {status}). \
+                 The request was blocked before it reached the model; retry with a \
+                 smaller request or fewer tools, or contact provider support"
+            );
+            if let Some(id) = error_id {
+                message.push_str(&format!(" with ID {id}"));
+            }
+            message.push('.');
+            return message;
+        }
+
+        let text = truncate_for_error(&collapse_whitespace(&text), 900);
+        return format!("{provider} API returned an HTML error page (HTTP {status}): {text}");
+    }
+
+    truncate_for_error(&collapse_whitespace(body), 2_000)
+}
+
+fn looks_like_authentication_failure(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("authentication")
+        || lower.contains("unauthorized")
+        || lower.contains("api key")
+        || lower.contains("invalid key")
+        || lower.contains("invalid token")
+        || lower.contains("bearer token")
+        || lower.contains("missing token")
+}
+
+fn extract_json_error_message(body: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    for pointer in [
+        "/error/message",
+        "/error",
+        "/message",
+        "/detail",
+        "/error_description",
+    ] {
+        let Some(value) = value.pointer(pointer) else {
+            continue;
+        };
+        if let Some(message) = value.as_str() {
+            if !message.trim().is_empty() {
+                return Some(message.to_string());
+            }
+        } else if value.is_object() || value.is_array() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn is_probably_html(body: &str) -> bool {
+    let prefix = body
+        .chars()
+        .take(512)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    prefix.contains("<!doctype html") || prefix.contains("<html") || prefix.contains("<head")
+}
+
+fn html_to_text(html: &str) -> String {
+    let without_scripts = strip_html_block(html, "script");
+    let without_styles = strip_html_block(&without_scripts, "style");
+    let mut text = String::with_capacity(without_styles.len().min(4096));
+    let mut in_tag = false;
+    for ch in without_styles.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    decode_basic_html_entities(&collapse_whitespace(&text))
+}
+
+fn strip_html_block(input: &str, tag: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+    let lower = input.to_ascii_lowercase();
+    let start_marker = format!("<{tag}");
+    let end_marker = format!("</{tag}>");
+
+    while let Some(relative_start) = lower[cursor..].find(&start_marker) {
+        let start = cursor + relative_start;
+        out.push_str(&input[cursor..start]);
+        let after_start = start + start_marker.len();
+        let Some(relative_end) = lower[after_start..].find(&end_marker) else {
+            cursor = input.len();
+            break;
+        };
+        cursor = after_start + relative_end + end_marker.len();
+        out.push(' ');
+    }
+    out.push_str(&input[cursor..]);
+    out
+}
+
+fn decode_basic_html_entities(input: &str) -> String {
+    input
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+}
+
+fn collapse_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_for_error(input: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(input.len().min(max_chars + 32));
+    for (count, ch) in input.chars().enumerate() {
+        if count >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn extract_cloudflare_error_id(text: &str) -> Option<String> {
+    let mut last = None;
+    for token in text.split(|ch: char| !ch.is_ascii_hexdigit()) {
+        if (16..=64).contains(&token.len()) && token.bytes().any(|b| b.is_ascii_alphabetic()) {
+            last = Some(token.to_string());
+        }
+    }
+    last
 }
 
 impl From<reqwest::Error> for LlmError {
@@ -703,6 +1144,13 @@ mod tests {
         );
     }
 
+    fn auth_user_message(error: LlmError) -> String {
+        match error {
+            LlmError::AuthenticationError(auth) => auth.to_user_message(),
+            other => panic!("expected authentication error, got {other}"),
+        }
+    }
+
     #[test]
     fn test_retry_config_defaults() {
         let config = RetryConfig::default();
@@ -819,7 +1267,8 @@ mod tests {
         assert!(LlmError::Timeout(Duration::from_secs(30)).is_retryable());
 
         // Non-retryable errors
-        assert!(!LlmError::AuthenticationError("invalid key".to_string()).is_retryable());
+        assert!(!LlmError::authentication_error("invalid key").is_retryable());
+        assert!(!LlmError::AuthorizationError("blocked".to_string()).is_retryable());
         assert!(
             !LlmError::InvalidRequest {
                 status: 400,
@@ -842,6 +1291,9 @@ mod tests {
         assert!(matches!(err, LlmError::AuthenticationError(_)));
 
         let err = LlmError::from_http_response(403, "forbidden");
+        assert!(matches!(err, LlmError::AuthorizationError(_)));
+
+        let err = LlmError::from_http_response(403, "invalid api key");
         assert!(matches!(err, LlmError::AuthenticationError(_)));
 
         // Server errors
@@ -870,6 +1322,180 @@ mod tests {
         // Generic 400
         let err = LlmError::from_http_response(400, "invalid json");
         assert!(matches!(err, LlmError::InvalidRequest { status: 400, .. }));
+    }
+
+    #[test]
+    fn auth_error_with_context_includes_provider_authority_model_and_key_source() {
+        let err = LlmError::from_http_response_with_request_context(
+            401,
+            "Invalid API Key",
+            Some("Xiaomi MiMo"),
+            Some("https://token-plan-sgp.xiaomimimo.com/v1"),
+            Some("mimo-v2.5"),
+            Some("env"),
+            Some("tp-secret-token-plan-value"),
+        );
+        let message = auth_user_message(err);
+
+        assert!(message.contains("Invalid API Key"));
+        assert!(message.contains("provider: Xiaomi MiMo"));
+        assert!(message.contains("base URL authority: token-plan-sgp.xiaomimimo.com"));
+        assert!(message.contains("model: mimo-v2.5"));
+        assert!(message.contains("key source: env"));
+        assert!(message.contains("key fingerprint: tp-... (len=26)"));
+    }
+
+    #[test]
+    fn auth_error_redacts_full_api_key_from_body_and_context() {
+        let api_key = "tp-secret-token-plan-value";
+        let err = LlmError::from_http_response_with_request_context(
+            401,
+            &format!("Invalid API Key: {api_key}"),
+            Some("Xiaomi MiMo"),
+            Some("https://token-plan-sgp.xiaomimimo.com/v1"),
+            Some("mimo-v2.5"),
+            Some("config-file"),
+            Some(api_key),
+        );
+        let message = auth_user_message(err);
+
+        assert!(!message.contains(api_key));
+        assert!(!message.contains("secret-token-plan-value"));
+        assert!(message.contains("[redacted API key]"));
+        assert!(message.contains("key fingerprint: tp-... (len=26)"));
+    }
+
+    #[test]
+    fn auth_error_classifies_xiaomi_token_plan_key_prefix() {
+        let token_plan = AuthenticationErrorContext::from_parts(
+            None,
+            None,
+            None,
+            Some("session"),
+            Some("tp-secret-token-plan-value"),
+        );
+        let generic = AuthenticationErrorContext::from_parts(
+            None,
+            None,
+            None,
+            Some("session"),
+            Some("sk-other"),
+        );
+        let unprefixed = AuthenticationErrorContext::from_parts(
+            None,
+            None,
+            None,
+            Some("session"),
+            Some("plainsecretvalue"),
+        );
+
+        assert_eq!(
+            token_plan.key_kind.as_deref(),
+            Some("Xiaomi MiMo Token Plan key")
+        );
+        assert_eq!(generic.key_kind.as_deref(), Some("API key"));
+        assert_eq!(unprefixed.key_kind.as_deref(), Some("API key"));
+        assert_eq!(
+            unprefixed.key_fingerprint.as_deref(),
+            Some("unprefixed (len=16)")
+        );
+    }
+
+    #[test]
+    fn authorization_403_is_not_reclassified_by_auth_context() {
+        let err = LlmError::from_http_response_with_request_context(
+            403,
+            "forbidden",
+            Some("Arcee AI"),
+            Some("https://api.arcee.ai/v1"),
+            Some("auto"),
+            Some("env"),
+            Some("sk-arcee-secret"),
+        );
+
+        assert!(matches!(err, LlmError::AuthorizationError(_)));
+    }
+
+    #[test]
+    fn auth_error_without_context_preserves_bare_message() {
+        let err = LlmError::from_http_response_with_auth_context(
+            401,
+            "Invalid API Key",
+            Some(AuthenticationErrorContext::default()),
+        );
+
+        assert_eq!(auth_user_message(err), "Invalid API Key");
+    }
+
+    #[test]
+    fn cloudflare_html_error_is_summarized_without_raw_markup() {
+        let body = r#"<!DOCTYPE html><html><head><title>Access Denied</title><style>
+            .hidden { display: none; }
+            </style></head><body>
+            <h1>Access Denied</h1>
+            <p>The action you just performed triggered a security alert.</p>
+            <script>window.noisy = true;</script>
+            <span>2600:1700:467:d410:f137:b94f:1dd0:d1e4</span>
+            <span>a059a2873f3fdf82</span>
+            <div>Cloudflare Error Pages</div>
+            </body></html>"#;
+
+        let message = sanitize_http_error_body(Some("Arcee AI"), 403, body);
+
+        assert!(message.contains("Arcee AI API returned Cloudflare Access Denied"));
+        assert!(message.contains("ID a059a2873f3fdf82"));
+        assert!(!message.contains("<!DOCTYPE"));
+        assert!(!message.contains("tailwindcss"));
+        assert!(message.len() < 300);
+    }
+
+    #[test]
+    fn cloudflare_access_denied_403_is_authorization_not_authentication() {
+        let message = sanitize_http_error_body(
+            Some("Arcee AI"),
+            403,
+            r#"<!doctype html><html><body><h1>Access Denied</h1><p>Cloudflare Error Pages</p></body></html>"#,
+        );
+        let err = LlmError::from_http_response(403, &message);
+
+        assert!(matches!(err, LlmError::AuthorizationError(_)));
+    }
+
+    #[test]
+    fn arcee_access_denied_without_literal_cloudflare_is_still_summarized() {
+        // Mirrors api.arcee.ai's real 403 page: "Cloudflare" appears only in a
+        // `<meta>` attribute and the `<style>` block, both stripped, so the
+        // visible text never contains it. The summary must still fire from the
+        // WAF's stock "security alert" / "Contact Support" copy + error ID.
+        let body = r#"<!DOCTYPE html><html lang="en"><head>
+            <meta name="description" content="Cloudflare Error Pages">
+            <title>Access Denied</title>
+            <style>:root{--accent:cloudflare}</style></head><body>
+            <h1>Access Denied</h1>
+            <p>The action you just performed triggered a security alert.</p>
+            <p>Please contact us if this was a mistake.</p>
+            <a>Contact Support</a>
+            <span>2600:1700:467:d410:f137:b94f:1dd0:d1e4</span>
+            <span>a059c0d4caf1f9cc</span>
+            </body></html>"#;
+
+        let message = sanitize_http_error_body(Some("Arcee AI"), 403, body);
+
+        assert!(
+            message.contains("Arcee AI API returned Access Denied"),
+            "got: {message}"
+        );
+        assert!(message.contains("ID a059c0d4caf1f9cc"), "got: {message}");
+        assert!(
+            !message.to_ascii_lowercase().contains("cloudflare"),
+            "stripped Arcee page has no literal Cloudflare: {message}"
+        );
+        assert!(!message.contains('<'), "no raw markup: {message}");
+        assert!(message.len() < 300, "stays concise: {message}");
+
+        // A WAF block is authorization, not a bad API key.
+        let err = LlmError::from_http_response(403, &message);
+        assert!(matches!(err, LlmError::AuthorizationError(_)));
     }
 
     #[test]
@@ -977,7 +1603,7 @@ mod tests {
             &config,
             || {
                 call_count += 1;
-                async { Err(LlmError::AuthenticationError("bad key".to_string())) }
+                async { Err(LlmError::authentication_error("bad key")) }
             },
             None,
         )

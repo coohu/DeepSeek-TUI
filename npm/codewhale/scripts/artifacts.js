@@ -7,13 +7,14 @@ const ASSET_MATRIX = {
   linux: {
     x64: ["deepseek-linux-x64", "deepseek-tui-linux-x64"],
     arm64: ["deepseek-linux-arm64", "deepseek-tui-linux-arm64"],
+    riscv64: ["deepseek-linux-riscv64", "deepseek-tui-linux-riscv64"],
   },
   darwin: {
     x64: ["deepseek-macos-x64", "deepseek-tui-macos-x64"],
     arm64: ["deepseek-macos-arm64", "deepseek-tui-macos-arm64"],
   },
   win32: {
-    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe"],
+    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe", "deepseek.bat"],
   },
 };
 
@@ -89,7 +90,7 @@ function releaseBaseUrl(version, repo = "coohu/DeepSeek-TUI") {
   // When CODEWHALE_USE_CNB_MIRROR is set, use the CNB (China-friendly)
   // mirror that already builds and publishes binary release assets.
   if (process.env.CODEWHALE_USE_CNB_MIRROR) {
-    return `https://cnb.cool/Hmbown/CodeWhale/-/releases/v${version}/`;
+    return `https://cnb.cool/coohu/deepseek-tui/-/releases/v${version}/`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;
 }
@@ -109,8 +110,8 @@ function releaseBinaryDirectory() {
 function allAssetNames() {
   const names = [];
   for (const platformAssets of Object.values(ASSET_MATRIX)) {
-    for (const pair of Object.values(platformAssets)) {
-      names.push(pair[0], pair[1]);
+    for (const assets of Object.values(platformAssets)) {
+      names.push(...assets);
     }
   }
   return Array.from(new Set(names));

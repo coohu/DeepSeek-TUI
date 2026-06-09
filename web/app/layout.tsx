@@ -33,15 +33,15 @@ const cjk = Noto_Serif_SC({
 });
 
 export const metadata: Metadata = {
-  title: "CodeWhale · DeepSeek V4 智能体运行框架",
+  title: "DeepSeek · DeepSeek V4 Agent Harness",
   description:
-    "Terminal-native coding agent built on DeepSeek V4. Open source. Community site for installation, docs, roadmap, and live activity from the coohu/ repo.",
-  metadataBase: new URL("https://.com"),
+    "Local-first agent harness for DeepSeek V4 and open models: operating identity, conflict law, local tools, evidence, and recovery.",
+  metadataBase: new URL("https://deepseek.net"),
   openGraph: {
-    title: "CodeWhale",
-    description: "The most agentic harness for DeepSeek V4. Constitutional hierarchy, structured trust, verification, and recovery.",
+    title: "DeepSeek",
+    description: "Local-first agent harness with operating identity, conflict law, local tools, evidence, and recovery.",
     url: "https://deepseek.net",
-    siteName: "CodeWhale",
+    siteName: "DeepSeek",
     type: "website",
   },
   twitter: { card: "summary_large_image" },

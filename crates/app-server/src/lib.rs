@@ -12,8 +12,7 @@ use axum::{Json, Router};
 use deepseek_agent::ModelRegistry;
 use deepseek_config::{CliRuntimeOverrides, ConfigStore};
 use deepseek_core::Runtime;
-use deepseek_execpolicy::ExecPolicyEngine;
-use deepseek_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink};
+use deepseek_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
 use deepseek_mcp::McpManager;
 use deepseek_protocol::{
     AppRequest, AppResponse, PromptRequest, PromptResponse, ThreadRequest, ThreadResponse,
@@ -38,13 +37,28 @@ const DEFAULT_CORS_ORIGINS: &[&str] = &[
     "tauri://localhost",
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppServerOptions {
     pub listen: SocketAddr,
     pub config_path: Option<PathBuf>,
     pub auth_token: Option<String>,
     pub insecure_no_auth: bool,
     pub cors_origins: Vec<String>,
+}
+
+impl std::fmt::Debug for AppServerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppServerOptions")
+            .field("listen", &self.listen)
+            .field("config_path", &self.config_path)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("insecure_no_auth", &self.insecure_no_auth)
+            .field("cors_origins", &self.cors_origins)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -262,14 +276,19 @@ async fn tool_handler(
     let cwd = req
         .cwd
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    match runtime
-        .invoke_tool(
-            req.call,
-            deepseek_execpolicy::AskForApproval::OnRequest,
-            &cwd,
-        )
-        .await
-    {
+    // Resolve approval policy from config instead of hardcoding.
+    let approval_mode = {
+        let cfg = state.config.read().await;
+        cfg.approval_policy
+            .as_deref()
+            .and_then(|p| match p.trim().to_ascii_lowercase().as_str() {
+                "auto" | "yolo" => Some(deepseek_execpolicy::AskForApproval::UnlessTrusted),
+                "never" | "deny" => Some(deepseek_execpolicy::AskForApproval::Never),
+                _ => None,
+            })
+            .unwrap_or(deepseek_execpolicy::AskForApproval::OnRequest)
+    };
+    match runtime.invoke_tool(req.call, approval_mode, &cwd).await {
         Ok(value) => Json(value),
         Err(err) => Json(json!({ "ok": false, "error": err.to_string() })),
     }
@@ -299,6 +318,7 @@ async fn app_handler(
 fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Result<AppState> {
     let store = ConfigStore::load(config_path.clone())?;
     let config = store.config.clone();
+    let exec_policy = store.exec_policy_engine();
     let registry = ModelRegistry::default();
 
     let state_db_path = config_path
@@ -314,13 +334,22 @@ fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Resu
         .unwrap_or_else(|| PathBuf::from(".deepseek/events.jsonl"));
     hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
 
+    if let Some(socket_path) = config
+        .hook_sinks
+        .as_ref()
+        .and_then(|sinks| sinks.unix_socket_path.as_ref())
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        hooks.add_sink(Arc::new(UnixSocketHookSink::new(socket_path.clone())));
+    }
+
     let runtime = Runtime::new(
         config.clone(),
         registry.clone(),
         state_store,
         Arc::new(ToolRegistry::default()),
         Arc::new(McpManager::default()),
-        ExecPolicyEngine::new(Vec::new(), Vec::new()),
+        exec_policy,
         hooks,
     );
 
@@ -855,7 +884,9 @@ async fn process_app_request(
             let message = result.err().map(|e| e.to_string());
             let snapshot = cfg.clone();
             drop(cfg);
-            let _ = persist_config(state, snapshot).await;
+            if let Err(e) = persist_config(state, snapshot).await {
+                tracing::error!("Failed to persist config after set: {e}");
+            }
             AppResponse {
                 ok,
                 data: json!({ "key": key, "value": value, "error": message }),
@@ -869,7 +900,9 @@ async fn process_app_request(
             let message = result.err().map(|e| e.to_string());
             let snapshot = cfg.clone();
             drop(cfg);
-            let _ = persist_config(state, snapshot).await;
+            if let Err(e) = persist_config(state, snapshot).await {
+                tracing::error!("Failed to persist config after unset: {e}");
+            }
             AppResponse {
                 ok,
                 data: json!({ "key": key, "error": message }),
@@ -1024,6 +1057,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn build_state_loads_permissions_into_runtime_policy() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "api_key = \"sk-deepseek-secret\"\n").expect("write config");
+        fs::write(
+            tmp.path().join("permissions.toml"),
+            r#"
+            [[rules]]
+            tool = "exec_shell"
+            command = "cargo test"
+            "#,
+        )
+        .expect("write permissions");
+
+        let state = build_state(Some(config_path), None).expect("state");
+        let runtime = state.runtime.lock().await;
+        let decision = runtime
+            .exec_policy
+            .check(deepseek_execpolicy::ExecPolicyContext {
+                command: "cargo test --workspace",
+                cwd: "/workspace",
+                tool: Some("exec_shell"),
+                path: None,
+                ask_for_approval: deepseek_execpolicy::AskForApproval::UnlessTrusted,
+                sandbox_mode: Some("workspace-write"),
+            })
+            .expect("policy check");
+
+        assert!(decision.allow);
+        assert!(decision.requires_approval);
+        assert_eq!(
+            decision.matched_rule.as_deref(),
+            Some("tool=exec_shell command=cargo test")
+        );
+    }
+
     #[test]
     fn non_loopback_bind_without_auth_fails_fast() {
         let options = AppServerOptions {
@@ -1039,5 +1109,179 @@ mod tests {
             err.to_string()
                 .contains("refusing unauthenticated app-server bind")
         );
+    }
+
+    #[tokio::test]
+    async fn stdio_transport_keeps_raw_config_get_for_legacy_clients() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config_path = tmp.path().join("config.toml");
+        fs::write(&config_path, "").expect("write config");
+        let state = build_state(Some(config_path), None).expect("state");
+        {
+            let mut cfg = state.config.write().await;
+            cfg.api_key = Some("sk-deepseek-secret".to_string());
+        }
+
+        let response = process_app_request(
+            &state,
+            AppRequest::ConfigGet {
+                key: "api_key".to_string(),
+            },
+            AppTransport::Stdio,
+        )
+        .await;
+
+        assert_eq!(response.data["value"], "sk-deepseek-secret");
+    }
+
+    // ── resolve_auth_token ─────────────────────────────────────────────
+
+    #[test]
+    fn auth_token_empty_string_fails() {
+        let options = AppServerOptions {
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            config_path: None,
+            auth_token: Some("  ".to_string()),
+            insecure_no_auth: false,
+            cors_origins: Vec::new(),
+        };
+        let err = resolve_auth_token(&options).expect_err("empty token should fail");
+        assert!(err.to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn auth_token_generated_when_none_provided() {
+        let options = AppServerOptions {
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            config_path: None,
+            auth_token: None,
+            insecure_no_auth: false,
+            cors_origins: Vec::new(),
+        };
+        let token = resolve_auth_token(&options).unwrap();
+        assert!(token.is_some());
+        assert!(token.unwrap().starts_with("cwapp_"));
+    }
+
+    #[test]
+    fn auth_token_explicit_is_preserved() {
+        let options = AppServerOptions {
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            config_path: None,
+            auth_token: Some("my-secret".to_string()),
+            insecure_no_auth: false,
+            cors_origins: Vec::new(),
+        };
+        let token = resolve_auth_token(&options).unwrap();
+        assert_eq!(token.as_deref(), Some("my-secret"));
+    }
+
+    #[test]
+    fn insecure_no_auth_on_loopback_returns_none() {
+        let options = AppServerOptions {
+            listen: "127.0.0.1:0".parse().expect("addr"),
+            config_path: None,
+            auth_token: None,
+            insecure_no_auth: true,
+            cors_origins: Vec::new(),
+        };
+        let token = resolve_auth_token(&options).unwrap();
+        assert!(token.is_none());
+    }
+
+    // ── cors_layer ─────────────────────────────────────────────────────
+
+    #[test]
+    fn cors_layer_includes_default_origins() {
+        let layer = cors_layer(&[]);
+        // Just verify it doesn't panic and creates successfully
+        let _ = layer;
+    }
+
+    #[test]
+    fn cors_layer_adds_extra_origins() {
+        let extras = vec!["https://example.com".to_string()];
+        let layer = cors_layer(&extras);
+        let _ = layer;
+    }
+
+    #[test]
+    fn cors_layer_skips_empty_origins() {
+        let extras = vec!["".to_string(), "  ".to_string()];
+        let layer = cors_layer(&extras);
+        let _ = layer;
+    }
+
+    // ── JsonRpc helpers ────────────────────────────────────────────────
+
+    #[test]
+    fn params_or_object_returns_object_for_null() {
+        let result = params_or_object(Value::Null);
+        assert_eq!(result, json!({}));
+    }
+
+    #[test]
+    fn params_or_object_passthrough_for_non_null() {
+        let input = json!({"key": "value"});
+        let result = params_or_object(input.clone());
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn jsonrpc_result_format() {
+        let result = jsonrpc_result(Some(json!(1)), json!({"ok": true}));
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], 1);
+        assert_eq!(result["result"]["ok"], true);
+    }
+
+    #[test]
+    fn jsonrpc_result_null_id() {
+        let result = jsonrpc_result(None, json!(null));
+        assert_eq!(result["id"], Value::Null);
+    }
+
+    #[test]
+    fn jsonrpc_error_format() {
+        let err = jsonrpc_error(Some(json!(2)), JsonRpcError::internal("oops"));
+        assert_eq!(err["jsonrpc"], "2.0");
+        assert_eq!(err["id"], 2);
+        assert_eq!(err["error"]["code"], -32603);
+        assert_eq!(err["error"]["message"], "oops");
+    }
+
+    #[test]
+    fn jsonrpc_error_codes() {
+        assert_eq!(JsonRpcError::parse_error("").code, -32700);
+        assert_eq!(JsonRpcError::invalid_request("").code, -32600);
+        assert_eq!(JsonRpcError::method_not_found("x").code, -32601);
+        assert_eq!(JsonRpcError::invalid_params("").code, -32602);
+        assert_eq!(JsonRpcError::internal("").code, -32603);
+    }
+
+    // ── AppServerOptions ───────────────────────────────────────────────
+
+    #[test]
+    fn app_server_options_debug_does_not_leak_token() {
+        let options = AppServerOptions {
+            listen: "127.0.0.1:8080".parse().expect("addr"),
+            config_path: None,
+            auth_token: Some("secret-token".to_string()),
+            insecure_no_auth: false,
+            cors_origins: vec!["https://example.com".to_string()],
+        };
+        let debug = format!("{options:?}");
+        assert!(!debug.contains("secret-token"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("8080"));
+    }
+
+    // ── Default CORS origins ──────────────────────────────────────────
+
+    #[test]
+    fn default_cors_origins_include_common_dev_ports() {
+        assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:3000"));
+        assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:5173"));
+        assert!(DEFAULT_CORS_ORIGINS.contains(&"tauri://localhost"));
     }
 }

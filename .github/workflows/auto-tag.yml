@@ -19,7 +19,6 @@ on:
     paths:
       - 'Cargo.toml'
       - 'npm/deepseek/package.json'
-      - 'npm//package.json'
   workflow_dispatch:
 
 permissions:

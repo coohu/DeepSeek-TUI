@@ -13,7 +13,7 @@ The current MCP implementation lives in a single crate with two responsibilities
 - **MCP client** — connects to MCP servers over stdio, manages protocol handshake,
   tool discovery, and tool invocation. Used by the TUI to surface MCP tools as
   `mcp_<server>_<tool>` entries in the tool registry.
-- **MCP stdio server** — a minimal MCP server that exposes CodeWhale's own tools
+- **MCP stdio server** — a minimal MCP server that exposes DeepSeek's own tools
   over stdio for external MCP clients. Used by the `deepseek mcp` CLI subcommand.
 
 Both the client and server share protocol types (JSON-RPC messages, tool schemas)

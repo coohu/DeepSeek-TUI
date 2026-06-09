@@ -11,18 +11,18 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   const { locale } = await params;
   const isZh = locale === "zh";
   return {
-    title: isZh ? "CodeWhale · DeepSeek V4 智能体运行框架" : "CodeWhale · DeepSeek V4 智能体运行框架",
+    title: isZh ? "DeepSeek · DeepSeek V4 智能体运行框架" : "DeepSeek · DeepSeek V4 Agent Harness",
     description: isZh
-      ? "基于 DeepSeek V4 的开源终端编程智能体。支持 100 万 token 上下文、MCP 协议、沙箱执行。"
-      : "Terminal-native coding agent built on DeepSeek V4. Open source. Community site for installation, docs, roadmap, and live activity from the coohu/ repo.",
-    metadataBase: new URL("https://.com"),
+      ? "面向 DeepSeek V4 和开放模型的本地 Agent 运行框架：自我、冲突法、本地工具、证据与恢复。"
+      : "Local-first agent harness for DeepSeek V4 and open models, with operating identity, conflict law, local tools, evidence, and recovery.",
+    metadataBase: new URL("https://deepseek.net"),
     openGraph: {
-      title: "CodeWhale",
+      title: "DeepSeek",
       description: isZh
-        ? "DeepSeek V4 的最强智能体运行框架。宪政层级、结构化信任、验证与恢复。"
-        : "The most agentic harness for DeepSeek V4. Constitutional hierarchy, structured trust, verification, and recovery.",
+        ? "本地 Agent 运行框架，内置自我、冲突法、本地工具、证据与恢复。"
+        : "Local-first agent harness with operating identity, conflict law, local tools, evidence, and recovery.",
       url: "https://deepseek.net",
-      siteName: "CodeWhale",
+      siteName: "DeepSeek",
       type: "website",
     },
     twitter: { card: "summary_large_image" },

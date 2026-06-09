@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# CodeWhale Unix installer
+# DeepSeek Unix installer
 # Copies deepseek and deepseek-tui to ~/.local/bin (or $PREFIX/bin)
 
 PREFIX="${PREFIX:-$HOME/.local}"

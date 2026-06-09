@@ -39,6 +39,7 @@ dist/
 # Generated
 outputs/
 tmp/
+backup/
 
 # Reference papers / large research blobs (keep locally if needed, don't ship)
 docs/DeepSeek_V4.pdf
@@ -48,6 +49,9 @@ docs/*.pdf
 
 # Local dev scripts and temp files
 *.sh
+*.cmd
+!ohos-clang.sh
+!ohos-clangxx.sh
 !scripts/**
 !.github/scripts/**
 test.txt
@@ -66,6 +70,10 @@ project_overhaul_prompt.md
 
 # Local runtime state
 .deepseek/
+# Ignore everything under any .deepseek/ (snapshots, auto-generated
+# instructions.md, etc.) at any depth EXCEPT the committed repo authority policy.
+**/.deepseek/*
+!**/.deepseek/constitution.json
 .deepseek/
 **/session_*.json
 *.db

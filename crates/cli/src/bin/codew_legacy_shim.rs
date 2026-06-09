@@ -12,7 +12,7 @@ fn main() {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
 
-    let status = match spawn_codewhale(&args) {
+    let status = match spawn_deepseek(&args) {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
@@ -25,7 +25,7 @@ fn main() {
     std::process::exit(status.code().unwrap_or(1));
 }
 
-fn spawn_codewhale(args: &[String]) -> std::io::Result<std::process::ExitStatus> {
+fn spawn_deepseek(args: &[String]) -> std::io::Result<std::process::ExitStatus> {
     // Try PATH first.
     match Command::new("deepseek").args(args).status() {
         Ok(s) => return Ok(s),
@@ -37,12 +37,12 @@ fn spawn_codewhale(args: &[String]) -> std::io::Result<std::process::ExitStatus>
     // same directory as this shim but not on PATH (#2006).
     #[cfg(windows)]
     {
-        if let Ok(exe_path) = env::current_exe() {
-            if let Some(dir) = exe_path.parent() {
-                let sibling = dir.join("deepseek.exe");
-                if sibling.is_file() {
-                    return Command::new(sibling).args(args).status();
-                }
+        if let Ok(exe_path) = env::current_exe()
+            && let Some(dir) = exe_path.parent()
+        {
+            let sibling = dir.join("deepseek.exe");
+            if sibling.is_file() {
+                return Command::new(sibling).args(args).status();
             }
         }
     }

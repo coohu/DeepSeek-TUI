@@ -2,7 +2,9 @@
 //!
 //! Pricing based on DeepSeek's published rates (per million tokens).
 
-use chrono::{DateTime, TimeZone, Utc};
+#[cfg(test)]
+use chrono::TimeZone;
+use chrono::{DateTime, Utc};
 
 use crate::models::Usage;
 
@@ -55,6 +57,39 @@ impl CostEstimate {
     }
 }
 
+// === DeepSeek Account Balance ===
+
+/// Response from `GET https://api.deepseek.com/user/balance`.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct BalanceResponse {
+    #[allow(dead_code)]
+    pub is_available: bool,
+    pub balance_infos: Vec<BalanceInfo>,
+}
+
+/// Per-currency balance entry from the balance API.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct BalanceInfo {
+    pub currency: String,
+    #[serde(default)]
+    pub total_balance: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub topped_up_balance: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub granted_balance: String,
+}
+
+impl BalanceInfo {
+    /// Parse the `total_balance` field as an f64. Returns `None` on parse
+    /// failure or empty string.
+    #[must_use]
+    pub fn total_balance_f64(&self) -> Option<f64> {
+        self.total_balance.parse::<f64>().ok()
+    }
+}
+
 /// Per-million-token pricing for a model.
 #[derive(Debug, Clone, Copy)]
 struct CurrencyPricing {
@@ -70,70 +105,64 @@ struct ModelPricing {
     cny: CurrencyPricing,
 }
 
-fn v4_pro_discount_ends_at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 5, 31, 15, 59, 0)
-        .single()
-        .expect("valid DeepSeek V4 Pro discount end timestamp")
-}
-
 /// Look up pricing for a model name.
 fn pricing_for_model(model: &str) -> Option<ModelPricing> {
     pricing_for_model_at(model, Utc::now())
 }
 
-fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing> {
+fn pricing_for_model_at(model: &str, _now: DateTime<Utc>) -> Option<ModelPricing> {
     let lower = model.to_lowercase();
     if lower.starts_with("deepseek-ai/") {
         // NVIDIA NIM-hosted DeepSeek uses NVIDIA's catalog/account terms, not
         // DeepSeek Platform pricing. Avoid showing misleading DeepSeek costs.
         return None;
     }
-    if !lower.contains("deepseek") {
-        return None;
+    match lower.as_str() {
+        "xiaomi/mimo-v2.5-pro" | "mimo-v2.5-pro" => return Some(deepseek_v4_pro_pricing()),
+        "xiaomi/mimo-v2.5" | "mimo-v2.5" => return Some(deepseek_v4_flash_pricing()),
+        _ => {}
     }
-    if lower.contains("v4-pro") || lower.contains("v4pro") {
-        if now <= v4_pro_discount_ends_at() {
-            // DeepSeek lists these as a limited-time 75% discount through
-            // 2026-05-31 15:59 UTC.
-            return Some(ModelPricing {
-                usd: CurrencyPricing {
-                    input_cache_hit_per_million: 0.003625,
-                    input_cache_miss_per_million: 0.435,
-                    output_per_million: 0.87,
-                },
-                cny: CurrencyPricing {
-                    input_cache_hit_per_million: 0.025,
-                    input_cache_miss_per_million: 3.0,
-                    output_per_million: 6.0,
-                },
-            });
+    if lower.contains("deepseek") {
+        if lower.contains("v4-pro") || lower.contains("v4pro") {
+            // DeepSeek's pricing page says the V4-Pro promotional 75% discount
+            // becomes the official one-quarter base price after 2026-05-31 15:59
+            // UTC. Keep using the adjusted rate after that cutoff (#2489).
+            Some(deepseek_v4_pro_pricing())
+        } else {
+            Some(deepseek_v4_flash_pricing())
         }
-        Some(ModelPricing {
-            usd: CurrencyPricing {
-                input_cache_hit_per_million: 0.0145,
-                input_cache_miss_per_million: 1.74,
-                output_per_million: 3.48,
-            },
-            cny: CurrencyPricing {
-                input_cache_hit_per_million: 0.1,
-                input_cache_miss_per_million: 12.0,
-                output_per_million: 24.0,
-            },
-        })
     } else {
-        // deepseek-v4-flash pricing.
-        Some(ModelPricing {
-            usd: CurrencyPricing {
-                input_cache_hit_per_million: 0.0028,
-                input_cache_miss_per_million: 0.14,
-                output_per_million: 0.28,
-            },
-            cny: CurrencyPricing {
-                input_cache_hit_per_million: 0.02,
-                input_cache_miss_per_million: 1.0,
-                output_per_million: 2.0,
-            },
-        })
+        None
+    }
+}
+
+fn deepseek_v4_pro_pricing() -> ModelPricing {
+    ModelPricing {
+        usd: CurrencyPricing {
+            input_cache_hit_per_million: 0.003625,
+            input_cache_miss_per_million: 0.435,
+            output_per_million: 0.87,
+        },
+        cny: CurrencyPricing {
+            input_cache_hit_per_million: 0.025,
+            input_cache_miss_per_million: 3.0,
+            output_per_million: 6.0,
+        },
+    }
+}
+
+fn deepseek_v4_flash_pricing() -> ModelPricing {
+    ModelPricing {
+        usd: CurrencyPricing {
+            input_cache_hit_per_million: 0.0028,
+            input_cache_miss_per_million: 0.14,
+            output_per_million: 0.28,
+        },
+        cny: CurrencyPricing {
+            input_cache_hit_per_million: 0.02,
+            input_cache_miss_per_million: 1.0,
+            output_per_million: 2.0,
+        },
     }
 }
 
@@ -145,6 +174,10 @@ pub fn calculate_turn_cost(model: &str, input_tokens: u32, output_tokens: u32) -
 }
 
 /// Calculate cost for a turn in both official currencies.
+///
+/// This legacy helper has no cache telemetry, so it prices all input tokens as
+/// cache misses. Prefer [`calculate_turn_cost_estimate_from_usage`] when the
+/// provider returned usage details.
 #[must_use]
 pub fn calculate_turn_cost_estimate(
     model: &str,
@@ -283,24 +316,22 @@ mod tests {
     }
 
     #[test]
-    fn v4_pro_returns_to_base_rates_after_discount_expiry() {
-        let after_expiry = Utc
-            .with_ymd_and_hms(2026, 5, 31, 16, 0, 0)
-            .single()
-            .unwrap();
+    fn v4_pro_keeps_adjusted_rates_after_discount_window() {
+        let after_expiry = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).single().unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-pro", after_expiry).unwrap();
 
-        assert_eq!(pricing.usd.input_cache_hit_per_million, 0.0145);
-        assert_eq!(pricing.usd.input_cache_miss_per_million, 1.74);
-        assert_eq!(pricing.usd.output_per_million, 3.48);
-        assert_eq!(pricing.cny.input_cache_hit_per_million, 0.1);
-        assert_eq!(pricing.cny.input_cache_miss_per_million, 12.0);
-        assert_eq!(pricing.cny.output_per_million, 24.0);
+        assert_eq!(pricing.usd.input_cache_hit_per_million, 0.003625);
+        assert_eq!(pricing.usd.input_cache_miss_per_million, 0.435);
+        assert_eq!(pricing.usd.output_per_million, 0.87);
+        assert_eq!(pricing.cny.input_cache_hit_per_million, 0.025);
+        assert_eq!(pricing.cny.input_cache_miss_per_million, 3.0);
+        assert_eq!(pricing.cny.output_per_million, 6.0);
     }
 
     #[test]
     fn v4_pro_discount_still_applies_just_before_old_may5_expiry() {
-        // Regression for #267: extension to 2026-05-31 15:59 UTC.
+        // Regression for #267 and #2489: the adjusted V4-Pro pricing should
+        // not drift back to the original higher launch rates.
         let after_old_expiry = Utc.with_ymd_and_hms(2026, 5, 6, 0, 0, 0).single().unwrap();
         let pricing = pricing_for_model_at("deepseek-v4-pro", after_old_expiry).unwrap();
 
@@ -320,6 +351,27 @@ mod tests {
         assert_eq!(pricing.cny.input_cache_hit_per_million, 0.02);
         assert_eq!(pricing.cny.input_cache_miss_per_million, 1.0);
         assert_eq!(pricing.cny.output_per_million, 2.0);
+    }
+
+    #[test]
+    fn xiaomi_mimo_primary_models_use_matching_deepseek_v4_rates() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 4, 0, 0, 0).single().unwrap();
+
+        let pro_pricing = pricing_for_model_at("mimo-v2.5-pro", now).unwrap();
+        assert_eq!(pro_pricing.usd.input_cache_hit_per_million, 0.003625);
+        assert_eq!(pro_pricing.usd.input_cache_miss_per_million, 0.435);
+        assert_eq!(pro_pricing.usd.output_per_million, 0.87);
+        assert_eq!(pro_pricing.cny.input_cache_hit_per_million, 0.025);
+        assert_eq!(pro_pricing.cny.input_cache_miss_per_million, 3.0);
+        assert_eq!(pro_pricing.cny.output_per_million, 6.0);
+
+        let flash_pricing = pricing_for_model_at("xiaomi/mimo-v2.5", now).unwrap();
+        assert_eq!(flash_pricing.usd.input_cache_hit_per_million, 0.0028);
+        assert_eq!(flash_pricing.usd.input_cache_miss_per_million, 0.14);
+        assert_eq!(flash_pricing.usd.output_per_million, 0.28);
+        assert_eq!(flash_pricing.cny.input_cache_hit_per_million, 0.02);
+        assert_eq!(flash_pricing.cny.input_cache_miss_per_million, 1.0);
+        assert_eq!(flash_pricing.cny.output_per_million, 2.0);
     }
 
     #[test]
@@ -356,5 +408,78 @@ mod tests {
             format_cost_amount_precise(0.1234, CostCurrency::Cny),
             "¥0.1234"
         );
+    }
+
+    // ── BalanceResponse / BalanceInfo ──────────────────────────────
+
+    #[test]
+    fn balance_response_deserializes_from_json() {
+        let json = r#"{
+            "is_available": true,
+            "balance_infos": [
+                {
+                    "currency": "CNY",
+                    "total_balance": "123.45",
+                    "topped_up_balance": "100.00",
+                    "granted_balance": "23.45"
+                }
+            ]
+        }"#;
+        let resp: BalanceResponse = serde_json::from_str(json).expect("valid JSON");
+        assert!(resp.is_available);
+        assert_eq!(resp.balance_infos.len(), 1);
+        let info = &resp.balance_infos[0];
+        assert_eq!(info.currency, "CNY");
+        assert_eq!(info.total_balance, "123.45");
+        assert_eq!(info.topped_up_balance, "100.00");
+        assert_eq!(info.granted_balance, "23.45");
+    }
+
+    #[test]
+    fn balance_response_defaults_empty_balance_infos_when_unavailable() {
+        let json = r#"{"is_available": false, "balance_infos": []}"#;
+        let resp: BalanceResponse = serde_json::from_str(json).expect("valid JSON");
+        assert!(!resp.is_available);
+        assert!(resp.balance_infos.is_empty());
+    }
+
+    #[test]
+    fn balance_response_empty_list_is_valid() {
+        let json = r#"{"is_available": true, "balance_infos": []}"#;
+        let resp: BalanceResponse = serde_json::from_str(json).expect("valid JSON");
+        assert!(resp.is_available);
+        assert!(resp.balance_infos.is_empty());
+    }
+
+    // ── BalanceInfo::total_balance_f64 ─────────────────────────────
+
+    #[test]
+    fn total_balance_f64_parses_decimal() {
+        let info = BalanceInfo {
+            currency: "CNY".into(),
+            total_balance: "123.45".into(),
+            ..Default::default()
+        };
+        assert_eq!(info.total_balance_f64(), Some(123.45));
+    }
+
+    #[test]
+    fn total_balance_f64_returns_none_on_empty() {
+        let info = BalanceInfo {
+            currency: "USD".into(),
+            total_balance: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(info.total_balance_f64(), None);
+    }
+
+    #[test]
+    fn total_balance_f64_returns_none_on_invalid() {
+        let info = BalanceInfo {
+            currency: "USD".into(),
+            total_balance: "not-a-number".into(),
+            ..Default::default()
+        };
+        assert_eq!(info.total_balance_f64(), None);
     }
 }

@@ -6,9 +6,29 @@
 //! checkpoints, and loop termination.
 
 use super::*;
+use crate::prompt_zones::PinnedPrefix;
 
 fn loop_guard_block_tool_result(message: String) -> ToolResult {
     ToolResult::error(message).with_metadata(json!({"loop_guard": "identical_tool_call"}))
+}
+
+const MAX_APPROVAL_INTENT_SUMMARY_CHARS: usize = 2_000;
+
+fn approval_intent_summary(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut chars = trimmed.chars();
+    let mut summary = chars
+        .by_ref()
+        .take(MAX_APPROVAL_INTENT_SUMMARY_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        summary.push_str("...");
+    }
+    Some(summary)
 }
 
 impl Engine {
@@ -23,7 +43,7 @@ impl Engine {
         // Signal to the terminal / taskbar that a turn is in progress
         // (OSC 9 ; 4 indeterminate progress + title spinner).
         crate::tui::notifications::set_taskbar_progress_busy();
-        crate::tui::notifications::start_title_animation("DeepSeek TUI");
+        crate::tui::notifications::start_title_animation("DeepSeek");
 
         let client = self
             .deepseek_client
@@ -36,6 +56,14 @@ impl Engine {
         let mut tool_catalog = tools.unwrap_or_default();
         if !tool_catalog.is_empty() {
             ensure_advanced_tooling(&mut tool_catalog, mode, &self.config.tools_always_load);
+            // Provider-specific first-turn surface (e.g. Arcee's Cloudflare WAF
+            // rejects DeepSeek's full agent catalog). Runs after advanced
+            // tooling so code/js-execution and tool-search rows are policed too.
+            apply_provider_tool_policy(
+                &mut tool_catalog,
+                client.api_provider(),
+                &self.config.tools_always_load,
+            );
         }
         let mut active_tool_names = initial_active_tools(&tool_catalog);
         let mut loop_guard = LoopGuard::default();
@@ -51,7 +79,7 @@ impl Engine {
         const MAX_STREAM_RETRIES: u32 = 3;
         let mut stream_retry_attempts: u32 = 0;
 
-        loop {
+        'turn_loop: loop {
             if self.cancel_token.is_cancelled() {
                 let _ = self.tx_event.send(Event::status("Request cancelled")).await;
                 return (TurnOutcomeStatus::Interrupted, None);
@@ -77,7 +105,7 @@ impl Engine {
             }
 
             // Ensure system prompt is up to date with latest session states
-            self.refresh_system_prompt(mode);
+            self.refresh_system_prompt();
 
             if turn.at_max_steps() {
                 let _ = self
@@ -249,6 +277,10 @@ impl Engine {
                 let tools_ref: Option<&[crate::models::Tool]> = active_tools.as_deref();
                 match pm.check_and_update(&system_text, tools_ref) {
                     Err(change) => {
+                        let pinned_hash = pm
+                            .pinned_fingerprint()
+                            .map(|fp| fp.combined_sha256.clone())
+                            .unwrap_or_default();
                         tracing::debug!(
                             target: "prefix_cache",
                             "{}",
@@ -262,10 +294,15 @@ impl Engine {
                                 tools_changed: change.tools_changed,
                                 stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
                                 changed: true,
+                                pinned_combined_hash: pinned_hash,
                             })
                             .await;
                     }
                     Ok(_) => {
+                        let pinned_hash = pm
+                            .pinned_fingerprint()
+                            .map(|fp| fp.combined_sha256.clone())
+                            .unwrap_or_default();
                         // Stable check — keep the TUI counter in sync.
                         let _ = self
                             .tx_event
@@ -275,9 +312,55 @@ impl Engine {
                                 tools_changed: false,
                                 stability_pct: (pm.stability_ratio() * 100.0).round() as u32,
                                 changed: false,
+                                pinned_combined_hash: pinned_hash,
                             })
                             .await;
                     }
+                }
+            }
+
+            // Three-zone prefix contract (#2264): freeze baseline on first
+            // turn, verify against it on subsequent turns. Operates alongside
+            // PrefixStabilityManager as an independent diagnostic layer.
+            // Phase 3: emit a one-shot 'frozen' event on first turn.
+            // Drift is logged (tracing::debug!) but not re-emitted —
+            // PrefixStabilityManager already reports the change above.
+            let system_text =
+                crate::prefix_cache::system_prompt_text(self.session.system_prompt.as_ref());
+            let current_tools: &[crate::models::Tool] = active_tools.as_deref().unwrap_or_default();
+
+            match &self.session.frozen_prefix {
+                Some(frozen) => {
+                    if let Err(drift) = frozen.verify(&system_text, current_tools) {
+                        tracing::debug!(
+                            target: "prefix_cache",
+                            "three-zone drift: {drift}"
+                        );
+                        let pinned = PinnedPrefix::new(
+                            self.session.system_prompt.as_ref(),
+                            current_tools.to_vec(),
+                        );
+                        self.session.frozen_prefix = Some(pinned.freeze());
+                    }
+                }
+                None => {
+                    let pinned = PinnedPrefix::new(
+                        self.session.system_prompt.as_ref(),
+                        current_tools.to_vec(),
+                    );
+                    let frozen = pinned.freeze();
+                    let _ = self
+                        .tx_event
+                        .send(Event::PrefixCacheChange {
+                            description: format!("frozen: {}", frozen.short_id()),
+                            system_prompt_changed: false,
+                            tools_changed: false,
+                            stability_pct: 100,
+                            changed: false,
+                            pinned_combined_hash: frozen.hash().to_string(),
+                        })
+                        .await;
+                    self.session.frozen_prefix = Some(frozen);
                 }
             }
 
@@ -386,8 +469,7 @@ impl Engine {
             // budget restarts with the fresh stream.
             let mut stream_start = Instant::now();
             let mut stream_content_bytes: usize = 0;
-            let chunk_timeout_secs = stream_chunk_timeout_secs();
-            let chunk_timeout = Duration::from_secs(chunk_timeout_secs);
+            let (chunk_timeout_secs, chunk_timeout) = stream_chunk_timeout_budget(&self.config);
             let max_duration = Duration::from_secs(STREAM_MAX_DURATION_SECS);
 
             // Process stream events
@@ -922,11 +1004,14 @@ impl Engine {
                     completions.push(c);
                 }
                 if completions.is_empty() {
-                    let running = {
-                        let mgr = self.subagent_manager.read().await;
-                        mgr.running_count()
-                    };
-                    if should_hold_turn_for_subagents(completions.len(), running) {
+                    loop {
+                        let running = {
+                            let mgr = self.subagent_manager.read().await;
+                            mgr.running_count()
+                        };
+                        if !should_hold_turn_for_subagents(completions.len(), running) {
+                            break;
+                        }
                         let _ = self
                             .tx_event
                             .send(Event::status(format!(
@@ -949,6 +1034,7 @@ impl Engine {
                                 while let Ok(extra) = self.rx_subagent_completion.try_recv() {
                                     completions.push(extra);
                                 }
+                                break;
                             }
                             Some(steer) = self.rx_steer.recv() => {
                                 let trimmed = steer.trim().to_string();
@@ -969,7 +1055,21 @@ impl Engine {
                                         .await;
                                 }
                                 turn.next_step();
-                                continue;
+                                continue 'turn_loop;
+                            }
+                            () = tokio::time::sleep(self.config.subagent_heartbeat_timeout) => {
+                                let auto_cancelled = {
+                                    let mut mgr = self.subagent_manager.write().await;
+                                    mgr.cleanup(std::time::Duration::from_secs(60 * 60))
+                                };
+                                if auto_cancelled > 0 {
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::status(format!(
+                                            "Auto-cancelled {auto_cancelled} stale sub-agent(s) after no progress"
+                                        )))
+                                        .await;
+                                }
                             }
                         }
                     }
@@ -1159,6 +1259,14 @@ impl Engine {
             }
 
             // Execute tools
+            if self.shared_paused.lock().is_ok_and(|paused| *paused) {
+                let _ = self
+                    .tx_event
+                    .send(Event::status("Request was Paused"))
+                    .await;
+                return (TurnOutcomeStatus::Interrupted, None);
+            }
+
             let tool_exec_lock = self.tool_exec_lock.clone();
             let mcp_pool = if tool_uses
                 .iter()
@@ -1187,6 +1295,13 @@ impl Engine {
                 crate::logging::info(format!(
                     "Planning tool '{tool_name}' with input: {tool_input:?}"
                 ));
+
+                let requested_tool_name = tool_name.clone();
+                let tool_def =
+                    resolve_tool_definition(&mut tool_name, &tool_catalog, tool_registry);
+                if requested_tool_name != tool_name {
+                    tool.name = tool_name.clone();
+                }
 
                 let interactive = (tool_name == "exec_shell"
                     && tool_input
@@ -1219,28 +1334,17 @@ impl Engine {
                     )));
                 }
 
-                let requested_tool_name = tool_name.clone();
-                let mut tool_def = tool_catalog.iter().find(|def| def.name == tool_name);
-
-                // Resolve hallucinated tool names when the model emits a
-                // non-canonical variant (Read_file, readFile, read-file, etc.).
-                if tool_def.is_none()
-                    && let Some(registry) = tool_registry
-                    && let Some(canonical) = registry.resolve(&tool_name)
+                if blocked_error.is_none()
+                    && !command_allows_tool(self.config.allowed_tools.as_deref(), &tool_name)
                 {
-                    crate::logging::info(format!(
-                        "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
-                    ));
-                    tool_def = tool_catalog.iter().find(|d| d.name == canonical);
-                    if tool_def.is_some() {
-                        tool_name = canonical.to_string();
-                        // Update the tool_uses entry so the result is
-                        // attributed to the canonical name.
-                        tool.name = tool_name.clone();
-                    }
+                    blocked_error = Some(ToolError::permission_denied(format!(
+                        "Tool '{tool_name}' is not in the allowed-tools list for the current command"
+                    )));
                 }
 
-                if !caller_allowed_for_tool(tool_caller.as_ref(), tool_def) {
+                if blocked_error.is_none()
+                    && !caller_allowed_for_tool(tool_caller.as_ref(), tool_def)
+                {
                     blocked_error = Some(ToolError::permission_denied(format!(
                         "Tool '{tool_name}' does not allow caller '{}'",
                         caller_type_for_tool_use(tool_caller.as_ref())
@@ -1258,6 +1362,68 @@ impl Engine {
                         &tool_name,
                         &tool_catalog,
                     )));
+                }
+
+                if blocked_error.is_none()
+                    && let Some(hook_executor) = self.config.hook_executor.as_ref()
+                    && hook_executor.has_hooks_for_event(crate::hooks::HookEvent::ToolCallBefore)
+                {
+                    // Warn if any ToolCallBefore hook is configured as background
+                    // — background hooks return exit_code: None immediately, so
+                    // the denial check (exit_code == Some(2)) can never match.
+                    if hook_executor
+                        .has_background_hooks_for_event(crate::hooks::HookEvent::ToolCallBefore)
+                    {
+                        tracing::warn!(
+                            "ToolCallBefore hook(s) configured with background=true — \
+                             background hooks cannot deny tool calls because they exit \
+                             immediately with no result"
+                        );
+                    }
+
+                    let hook_context = crate::hooks::HookContext::new()
+                        .with_tool_name(&tool_name)
+                        .with_tool_args(&tool_input)
+                        .with_mode(&format!("{mode:?}"))
+                        .with_workspace(self.session.workspace.clone())
+                        .with_model(&self.config.model)
+                        .with_session_id(&self.session.id);
+                    // Run hooks off the Tokio worker thread: `execute()` calls
+                    // `child.wait_timeout()` which is a blocking syscall that
+                    // would stall all other async tasks on this thread.
+                    let executor = hook_executor.clone();
+                    let hook_results = tokio::task::spawn_blocking(move || {
+                        executor.execute(crate::hooks::HookEvent::ToolCallBefore, &hook_context)
+                    })
+                    .await
+                    .unwrap_or_else(|join_err| {
+                        tracing::error!("Hook executor task panicked: {join_err}");
+                        Vec::new()
+                    });
+                    if let Some(denial) = hook_results
+                        .iter()
+                        .find(|result| result.exit_code == Some(2))
+                    {
+                        let reason = denial
+                            .stdout
+                            .trim()
+                            .lines()
+                            .next()
+                            .filter(|line| !line.is_empty())
+                            .or_else(|| {
+                                denial
+                                    .stderr
+                                    .trim()
+                                    .lines()
+                                    .next()
+                                    .filter(|line| !line.is_empty())
+                            })
+                            .or(denial.error.as_deref())
+                            .unwrap_or("ToolCallBefore hook denied tool execution");
+                        blocked_error = Some(ToolError::permission_denied(format!(
+                            "ToolCallBefore hook denied tool '{tool_name}': {reason}"
+                        )));
+                    }
                 }
 
                 if McpPool::is_mcp_tool(&tool_name) {
@@ -1341,6 +1507,22 @@ impl Engine {
                 });
             }
             active_tool_names.extend(deferred_tools_hydrated_this_batch);
+
+            // --- Intent summary for write tools (#2381) ---
+            // When the model invokes write tools, extract its preceding text
+            // as an "intent summary" so the approval view can show *why* the
+            // change is being made, not just *what* will change.
+            let has_write_tools = plans.iter().any(|p| {
+                !p.read_only
+                    && p.approval_required
+                    && p.blocked_error.is_none()
+                    && p.guard_result.is_none()
+            });
+            let intent_summary: Option<String> = if has_write_tools {
+                approval_intent_summary(&current_text_visible)
+            } else {
+                None
+            };
 
             let plan_count = plans.len();
             let batches = plan_tool_execution_batches(plans);
@@ -1696,9 +1878,15 @@ impl Engine {
                                 .send(Event::ApprovalRequired {
                                     id: tool_id.clone(),
                                     tool_name: tool_name.clone(),
+                                    input: tool_input.clone(),
                                     description: plan.approval_description.clone(),
                                     approval_key,
                                     approval_grouping_key,
+                                    intent_summary: if plan.read_only {
+                                        None
+                                    } else {
+                                        intent_summary.clone()
+                                    },
                                 })
                                 .await;
 
@@ -1969,7 +2157,6 @@ impl Engine {
             if self
                 .run_capacity_post_tool_checkpoint(
                     turn,
-                    mode,
                     tool_registry,
                     tool_exec_lock.clone(),
                     mcp_pool.clone(),
@@ -2001,7 +2188,6 @@ impl Engine {
             if self
                 .run_capacity_error_escalation_checkpoint(
                     turn,
-                    mode,
                     step_error_count,
                     consecutive_tool_error_steps,
                     &step_error_categories,
@@ -2074,11 +2260,15 @@ impl Engine {
     }
 
     pub(super) fn messages_with_turn_metadata(&self) -> Vec<Message> {
-        // `<turn_meta>` is stored on user-text messages when the message is
-        // appended. Do not rewrite historical messages at request time: doing
-        // so makes the API prefix differ from the bytes sent in earlier turns
-        // and destroys DeepSeek's KV prefix cache reuse.
-        self.session.messages.clone()
+        // Keep stored history byte-stable and provider-compatible: runtime
+        // mode/approval contracts are projected as a transient user message
+        // at request time instead of being persisted as appended system
+        // messages. This preserves the stable prefix through all stored
+        // messages while avoiding strict chat templates that only allow
+        // system messages at messages[0].
+        let mut messages = self.session.messages.clone();
+        messages.push(self.runtime_prompt_message());
+        messages
     }
 }
 
@@ -2110,6 +2300,63 @@ XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 
 fn should_hold_turn_for_subagents(queued_completions: usize, running_children: usize) -> bool {
     queued_completions > 0 || running_children > 0
+}
+
+fn stream_chunk_timeout_budget(config: &EngineConfig) -> (u64, Duration) {
+    let secs = config.stream_chunk_timeout.as_secs();
+    (secs, Duration::from_secs(secs))
+}
+
+#[cfg(test)]
+mod stream_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn stream_chunk_timeout_budget_uses_engine_config() {
+        let config = EngineConfig {
+            stream_chunk_timeout: Duration::from_secs(42),
+            ..EngineConfig::default()
+        };
+
+        assert_eq!(
+            stream_chunk_timeout_budget(&config),
+            (42, Duration::from_secs(42))
+        );
+    }
+}
+
+fn command_allows_tool(allowed_tools: Option<&[String]>, tool_name: &str) -> bool {
+    let Some(allowed_tools) = allowed_tools else {
+        return true;
+    };
+    allowed_tools.contains(&tool_name.to_ascii_lowercase())
+}
+
+fn resolve_tool_definition<'a>(
+    tool_name: &mut String,
+    tool_catalog: &'a [Tool],
+    tool_registry: Option<&crate::tools::ToolRegistry>,
+) -> Option<&'a Tool> {
+    let mut tool_def = tool_catalog
+        .iter()
+        .find(|def| def.name.as_str() == tool_name.as_str());
+
+    // Resolve hallucinated tool names before policy gates run, so aliases like
+    // ReadFile are checked against the canonical registered tool name.
+    if tool_def.is_none()
+        && let Some(registry) = tool_registry
+        && let Some(canonical) = registry.resolve(tool_name.as_str())
+    {
+        crate::logging::info(format!(
+            "Resolved hallucinated tool name '{tool_name}' -> '{canonical}'"
+        ));
+        tool_def = tool_catalog.iter().find(|d| d.name == canonical);
+        if tool_def.is_some() {
+            *tool_name = canonical.to_string();
+        }
+    }
+
+    tool_def
 }
 
 /// Issue #1727: decide whether to surface a "thinking-only, no output" status.
@@ -2217,6 +2464,19 @@ mod tests {
         assert!(should_hold_turn_for_subagents(1, 0));
         assert!(should_hold_turn_for_subagents(0, 1));
         assert!(!should_hold_turn_for_subagents(0, 0));
+    }
+
+    #[test]
+    fn approval_intent_summary_trims_and_bounds_text() {
+        assert_eq!(approval_intent_summary("   "), None);
+
+        let long_text = format!("  {}  ", "x".repeat(MAX_APPROVAL_INTENT_SUMMARY_CHARS + 10));
+        let summary = approval_intent_summary(&long_text).expect("summary");
+        assert!(summary.ends_with("..."));
+        assert_eq!(
+            summary.chars().count(),
+            MAX_APPROVAL_INTENT_SUMMARY_CHARS + 3
+        );
     }
 
     /// Regression test for issue #1727 (P0, release-blocking).
@@ -2382,5 +2642,147 @@ mod tests {
             Some("high".to_string()),
             "auto thinking should classify the user request, not stored metadata"
         );
+    }
+
+    #[test]
+    fn allowed_tools_gate_blocks_unlisted_tool() {
+        let allowed = vec!["bash".to_string(), "grep".to_string()];
+        assert!(!command_allows_tool(Some(&allowed), "read"));
+    }
+
+    #[test]
+    fn allowed_tools_gate_allows_listed_tool_case_insensitively() {
+        let allowed = vec!["bash".to_string(), "read".to_string()];
+        assert!(command_allows_tool(Some(&allowed), "Read"));
+    }
+
+    #[test]
+    fn allowed_tools_gate_allows_all_tools_when_not_set() {
+        assert!(command_allows_tool(None, "write"));
+    }
+
+    #[test]
+    fn review_regression_allowed_tools_gate_blocks_all_tools_when_empty() {
+        let allowed = Vec::new();
+        assert!(!command_allows_tool(Some(&allowed), "bash"));
+    }
+
+    #[test]
+    fn review_regression_allowed_tools_gate_checks_canonical_tool_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let context = crate::tools::spec::ToolContext::new(tmp.path().to_path_buf());
+        let registry = crate::tools::ToolRegistryBuilder::new()
+            .with_file_tools()
+            .build(context);
+        let catalog = registry.to_api_tools();
+        let mut tool_name = "ReadFile".to_string();
+
+        let tool_def = resolve_tool_definition(&mut tool_name, &catalog, Some(&registry));
+
+        assert!(tool_def.is_some());
+        assert_eq!(tool_name, "read_file");
+        let allowed = vec!["read_file".to_string()];
+        assert!(command_allows_tool(Some(&allowed), &tool_name));
+    }
+
+    #[test]
+    fn hook_gate_denies_with_exit_code_2() {
+        use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};
+
+        let deny_cmd = if cfg!(windows) { "exit /b 2" } else { "exit 2" };
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, deny_cmd)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, std::path::PathBuf::from("."));
+        let ctx = HookContext::new()
+            .with_tool_name("exec_shell")
+            .with_tool_args(&serde_json::json!({}));
+        let results = executor.execute(HookEvent::ToolCallBefore, &ctx);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].exit_code, Some(2));
+    }
+
+    #[test]
+    fn hook_gate_allows_with_exit_code_0() {
+        use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};
+
+        let allow_cmd = if cfg!(windows) { "exit /b 0" } else { "exit 0" };
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, allow_cmd)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, std::path::PathBuf::from("."));
+        let ctx = HookContext::new()
+            .with_tool_name("read_file")
+            .with_tool_args(&serde_json::json!({}));
+        let results = executor.execute(HookEvent::ToolCallBefore, &ctx);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].exit_code, Some(0));
+        assert!(results[0].success);
+    }
+
+    #[test]
+    fn hook_gate_failure_exit_code_1_is_not_denial() {
+        use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};
+
+        let fail_cmd = if cfg!(windows) { "exit /b 1" } else { "exit 1" };
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, fail_cmd)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, std::path::PathBuf::from("."));
+        let ctx = HookContext::new()
+            .with_tool_name("write_file")
+            .with_tool_args(&serde_json::json!({}));
+        let results = executor.execute(HookEvent::ToolCallBefore, &ctx);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].exit_code, Some(1));
+        assert_ne!(results[0].exit_code, Some(2));
+    }
+
+    #[test]
+    fn hook_gate_no_hooks_returns_no_results() {
+        use crate::hooks::{HookContext, HookEvent, HookExecutor, HooksConfig};
+
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, std::path::PathBuf::from("."));
+        let ctx = HookContext::new().with_tool_name("grep_files");
+        let results = executor.execute(HookEvent::ToolCallBefore, &ctx);
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn hook_gate_denial_reason_can_come_from_stdout() {
+        use crate::hooks::{Hook, HookContext, HookEvent, HookExecutor, HooksConfig};
+
+        let deny_cmd = if cfg!(windows) {
+            "echo Tool blocked by security policy & exit /b 2"
+        } else {
+            "echo 'Tool blocked by security policy' && exit 2"
+        };
+        let config = HooksConfig {
+            enabled: true,
+            hooks: vec![Hook::new(HookEvent::ToolCallBefore, deny_cmd)],
+            ..HooksConfig::default()
+        };
+        let executor = HookExecutor::new(config, std::path::PathBuf::from("."));
+        let ctx = HookContext::new().with_tool_name("exec_shell");
+        let results = executor.execute(HookEvent::ToolCallBefore, &ctx);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].exit_code, Some(2));
+        assert!(results[0].stdout.contains("security"));
     }
 }

@@ -5,10 +5,10 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   const { locale } = await params;
   const isZh = locale === "zh";
   return {
-    title: isZh ? "常见问题 · CodeWhale" : "FAQ · CodeWhale",
+    title: isZh ? "常见问题 · DeepSeek" : "FAQ · DeepSeek",
     description: isZh
-      ? "CodeWhale 常见问题：安装、配置、提供商、模型、模式、安全与隐私。答案来自实际代码、文档和 GitHub 议题。"
-      : "CodeWhale frequently asked questions: install, config, providers, models, modes, security, and privacy. Answers sourced from real code, docs, and GitHub issues.",
+      ? "DeepSeek 常见问题：安装、配置、提供商、模型、模式、安全与隐私。答案来自实际代码、文档和 GitHub 议题。"
+      : "DeepSeek frequently asked questions: install, config, providers, models, modes, security, and privacy. Answers sourced from real code, docs, and GitHub issues.",
   };
 }
 
@@ -20,16 +20,16 @@ interface FaqItem {
 
 const faqEn: FaqItem[] = [
   {
-    q: "What is CodeWhale?",
+    q: "What is DeepSeek?",
     a: (
       <>
-        CodeWhale is a terminal-native coding agent for open-source and open-weight models. It runs from the <code className="inline">deepseek</code> command, streams reasoning blocks, edits local workspaces with approval gates, and can auto-route each turn to the right model and thinking level. DeepSeek V4 is the first-class model path; OpenRouter is ready. Hugging Face, self-hosted, and other open-model surfaces are on the roadmap.
+        DeepSeek is a terminal-native coding agent for open-source and open-weight models. It runs from the <code className="inline">deepseek</code> command, streams reasoning blocks, edits local workspaces with approval gates, and can auto-route each turn to the right model and thinking level. DeepSeek V4 is the first-class model path; OpenRouter, Hugging Face, self-hosted runtimes, and other OpenAI-compatible routes are additive.
       </>
     ),
     sources: ["README.md", "docs/ARCHITECTURE.md"],
   },
   {
-    q: "How do I install CodeWhale?",
+    q: "How do I install DeepSeek?",
     a: (
       <>
         <p className="mb-2">Four paths, same result:</p>
@@ -39,15 +39,16 @@ npm install -g deepseek
 
 # Cargo (needs Rust 1.88+)
 cargo install deepseek-cli --locked
+cargo install deepseek-tui --locked
 
 # Homebrew (macOS)
-brew tap Hmbown/ && brew install 
+brew tap coohu/ && brew install 
 
 # Direct download
-# https://github.com/Hmbown/CodeWhale/releases`}
+# https://github.com/coohu/deepseek-tui/releases`}
         </pre>
         <p>
-          Run <code className="inline">deepseek</code> to start. First run creates <code className="inline">~/.deepseek/</code> automatically.
+          Run <code className="inline">deepseek</code> to start. First run creates <code className="inline">~/.deepseek/</code> automatically. Legacy <code className="inline">~/.deepseek/</code> is still read as a compatibility fallback.
           See the <Link href="/install" className="body-link">full install guide</Link> for China mirrors, Docker, and troubleshooting.
         </p>
       </>
@@ -67,13 +68,13 @@ brew tap Hmbown/ && brew install
     sources: ["README.md"],
   },
   {
-    q: "Is CodeWhale the same as DeepSeek TUI? What about the rename?",
+    q: "Is DeepSeek the same as DeepSeek TUI? What about the rename?",
     a: (
       <>
-        Yes. CodeWhale is the new name for what was previously called DeepSeek TUI.
-        The canonical command is now <code className="inline">deepseek</code>. Legacy <code className="inline">deepseek</code> and <code className="inline"></code> commands remain as compatibility shims — they still work.
-        Config lives at <code className="inline">~/.deepseek/</code>. <code className="inline">DEEPSEEK_*</code> env vars continue to work.
-        DeepSeek is not deprecated. The rename reflects CodeWhale's broader mission as the agentic terminal for open models across providers, not a narrowing away from DeepSeek.
+        Yes. DeepSeek is the new name for what was previously called DeepSeek TUI.
+        The canonical command is now <code className="inline">deepseek</code>. Legacy <code className="inline">deepseek</code> and <code className="inline">deepseek-tui</code> commands remain as compatibility shims — they still work.
+        Config lives at <code className="inline">~/.deepseek/</code>. Legacy <code className="inline">~/.deepseek/</code> config is still read as a compatibility fallback, and <code className="inline">DEEPSEEK_*</code> env vars continue to work.
+        DeepSeek is not deprecated. The rename reflects DeepSeek's broader mission as the agentic terminal for open models across providers, not a narrowing away from DeepSeek.
       </>
     ),
     sources: ["docs/REBRAND.md", "README.md"],
@@ -106,25 +107,25 @@ deepseek doctor         # full connectivity check`}
     sources: ["#907", "#1545", "docs/CONFIGURATION.md"],
   },
   {
-    q: "Which providers does CodeWhale support?",
+    q: "Which providers does DeepSeek support?",
     a: (
       <>
-        <p className="mb-2">CodeWhale ships with these built-in providers:</p>
+        <p className="mb-2">DeepSeek ships with these built-in providers:</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — first-class, native API. Reasoning streaming, cache metrics, thinking effort control.</li>
-          <li><strong>OpenRouter</strong> — unified API for DeepSeek models and more.</li>
-          <li><strong>OpenAI</strong>, <strong>NVIDIA NIM</strong>, <strong>Novita</strong>, <strong>Fireworks</strong>, <strong>sglang</strong>, <strong>vLLM</strong>, <strong>Ollama</strong></li>
+          <li><strong>OpenRouter</strong> — unified API for DeepSeek models and other open-model routes.</li>
+          <li><strong>OpenAI-compatible</strong>, <strong>NVIDIA NIM</strong>, <strong>AtlasCloud</strong>, <strong>Wanjie Ark</strong>, <strong>Volcengine Ark</strong>, <strong>Xiaomi MiMo</strong>, <strong>Novita</strong>, <strong>Fireworks</strong>, <strong>SiliconFlow</strong>, <strong>SiliconFlow CN</strong>, <strong>Arcee AI</strong>, <strong>Moonshot/Kimi</strong>, <strong>Hugging Face</strong>, <strong>SGLang</strong>, <strong>vLLM</strong>, <strong>Ollama</strong></li>
         </ul>
         <p>
           Set the corresponding env var (e.g. <code className="inline">OPENROUTER_API_KEY</code>) and your provider in <code className="inline">~/.deepseek/config.toml</code>.
-          Hugging Face, ZenMux, and self-hosted OpenAI-compatible endpoints are on the roadmap.
+          Self-hosted OpenAI-compatible endpoints are supported through the provider config.
         </p>
       </>
     ),
     sources: ["docs/CONFIGURATION.md", "#1978", "#1710"],
   },
   {
-    q: "How do I use OpenRouter with CodeWhale?",
+    q: "How do I use OpenRouter with DeepSeek?",
     a: (
       <>
         <pre className="code-block mb-2">
@@ -155,8 +156,8 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         Yes. Use the <code className="inline">vllm</code>, <code className="inline">sglang</code>, or <code className="inline">ollama</code> providers with your local endpoint.
         For OpenAI-compatible endpoints (llama.cpp server, text-generation-webui, Aphrodite, etc.), you can use the <code className="inline">openai</code> provider with a custom <code className="inline">base_url</code>.
-        CodeWhale also respects <code className="inline">DEEPSEEK_ALLOW_INSECURE_HTTP=true</code> for local HTTP endpoints.
-        Full Hugging Face TGI/vLLM integration is on the roadmap.
+        DeepSeek also respects <code className="inline">DEEPSEEK_ALLOW_INSECURE_HTTP=true</code> for local HTTP endpoints.
+        Hugging Face Inference Providers are also available through the <code className="inline">huggingface</code> provider. Broader Hub discovery, model cards, datasets, and Jobs belong to Model Lab.
       </>
     ),
     sources: ["#574", "#1303", "docs/CONFIGURATION.md"],
@@ -183,13 +184,13 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     a: (
       <>
         <p className="mb-2">
-          Use <code className="inline">deepseek --model auto</code> or <code className="inline">/model auto</code> to let CodeWhale decide how much model power each turn needs.
+          Use <code className="inline">deepseek --model auto</code> or <code className="inline">/model auto</code> to let DeepSeek decide how much model power each turn needs.
         </p>
         <p className="mb-2">
           <strong>Fin</strong> is the fast non-thinking path (<code className="inline">deepseek-v4-flash</code> with thinking off) used for routing decisions, summaries, RLM children, context maintenance, and other coordination work. Before the real turn is sent, Fin makes a small routing call to pick the concrete model and thinking level.
         </p>
         <p>
-          Short/simple turns can stay on Flash with thinking off. Coding, debugging, release work, architecture, or security review can move up to Pro and/or higher thinking. Fin is local to CodeWhale — the upstream API never receives <code className="inline">model: "auto"</code>.
+          Short/simple turns can stay on Flash with thinking off. Coding, debugging, release work, architecture, or security review can move up to Pro and/or higher thinking. Fin is local to DeepSeek — the upstream API never receives <code className="inline">model: "auto"</code>.
         </p>
       </>
     ),
@@ -201,16 +202,16 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         <code className="inline">/goal</code> is a simple goal-setter for the current session.
         It does not add another app mode; the mode switcher remains Plan, Agent, and YOLO.
-        Track progress in <a href="https://github.com/Hmbown/CodeWhale/issues/891" className="body-link">#891</a>.
+        Track progress in <a href="https://github.com/coohu/deepseek-tui/issues/891" className="body-link">#891</a>.
       </>
     ),
     sources: ["#891"],
   },
   {
-    q: "Is my code safe? What sandboxing does CodeWhale use?",
+    q: "Is my code safe? What sandboxing does DeepSeek use?",
     a: (
       <>
-        CodeWhale runs entirely on your machine. No telemetry, no cloud processing of your code.
+        DeepSeek runs entirely on your machine. No telemetry, no cloud processing of your code.
         Sandbox backends: <strong>seatbelt</strong> (macOS), <strong>landlock</strong> (Linux), restricted tokens (Windows).
         Workspace boundaries default to <code className="inline">--workspace</code>. <code className="inline">/trust</code> lifts them.
         Approval mode is configurable per session. All credential/approval/elevation events are written to <code className="inline">~/.deepseek/audit.log</code>.
@@ -222,8 +223,8 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     q: "How do MCP servers work?",
     a: (
       <>
-        CodeWhale is a bidirectional MCP client and server. Define servers in <code className="inline">~/.deepseek/mcp.json</code>.
-        Tools appear as <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code>. You can also expose CodeWhale as an MCP server with <code className="inline">deepseek mcp</code>.
+        DeepSeek is a bidirectional MCP client and server. Define servers in <code className="inline">~/.deepseek/mcp.json</code>.
+        Tools appear as <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code>. You can also expose DeepSeek as an MCP server with <code className="inline">deepseek mcp</code>.
         See the <Link href="/docs#mcp" className="body-link">docs page</Link> for configuration examples.
       </>
     ),
@@ -235,7 +236,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         No CLA required. Fork, branch with conventional commits (<code className="inline">feat:</code>, <code className="inline">fix:</code>, etc.), run the local checks, open a PR.
         The maintainer reads everything personally. Start with issues labeled <code className="inline">good first issue</code>.
-        See the <Link href="/contribute" className="body-link">contribute page</Link> and <a href="https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md" className="body-link">CONTRIBUTING.md</a>.
+        See the <Link href="/contribute" className="body-link">contribute page</Link> and <a href="https://github.com/coohu/deepseek-tui/blob/main/CONTRIBUTING.md" className="body-link">CONTRIBUTING.md</a>.
       </>
     ),
     sources: ["CONTRIBUTING.md"],
@@ -258,7 +259,7 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
         </pre>
         <p>
-          Prebuilt binaries are also available from <a href="https://github.com/Hmbown/CodeWhale/releases" className="body-link">GitHub Releases</a>.
+          Prebuilt binaries are also available from <a href="https://github.com/coohu/deepseek-tui/releases" className="body-link">GitHub Releases</a>.
           The Gitee mirror and CNB mirror may also be available.
         </p>
       </>
@@ -281,12 +282,12 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     sources: ["#907", "#1545"],
   },
   {
-    q: "What is Model Lab? When will Hugging Face integration be available?",
+    q: "What is Model Lab? What Hugging Face pieces are available?",
     a: (
       <>
-        Model Lab is the planned open-model infrastructure layer: Hugging Face Hub API for model discovery, model cards, datasets, safetensors adapters, inference providers, and Jobs.
-        It is NOT fully implemented. Track progress in <a href="https://github.com/Hmbown/CodeWhale/issues/1977" className="body-link">#1977</a>.
-        Currently, you can use Hugging Face models through the OpenRouter provider or self-hosted endpoints.
+        The <code className="inline">huggingface</code> provider is the shipped OpenAI-compatible route for Hugging Face Inference Providers.
+        Model Lab is the planned open-model infrastructure layer for Hub discovery, model cards, datasets, safetensors adapters, and Jobs.
+        Track broader progress in <a href="https://github.com/coohu/deepseek-tui/issues/1977" className="body-link">#1977</a>.
       </>
     ),
     sources: ["#1977", "docs/MODEL_LAB.md"],
@@ -295,7 +296,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     q: "Why is token consumption so high? / Why is cache hit rate low?",
     a: (
       <>
-        CodeWhale sends substantial context (system prompt, project instructions, tool definitions) with each turn.
+        DeepSeek sends substantial context (system prompt, project instructions, tool definitions) with each turn.
         DeepSeek's prefix cache is used aggressively — the system prompt is layered to maximize cache hits.
         If you see high token usage, check: are you using <code className="inline">deepseek-v4-pro</code> for simple queries better suited to Flash?
         Model auto-routing (Fin) can help pick the right model per turn.
@@ -305,7 +306,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     sources: ["#1177", "#1818", "#743"],
   },
   {
-    q: "How do I update CodeWhale?",
+    q: "How do I update DeepSeek?",
     a: (
       <>
         <pre className="code-block mb-2">
@@ -323,7 +324,7 @@ brew update && brew upgrade `}
         </pre>
         <p>
           If you installed via npm, <code className="inline">deepseek update</code> downloads the latest release binaries.
-          If a mirror is lagging, download directly from <a href="https://github.com/Hmbown/CodeWhale/releases" className="body-link">GitHub Releases</a>.
+          If a mirror is lagging, download directly from <a href="https://github.com/coohu/deepseek-tui/releases" className="body-link">GitHub Releases</a>.
         </p>
       </>
     ),
@@ -333,16 +334,16 @@ brew update && brew upgrade `}
 
 const faqZh: FaqItem[] = [
   {
-    q: "CodeWhale 是什么？",
+    q: "DeepSeek 是什么？",
     a: (
       <>
-        CodeWhale 是一个面向开源模型的终端原生编程智能体。通过 <code className="inline">deepseek</code> 命令启动，流式输出推理块，在有审批门槛的情况下编辑本地工作区，并可为每个回合自动选择最合适的模型和推理深度。DeepSeek V4 是一级模型路径；OpenRouter 已就绪。Hugging Face、自托管等开放模型接口已在路线图中。
+        DeepSeek 是一个面向开源模型的终端原生编程智能体。通过 <code className="inline">deepseek</code> 命令启动，流式输出推理块，在有审批门槛的情况下编辑本地工作区，并可为每个回合自动选择最合适的模型和推理深度。DeepSeek V4 是一级模型路径；OpenRouter、Hugging Face、自托管运行时和其他 OpenAI 兼容路由都是增量选择。
       </>
     ),
     sources: ["README.md", "docs/ARCHITECTURE.md"],
   },
   {
-    q: "如何安装 CodeWhale？",
+    q: "如何安装 DeepSeek？",
     a: (
       <>
         <p className="mb-2">四种方式，殊途同归：</p>
@@ -352,15 +353,16 @@ npm install -g deepseek
 
 # Cargo（需要 Rust 1.88+）
 cargo install deepseek-cli --locked
+cargo install deepseek-tui --locked
 
 # Homebrew（macOS）
-brew tap Hmbown/ && brew install 
+brew tap coohu/ && brew install 
 
 # 直接下载
-# https://github.com/Hmbown/CodeWhale/releases`}
+# https://github.com/coohu/deepseek-tui/releases`}
         </pre>
         <p>
-          输入 <code className="inline">deepseek</code> 即可启动。首次运行会自动创建 <code className="inline">~/.deepseek/</code>。
+          输入 <code className="inline">deepseek</code> 即可启动。首次运行会自动创建 <code className="inline">~/.deepseek/</code>。旧版 <code className="inline">~/.deepseek/</code> 仍会作为兼容回退读取。
           查看 <Link href="/zh/install" className="body-link">完整安装指南</Link> 了解国内镜像、Docker 和故障排除。
         </p>
       </>
@@ -380,12 +382,12 @@ brew tap Hmbown/ && brew install
     sources: ["README.md"],
   },
   {
-    q: "CodeWhale 和 DeepSeek TUI 是什么关系？改名是怎么回事？",
+    q: "DeepSeek 和 DeepSeek TUI 是什么关系？改名是怎么回事？",
     a: (
       <>
-        CodeWhale 是 DeepSeek TUI 的新名称。当前的主命令是 <code className="inline">deepseek</code>。旧的 <code className="inline">deepseek</code> 和 <code className="inline"></code> 命令作为兼容垫片继续有效。
-        配置仍然存放在 <code className="inline">~/.deepseek/</code>。<code className="inline">DEEPSEEK_*</code> 环境变量继续有效。
-        DeepSeek 并未被弃用。改名是为了体现 CodeWhale 更广泛的使命——成为面向所有提供商的开放模型智能体终端，而非弱化 DeepSeek 的地位。
+        DeepSeek 是 DeepSeek TUI 的新名称。当前的主命令是 <code className="inline">deepseek</code>。旧的 <code className="inline">deepseek</code> 和 <code className="inline">deepseek-tui</code> 命令作为兼容垫片继续有效。
+        配置存放在 <code className="inline">~/.deepseek/</code>。旧版 <code className="inline">~/.deepseek/</code> 配置仍会作为兼容回退读取，<code className="inline">DEEPSEEK_*</code> 环境变量继续有效。
+        DeepSeek 并未被弃用。改名是为了体现 DeepSeek 更广泛的使命——成为面向所有提供商的开放模型智能体终端，而非弱化 DeepSeek 的地位。
       </>
     ),
     sources: ["docs/REBRAND.md", "README.md"],
@@ -418,18 +420,18 @@ deepseek doctor         # 完整连接检查`}
     sources: ["#907", "#1545", "docs/CONFIGURATION.md"],
   },
   {
-    q: "CodeWhale 支持哪些提供商？",
+    q: "DeepSeek 支持哪些提供商？",
     a: (
       <>
-        <p className="mb-2">CodeWhale 内建以下提供商：</p>
+        <p className="mb-2">DeepSeek 内建以下提供商：</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — 一级支持，原生 API。推理流、缓存指标、思考力度控制。</li>
-          <li><strong>OpenRouter</strong> — 统一 API，可访问 DeepSeek 等模型。</li>
-          <li><strong>OpenAI</strong>、<strong>NVIDIA NIM</strong>、<strong>Novita</strong>、<strong>Fireworks</strong>、<strong>sglang</strong>、<strong>vLLM</strong>、<strong>Ollama</strong></li>
+          <li><strong>OpenRouter</strong> — 统一 API，可访问 DeepSeek 和其他开放模型路由。</li>
+          <li><strong>OpenAI 兼容</strong>、<strong>NVIDIA NIM</strong>、<strong>AtlasCloud</strong>、<strong>Wanjie Ark</strong>、<strong>Volcengine Ark</strong>、<strong>Xiaomi MiMo</strong>、<strong>Novita</strong>、<strong>Fireworks</strong>、<strong>SiliconFlow</strong>、<strong>SiliconFlow CN</strong>、<strong>Arcee AI</strong>、<strong>Moonshot/Kimi</strong>、<strong>Hugging Face</strong>、<strong>SGLang</strong>、<strong>vLLM</strong>、<strong>Ollama</strong></li>
         </ul>
         <p>
           设置对应的环境变量（如 <code className="inline">OPENROUTER_API_KEY</code>）并在 <code className="inline">~/.deepseek/config.toml</code> 中配置你的提供商。
-          Hugging Face、ZenMux 和自托管 OpenAI 兼容端点正在路线图中。
+          自托管 OpenAI 兼容端点可通过 provider 配置接入。
         </p>
       </>
     ),
@@ -467,8 +469,8 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         可以。使用 <code className="inline">vllm</code>、<code className="inline">sglang</code> 或 <code className="inline">ollama</code> 提供商连接本地端点。
         对于 OpenAI 兼容端点（llama.cpp server、text-generation-webui 等），可以使用 <code className="inline">openai</code> 提供商并设置自定义 <code className="inline">base_url</code>。
-        CodeWhale 也支持 <code className="inline">DEEPSEEK_ALLOW_INSECURE_HTTP=true</code> 用于本地 HTTP 端点。
-        完整的 Hugging Face TGI/vLLM 集成正在路线图中。
+        DeepSeek 也支持 <code className="inline">DEEPSEEK_ALLOW_INSECURE_HTTP=true</code> 用于本地 HTTP 端点。
+        Hugging Face Inference Providers 也可以通过 <code className="inline">huggingface</code> provider 使用。更完整的 Hub 发现、模型卡片、数据集和 Jobs 属于 Model Lab。
       </>
     ),
     sources: ["#574", "#1303", "docs/CONFIGURATION.md"],
@@ -495,13 +497,13 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     a: (
       <>
         <p className="mb-2">
-          使用 <code className="inline">deepseek --model auto</code> 或 <code className="inline">/model auto</code> 让 CodeWhale 为每个回合自动选择最合适的模型和推理深度。
+          使用 <code className="inline">deepseek --model auto</code> 或 <code className="inline">/model auto</code> 让 DeepSeek 为每个回合自动选择最合适的模型和推理深度。
         </p>
         <p className="mb-2">
           <strong>Fin</strong> 是快速非推理路径（<code className="inline">deepseek-v4-flash</code>，推理关闭），用于路由决策、摘要、RLM 子任务、上下文维护等协调工作。在真实请求发送前，Fin 会做一个小的路由调用来选择具体的模型和推理级别。
         </p>
         <p>
-          简短简单的请求可以留在 Flash + 推理关闭的状态。编码、调试、发布工作、架构设计或安全审查则会提升到 Pro 和/或更高的推理级别。Fin 是 CodeWhale 本地逻辑——上游 API 永远不会收到 <code className="inline">model: "auto"</code>。
+          简短简单的请求可以留在 Flash + 推理关闭的状态。编码、调试、发布工作、架构设计或安全审查则会提升到 Pro 和/或更高的推理级别。Fin 是 DeepSeek 本地逻辑——上游 API 永远不会收到 <code className="inline">model: "auto"</code>。
         </p>
       </>
     ),
@@ -513,16 +515,16 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         Goal 模式是未来的工作流/标签页方向，用于长时间运行的多步目标——不是当前的 <code className="inline">/goal</code> 命令。
         当前的 <code className="inline">/goal</code> 是一个简单的目标设置器。完整的 Goal 模式（自主多回合任务执行，支持检查点/恢复）已规划但尚未实现。
-        关注 <a href="https://github.com/Hmbown/CodeWhale/issues/891" className="body-link">#891</a> 的进展。
+        关注 <a href="https://github.com/coohu/deepseek-tui/issues/891" className="body-link">#891</a> 的进展。
       </>
     ),
     sources: ["#891"],
   },
   {
-    q: "我的代码安全吗？CodeWhale 使用什么沙箱机制？",
+    q: "我的代码安全吗？DeepSeek 使用什么沙箱机制？",
     a: (
       <>
-        CodeWhale 完全在你的机器上运行。无遥测，不会将你的代码上传到云端处理。
+        DeepSeek 完全在你的机器上运行。无遥测，不会将你的代码上传到云端处理。
         沙箱后端：<strong>seatbelt</strong>（macOS）、<strong>landlock</strong>（Linux）、受限令牌（Windows）。
         工作区边界默认为 <code className="inline">--workspace</code>。<code className="inline">/trust</code> 可解除边界。
         审批模式可按会话配置。所有凭证/审批/提权事件写入 <code className="inline">~/.deepseek/audit.log</code>。
@@ -534,8 +536,8 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     q: "MCP 服务器如何工作？",
     a: (
       <>
-        CodeWhale 是双向 MCP 客户端和服务器。在 <code className="inline">~/.deepseek/mcp.json</code> 中定义服务器。
-        工具以 <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code> 形式呈现。你也可以通过 <code className="inline">deepseek mcp</code> 将 CodeWhale 暴露为 MCP 服务器。
+        DeepSeek 是双向 MCP 客户端和服务器。在 <code className="inline">~/.deepseek/mcp.json</code> 中定义服务器。
+        工具以 <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code> 形式呈现。你也可以通过 <code className="inline">deepseek mcp</code> 将 DeepSeek 暴露为 MCP 服务器。
         查看 <Link href="/zh/docs#mcp" className="body-link">文档页面</Link> 了解配置示例。
       </>
     ),
@@ -547,7 +549,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
       <>
         无需签署 CLA。Fork、用约定式提交（<code className="inline">feat:</code>、<code className="inline">fix:</code> 等）创建分支、通过本地检查、提交 PR。
         维护者亲自阅读每一条内容。从标记为 <code className="inline">good first issue</code> 的议题开始。
-        查看 <Link href="/zh/contribute" className="body-link">贡献页面</Link> 和 <a href="https://github.com/Hmbown/CodeWhale/blob/main/CONTRIBUTING.md" className="body-link">CONTRIBUTING.md</a>。
+        查看 <Link href="/zh/contribute" className="body-link">贡献页面</Link> 和 <a href="https://github.com/coohu/deepseek-tui/blob/main/CONTRIBUTING.md" className="body-link">CONTRIBUTING.md</a>。
       </>
     ),
     sources: ["CONTRIBUTING.md"],
@@ -570,7 +572,7 @@ replace-with = "tuna"
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
         </pre>
         <p>
-          也可以从 <a href="https://github.com/Hmbown/CodeWhale/releases" className="body-link">GitHub Releases</a> 直接下载预编译二进制。
+          也可以从 <a href="https://github.com/coohu/deepseek-tui/releases" className="body-link">GitHub Releases</a> 直接下载预编译二进制。
           Gitee 镜像和 CNB 镜像也可能可用。
         </p>
       </>
@@ -593,12 +595,12 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     sources: ["#907", "#1545"],
   },
   {
-    q: "Model Lab 是什么？Hugging Face 集成什么时候可用？",
+    q: "Model Lab 是什么？Hugging Face 哪些部分可用？",
     a: (
       <>
-        Model Lab 是规划中的开放模型基础设施层：Hugging Face Hub API 用于模型发现、模型卡片、数据集、safetensors 适配器、推理提供商和 Jobs。
-        它尚未完全实现。关注 <a href="https://github.com/Hmbown/CodeWhale/issues/1977" className="body-link">#1977</a> 的进展。
-        目前，你可以通过 OpenRouter 提供商或自托管端点使用 Hugging Face 模型。
+        <code className="inline">huggingface</code> provider 是已经接入的 OpenAI 兼容 Hugging Face Inference Providers 路由。
+        Model Lab 是规划中的开放模型基础设施层：Hub 发现、模型卡片、数据集、safetensors 适配器和 Jobs。
+        更完整的进展见 <a href="https://github.com/coohu/deepseek-tui/issues/1977" className="body-link">#1977</a>。
       </>
     ),
     sources: ["#1977", "docs/MODEL_LAB.md"],
@@ -607,7 +609,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     q: "为什么 token 消耗这么大？/ 缓存命中率为什么低？",
     a: (
       <>
-        CodeWhale 每次请求都会发送大量上下文（系统提示、项目说明、工具定义）。
+        DeepSeek 每次请求都会发送大量上下文（系统提示、项目说明、工具定义）。
         DeepSeek 的前缀缓存被积极使用——系统提示按最稳定的层级排列以最大化缓存命中。
         如果你发现 token 使用量很高，请检查：是否在简单查询中使用了 <code className="inline">deepseek-v4-pro</code>（更适合用 Flash）？
         模型自动路由（Fin）可以帮助为每个回合选择合适的模型。
@@ -617,7 +619,7 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     sources: ["#1177", "#1818", "#743"],
   },
   {
-    q: "如何更新 CodeWhale？",
+    q: "如何更新 DeepSeek？",
     a: (
       <>
         <pre className="code-block mb-2">
@@ -635,7 +637,7 @@ brew update && brew upgrade `}
         </pre>
         <p>
           如果通过 npm 安装，<code className="inline">deepseek update</code> 会下载最新发布二进制。
-          如果镜像延迟，请从 <a href="https://github.com/Hmbown/CodeWhale/releases" className="body-link">GitHub Releases</a> 直接下载。
+          如果镜像延迟，请从 <a href="https://github.com/coohu/deepseek-tui/releases" className="body-link">GitHub Releases</a> 直接下载。
         </p>
       </>
     ),
@@ -706,7 +708,7 @@ export default async function FaqPage({ params }: { params: Promise<{ locale: st
               : "Didn't find your question?"}
           </p>
           <a
-            href="https://github.com/Hmbown/CodeWhale/issues/new/choose"
+            href="https://github.com/coohu/deepseek-tui/issues/new/choose"
             className="inline-flex items-center gap-2 px-5 py-3 bg-ink text-paper font-mono text-sm uppercase tracking-wider hover:bg-indigo transition-colors"
           >
             {isZh ? "提交 Issue →" : "Open an issue →"}

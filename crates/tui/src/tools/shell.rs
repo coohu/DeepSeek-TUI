@@ -21,7 +21,20 @@ use wait_timeout::ChildExt;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject,
+};
+#[cfg(windows)]
+use windows::core::PCWSTR;
 
+#[cfg(not(target_env = "ohos"))]
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use super::shell_output::{summarize_output, truncate_with_meta};
@@ -118,6 +131,7 @@ pub struct ShellDeltaResult {
 
 enum ShellChild {
     Process(Child),
+    #[cfg(not(target_env = "ohos"))]
     Pty(Box<dyn portable_pty::Child + Send>),
 }
 
@@ -153,7 +167,7 @@ fn kill_child_process_group(child: &mut Child) -> std::io::Result<()> {
 /// path (`kill_child_process_group` from the cancellation token) still
 /// handles normal shutdown; abnormal exit can leak children — tracked as a
 /// follow-up watchdog item per the original issue's acceptance criteria.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 fn install_parent_death_signal(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     // SAFETY: `pre_exec` runs in the child between fork and exec. The closure
@@ -215,12 +229,126 @@ fn push_shell_args(cmd: &mut Command, _program: &str, args: &[String]) {
     cmd.args(args);
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
 fn install_parent_death_signal(_cmd: &mut Command) {
     // No kernel-level equivalent on macOS / Windows. The cooperative
     // cancellation + process_group SIGKILL path covers normal shutdown;
     // abnormal exit (panic without unwind, SIGKILL of the TUI) can still
     // leak children on those platforms — tracked as a follow-up.
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsJob {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+// SAFETY: Windows job handles are process-wide kernel handles. Moving the
+// wrapper between threads does not invalidate the handle, and access is
+// externally synchronized by ShellManager's mutex.
+unsafe impl Send for WindowsJob {}
+#[cfg(windows)]
+// SAFETY: The wrapper exposes only terminate/drop operations around a kernel
+// handle; concurrent use is guarded by ShellManager.
+unsafe impl Sync for WindowsJob {}
+
+#[cfg(windows)]
+impl WindowsJob {
+    fn attach_to_child(child: &Child) -> std::io::Result<Self> {
+        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()).map_err(windows_io_error)? };
+        let job = Self { handle };
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        unsafe {
+            SetInformationJobObject(
+                job.handle,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+            .map_err(windows_io_error)?;
+
+            let process_handle = HANDLE(child.as_raw_handle());
+            AssignProcessToJobObject(job.handle, process_handle).map_err(windows_io_error)?;
+        }
+
+        Ok(job)
+    }
+
+    fn terminate(&self) -> std::io::Result<()> {
+        unsafe { TerminateJobObject(self.handle, 1).map_err(windows_io_error) }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsJob {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_io_error(error: windows::core::Error) -> std::io::Error {
+    std::io::Error::other(error)
+}
+
+#[cfg(windows)]
+fn terminate_windows_job(job: Option<&WindowsJob>, child: &mut Child) -> std::io::Result<()> {
+    if let Some(job) = job {
+        match job.terminate() {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "failed to terminate Windows job object; falling back to immediate child kill"
+                );
+            }
+        }
+    }
+    child.kill()
+}
+
+#[cfg(windows)]
+fn terminate_and_close_windows_job(windows_job: Option<WindowsJob>) {
+    if let Some(job) = windows_job.as_ref()
+        && let Err(err) = job.terminate()
+    {
+        tracing::warn!(
+            ?err,
+            "failed to terminate Windows shell job before closing job handle"
+        );
+    }
+    drop(windows_job);
+}
+
+#[cfg(windows)]
+fn terminate_child_and_close_windows_job(
+    windows_job: Option<WindowsJob>,
+    child: &mut Child,
+) -> std::io::Result<()> {
+    let result = terminate_windows_job(windows_job.as_ref(), child);
+    drop(windows_job);
+    result
+}
+
+#[cfg(windows)]
+fn attach_windows_job(child: &Child, command: &str) -> Option<WindowsJob> {
+    match WindowsJob::attach_to_child(child) {
+        Ok(job) => Some(job),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                command,
+                "failed to attach Windows shell process to job object; descendant cleanup degraded"
+            );
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -237,6 +365,7 @@ impl ShellExitStatus {
         }
     }
 
+    #[cfg(not(target_env = "ohos"))]
     fn from_pty(status: portable_pty::ExitStatus) -> Self {
         let code = i32::try_from(status.exit_code()).unwrap_or(i32::MAX);
         Self {
@@ -252,6 +381,7 @@ impl ShellChild {
             ShellChild::Process(child) => child
                 .try_wait()
                 .map(|status| status.map(ShellExitStatus::from_std)),
+            #[cfg(not(target_env = "ohos"))]
             ShellChild::Pty(child) => child
                 .try_wait()
                 .map(|status| status.map(ShellExitStatus::from_pty)),
@@ -261,16 +391,19 @@ impl ShellChild {
     fn wait(&mut self) -> std::io::Result<ShellExitStatus> {
         match self {
             ShellChild::Process(child) => child.wait().map(ShellExitStatus::from_std),
+            #[cfg(not(target_env = "ohos"))]
             ShellChild::Pty(child) => child.wait().map(ShellExitStatus::from_pty),
         }
     }
 
+    #[cfg(not(windows))]
     fn kill(&mut self) -> std::io::Result<()> {
         match self {
             #[cfg(unix)]
             ShellChild::Process(child) => kill_child_process_group(child),
             #[cfg(not(unix))]
             ShellChild::Process(child) => child.kill(),
+            #[cfg(not(target_env = "ohos"))]
             ShellChild::Pty(child) => child.kill(),
         }
     }
@@ -278,6 +411,7 @@ impl ShellChild {
 
 enum StdinWriter {
     Pipe(ChildStdin),
+    #[cfg(not(target_env = "ohos"))]
     Pty(Box<dyn Write + Send>),
 }
 
@@ -285,6 +419,7 @@ impl StdinWriter {
     fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
         match self {
             StdinWriter::Pipe(stdin) => stdin.write_all(data),
+            #[cfg(not(target_env = "ohos"))]
             StdinWriter::Pty(writer) => writer.write_all(data),
         }
     }
@@ -292,6 +427,7 @@ impl StdinWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             StdinWriter::Pipe(stdin) => stdin.flush(),
+            #[cfg(not(target_env = "ohos"))]
             StdinWriter::Pty(writer) => writer.flush(),
         }
     }
@@ -317,6 +453,25 @@ fn spawn_reader_thread<R: Read + Send + 'static>(
     })
 }
 
+const SYNC_READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn spawn_sync_reader_thread<R: Read + Send + 'static>(
+    mut reader: R,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        tx.send(buf).ok();
+    });
+    rx
+}
+
+fn recv_sync_reader_output(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+    rx.recv_timeout(SYNC_READER_DRAIN_TIMEOUT)
+        .unwrap_or_default()
+}
+
 /// A background shell process being tracked
 pub struct BackgroundShell {
     pub id: String,
@@ -333,6 +488,8 @@ pub struct BackgroundShell {
     stderr_cursor: usize,
     stdin: Option<StdinWriter>,
     child: Option<ShellChild>,
+    #[cfg(windows)]
+    windows_job: Option<WindowsJob>,
     stdout_thread: Option<std::thread::JoinHandle<()>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -376,9 +533,17 @@ impl BackgroundShell {
         // Without this kill, handle.join() blocks indefinitely, freezing the UI
         // event loop that calls list_jobs() → poll() → collect_output().
         #[cfg(unix)]
-        if let Some(ShellChild::Process(ref mut proc)) = self.child {
-            let _ = kill_child_process_group(proc);
+        if let Some(child) = self.child.as_mut() {
+            match child {
+                ShellChild::Process(proc) => {
+                    let _ = kill_child_process_group(proc);
+                }
+                #[cfg(not(target_env = "ohos"))]
+                ShellChild::Pty(_) => {}
+            }
         }
+        #[cfg(windows)]
+        terminate_and_close_windows_job(self.windows_job.take());
         if let Some(handle) = self.stdout_thread.take() {
             let _ = handle.join();
         }
@@ -470,8 +635,26 @@ impl BackgroundShell {
     /// Kill the process
     fn kill(&mut self) -> Result<()> {
         if let Some(ref mut child) = self.child {
-            child.kill().context("Failed to kill process")?;
-            let _ = child.wait();
+            match child {
+                ShellChild::Process(proc) => {
+                    #[cfg(windows)]
+                    {
+                        terminate_windows_job(self.windows_job.as_ref(), proc)
+                            .context("Failed to kill process tree")?;
+                        let _ = proc.wait();
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        proc.kill().context("Failed to kill process")?;
+                        let _ = proc.wait();
+                    }
+                }
+                #[cfg(not(target_env = "ohos"))]
+                ShellChild::Pty(child) => {
+                    child.kill().context("Failed to kill process")?;
+                    let _ = child.wait();
+                }
+            }
         }
         self.status = ShellStatus::Killed;
         self.collect_output();
@@ -553,6 +736,17 @@ impl Drop for BackgroundShell {
         if self.status == ShellStatus::Running
             && let Some(ref mut child) = self.child
         {
+            #[cfg(windows)]
+            match child {
+                ShellChild::Process(proc) => {
+                    let _ = terminate_windows_job(self.windows_job.as_ref(), proc);
+                }
+                #[cfg(not(target_env = "ohos"))]
+                ShellChild::Pty(child) => {
+                    let _ = child.kill();
+                }
+            }
+            #[cfg(not(windows))]
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -731,6 +925,9 @@ impl ShellManager {
         policy_override: Option<ExecutionSandboxPolicy>,
         extra_env: HashMap<String, String>,
     ) -> Result<ShellResult> {
+        // Log execution via ShellDispatcher when SHELL_DISPATCHER_LOG is set.
+        crate::shell_dispatcher::ShellDispatcher::log_exec(command);
+
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         // Clamp timeout to max 10 minutes (600000ms)
@@ -794,6 +991,8 @@ impl ShellManager {
         policy_override: Option<ExecutionSandboxPolicy>,
         extra_env: HashMap<String, String>,
     ) -> Result<ShellResult> {
+        crate::shell_dispatcher::ShellDispatcher::log_exec(command);
+
         let work_dir = working_dir.map_or_else(|| self.default_workspace.clone(), PathBuf::from);
 
         let timeout_ms = timeout_ms.clamp(1000, 600_000);
@@ -841,9 +1040,31 @@ impl ShellManager {
 
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
+        // Disable raw mode before spawn; restore only if raw mode was active
+        // on entry (issue #1690).
+        let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        if raw_mode_was_enabled {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+        struct SyncRawModeGuard {
+            restore: bool,
+        }
+        impl Drop for SyncRawModeGuard {
+            fn drop(&mut self) {
+                if self.restore {
+                    let _ = crossterm::terminal::enable_raw_mode();
+                }
+            }
+        }
+        let _guard = SyncRawModeGuard {
+            restore: raw_mode_was_enabled,
+        };
+
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to execute: {original_command}"))?;
+        #[cfg(windows)]
+        let windows_job = attach_windows_job(&child, original_command);
 
         if let Some(input) = stdin_data
             && let Some(mut stdin) = child.stdin.take()
@@ -857,25 +1078,20 @@ impl ShellManager {
         let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
         let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
 
-        // Spawn threads to read output
-        let stdout_thread = std::thread::spawn(move || {
-            let mut reader = stdout_handle;
-            let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
-            buf
-        });
-
-        let stderr_thread = std::thread::spawn(move || {
-            let mut reader = stderr_handle;
-            let mut buf = Vec::new();
-            let _ = reader.read_to_end(&mut buf);
-            buf
-        });
+        // Spawn threads to read output. Use bounded receives below so a killed
+        // or detached descendant that keeps pipe handles open cannot wedge the
+        // foreground shell path while the global tool lock is held (#2571).
+        let stdout_rx = spawn_sync_reader_thread(stdout_handle);
+        let stderr_rx = spawn_sync_reader_thread(stderr_handle);
 
         // Wait with timeout
         if let Some(status) = child.wait_timeout(timeout)? {
-            let stdout = stdout_thread.join().unwrap_or_default();
-            let stderr = stderr_thread.join().unwrap_or_default();
+            #[cfg(unix)]
+            let _ = kill_child_process_group(&mut child);
+            #[cfg(windows)]
+            terminate_and_close_windows_job(windows_job);
+            let stdout = recv_sync_reader_output(&stdout_rx);
+            let stderr = recv_sync_reader_output(&stderr_rx);
             let stdout_str = String::from_utf8_lossy(&stdout).to_string();
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let exit_code = status.code().unwrap_or(-1);
@@ -914,11 +1130,13 @@ impl ShellManager {
             // Timeout - kill the process
             #[cfg(unix)]
             let _ = kill_child_process_group(&mut child);
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            let _ = terminate_child_and_close_windows_job(windows_job, &mut child);
+            #[cfg(all(not(unix), not(windows)))]
             let _ = child.kill();
             let status = child.wait().ok();
-            let stdout = stdout_thread.join().unwrap_or_default();
-            let stderr = stderr_thread.join().unwrap_or_default();
+            let stdout = recv_sync_reader_output(&stdout_rx);
+            let stderr = recv_sync_reader_output(&stderr_rx);
             let stdout_str = String::from_utf8_lossy(&stdout).to_string();
             let stderr_str = String::from_utf8_lossy(&stderr).to_string();
             let (stdout, stdout_meta) = truncate_with_meta(&stdout_str);
@@ -975,13 +1193,37 @@ impl ShellManager {
         }
         install_parent_death_signal(&mut cmd);
 
+        // Disable raw mode before spawn; restore only if raw mode was active
+        // on entry (issue #1690).
+        let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        if raw_mode_was_enabled {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+        struct InteractiveRawModeGuard {
+            restore: bool,
+        }
+        impl Drop for InteractiveRawModeGuard {
+            fn drop(&mut self) {
+                if self.restore {
+                    let _ = crossterm::terminal::enable_raw_mode();
+                }
+            }
+        }
+        let _guard = InteractiveRawModeGuard {
+            restore: raw_mode_was_enabled,
+        };
+
         child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
         let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to execute: {original_command}"))?;
+        #[cfg(windows)]
+        let windows_job = attach_windows_job(&child, original_command);
 
         if let Some(status) = child.wait_timeout(timeout)? {
+            #[cfg(windows)]
+            terminate_and_close_windows_job(windows_job);
             Ok(ShellResult {
                 task_id: None,
                 status: if status.success() {
@@ -1010,7 +1252,9 @@ impl ShellManager {
         } else {
             #[cfg(unix)]
             let _ = kill_child_process_group(&mut child);
-            #[cfg(not(unix))]
+            #[cfg(windows)]
+            let _ = terminate_child_and_close_windows_job(windows_job, &mut child);
+            #[cfg(all(not(unix), not(windows)))]
             let _ = child.kill();
             let status = child.wait().ok();
 
@@ -1056,6 +1300,13 @@ impl ShellManager {
         let program = exec_env.program();
         let args = exec_env.args();
 
+        #[cfg(target_env = "ohos")]
+        if tty {
+            return Err(anyhow!(
+                "TTY shell mode is not supported on HarmonyOS/OpenHarmony yet."
+            ));
+        }
+
         let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
         let stderr_buffer = if tty {
             None
@@ -1063,46 +1314,55 @@ impl ShellManager {
             Some(Arc::new(Mutex::new(Vec::new())))
         };
 
+        #[cfg(windows)]
+        let mut windows_job = None;
+
         let (child, stdin, stdout_thread, stderr_thread) = if tty {
-            let pty_system = native_pty_system();
-            let pair = pty_system
-                .openpty(PtySize {
-                    rows: 24,
-                    cols: 80,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .context("Failed to open PTY")?;
+            #[cfg(target_env = "ohos")]
+            unreachable!("OHOS TTY mode returns before PTY setup");
 
-            let mut cmd = CommandBuilder::new(program);
-            for arg in args {
-                cmd.arg(arg);
+            #[cfg(not(target_env = "ohos"))]
+            {
+                let pty_system = native_pty_system();
+                let pair = pty_system
+                    .openpty(PtySize {
+                        rows: 24,
+                        cols: 80,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    })
+                    .context("Failed to open PTY")?;
+
+                let mut cmd = CommandBuilder::new(program);
+                for arg in args {
+                    cmd.arg(arg);
+                }
+                cmd.cwd(working_dir);
+                child_env::apply_to_pty_command(&mut cmd, child_env::string_map_env(&exec_env.env));
+
+                let child = pair
+                    .slave
+                    .spawn_command(cmd)
+                    .with_context(|| format!("Failed to spawn PTY command: {original_command}"))?;
+                drop(pair.slave);
+
+                let reader = pair
+                    .master
+                    .try_clone_reader()
+                    .context("Failed to clone PTY reader")?;
+                let stdout_thread = Some(spawn_reader_thread(reader, Arc::clone(&stdout_buffer)));
+                let writer = pair
+                    .master
+                    .take_writer()
+                    .context("Failed to take PTY writer")?;
+
+                (
+                    ShellChild::Pty(child),
+                    Some(StdinWriter::Pty(writer)),
+                    stdout_thread,
+                    None,
+                )
             }
-            cmd.cwd(working_dir);
-            child_env::apply_to_pty_command(&mut cmd, child_env::string_map_env(&exec_env.env));
-
-            let child = pair
-                .slave
-                .spawn_command(cmd)
-                .with_context(|| format!("Failed to spawn PTY command: {original_command}"))?;
-            drop(pair.slave);
-
-            let reader = pair
-                .master
-                .try_clone_reader()
-                .context("Failed to clone PTY reader")?;
-            let stdout_thread = Some(spawn_reader_thread(reader, Arc::clone(&stdout_buffer)));
-            let writer = pair
-                .master
-                .take_writer()
-                .context("Failed to take PTY writer")?;
-
-            (
-                ShellChild::Pty(child),
-                Some(StdinWriter::Pty(writer)),
-                stdout_thread,
-                None,
-            )
         } else {
             let mut cmd = Command::new(program);
             push_shell_args(&mut cmd, program, args);
@@ -1120,6 +1380,10 @@ impl ShellManager {
             let mut child = cmd
                 .spawn()
                 .with_context(|| format!("Failed to spawn background: {original_command}"))?;
+            #[cfg(windows)]
+            {
+                windows_job = attach_windows_job(&child, original_command);
+            }
 
             let stdout_handle = child.stdout.take().context("Failed to capture stdout")?;
             let stderr_handle = child.stderr.take().context("Failed to capture stderr")?;
@@ -1156,6 +1420,8 @@ impl ShellManager {
             stderr_cursor: 0,
             stdin,
             child: Some(child),
+            #[cfg(windows)]
+            windows_job,
             stdout_thread,
             stderr_thread,
         };
@@ -2526,6 +2792,11 @@ impl ToolSpec for ShellWaitTool {
         self.name
     }
 
+    fn model_visible(&self) -> bool {
+        // `exec_wait` is a legacy alias; only `exec_shell_wait` is model-visible.
+        self.name == "exec_shell_wait"
+    }
+
     fn description(&self) -> &'static str {
         "Wait for a background shell task and return incremental output. Turn cancellation stops waiting but leaves the background task running."
     }
@@ -2605,6 +2876,11 @@ impl ToolSpec for ShellWaitTool {
 impl ToolSpec for ShellInteractTool {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn model_visible(&self) -> bool {
+        // `exec_interact` is a legacy alias; only `exec_shell_interact` is model-visible.
+        self.name == "exec_shell_interact"
     }
 
     fn description(&self) -> &'static str {

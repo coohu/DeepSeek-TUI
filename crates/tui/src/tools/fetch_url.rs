@@ -162,7 +162,7 @@ impl ToolSpec for FetchUrlTool {
 
         let resp = loop {
             let dns_pinning = validate_fetch_target(&current_url, context).await?;
-            let mut client_builder = reqwest::Client::builder()
+            let mut client_builder = crate::tls::reqwest_client_builder()
                 .timeout(Duration::from_millis(timeout_ms))
                 .user_agent(USER_AGENT)
                 .redirect(reqwest::redirect::Policy::none());
@@ -388,8 +388,14 @@ fn validate_dns_resolved_ip(
         return Ok(());
     }
 
+    // Allow the resolved IP past the restricted-IP block if either:
+    //   * it falls inside a configured fake-IP placeholder range (a TUN /
+    //     transparent-proxy setup in `fake-ip` mode resolves every host into a
+    //     reserved range such as `198.18.0.0/15`), or
+    //   * the host is on the explicitly-trusted proxy list.
+    // Real private/loopback/link-local/metadata IPs match neither and stay blocked.
     if let Some(decider) = decider
-        && decider.trusts_proxy_fakeip_host(host)
+        && (decider.is_trusted_fakeip_addr(ip) || decider.trusts_proxy_fakeip_host(host))
     {
         decider.record_trusted_proxy_fakeip_allow(host, "fetch_url");
         return Ok(());

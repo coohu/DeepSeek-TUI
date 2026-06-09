@@ -1,8 +1,6 @@
 #[cfg(feature = "web")]
 use std::net::SocketAddr;
 #[cfg(feature = "web")]
-use std::process::Command;
-#[cfg(feature = "web")]
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -68,6 +66,11 @@ pub struct SettingsSection {
     pub composer_density: ComposerDensityValue,
     pub composer_border: bool,
     pub composer_vim_mode: ComposerVimModeValue,
+    #[schemars(range(min = 0))]
+    pub mention_menu_limit: usize,
+    pub mention_menu_behavior: MentionMenuBehaviorValue,
+    #[schemars(range(min = 0))]
+    pub mention_walk_depth: usize,
     pub transcript_spacing: TranscriptSpacingValue,
     pub status_indicator: StatusIndicatorValue,
     pub synchronized_output: SynchronizedOutputValue,
@@ -184,6 +187,7 @@ pub enum UiThemeValue {
     TokyoNight,
     Dracula,
     GruvboxDark,
+    Matrix,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -199,6 +203,13 @@ pub enum ComposerDensityValue {
 pub enum ComposerVimModeValue {
     Normal,
     Vim,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MentionMenuBehaviorValue {
+    Fuzzy,
+    Browser,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -279,6 +290,7 @@ pub enum StatusItemValue {
     LastToolElapsed,
     RateLimit,
     Tokens,
+    Balance,
 }
 
 pub fn parse_mode(arg: Option<&str>) -> Result<ConfigUiMode, String> {
@@ -327,6 +339,9 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             composer_density: settings.composer_density.as_str().into(),
             composer_border: settings.composer_border,
             composer_vim_mode: settings.composer_vim_mode.as_str().into(),
+            mention_menu_limit: settings.mention_menu_limit,
+            mention_menu_behavior: settings.mention_menu_behavior.as_str().into(),
+            mention_walk_depth: settings.mention_walk_depth,
             transcript_spacing: settings.transcript_spacing.as_str().into(),
             status_indicator: settings.status_indicator.as_str().into(),
             synchronized_output: settings.synchronized_output.as_str().into(),
@@ -390,7 +405,7 @@ pub async fn start_web_editor(app: &App, config: &Config) -> Result<WebConfigSes
         let poll_tx = tx.clone();
         let poll_url = format!("{url}/api/session");
         let poll_task = tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let client = crate::tls::reqwest_client();
             let mut last: Option<ConfigUiDocument> = Some(app_snapshot);
             loop {
                 tokio::time::sleep(Duration::from_millis(750)).await;
@@ -504,6 +519,18 @@ pub fn apply_document(
             doc.settings.composer_vim_mode.as_setting(),
         ),
         (
+            "mention_menu_limit",
+            &doc.settings.mention_menu_limit.to_string(),
+        ),
+        (
+            "mention_menu_behavior",
+            doc.settings.mention_menu_behavior.as_setting(),
+        ),
+        (
+            "mention_walk_depth",
+            &doc.settings.mention_walk_depth.to_string(),
+        ),
+        (
             "transcript_spacing",
             doc.settings.transcript_spacing.as_setting(),
         ),
@@ -569,7 +596,7 @@ pub fn apply_document(
         app.status_items = new_status_items.clone();
         app.needs_redraw = true;
         if persist {
-            let path = commands::persist_status_items(&new_status_items)?;
+            let path = crate::config_persistence::persist_status_items(&new_status_items)?;
             notes.push(format!("status_items saved to {}", path.display()));
         } else {
             notes.push("status_items updated for this session".to_string());
@@ -603,36 +630,7 @@ pub fn parse_document(value: Value) -> Result<ConfigUiDocument> {
 
 #[cfg(feature = "web")]
 pub fn open_browser(url: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg(url);
-        command
-    };
-    #[cfg(target_os = "linux")]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(url);
-        command
-    };
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    return Err(anyhow::anyhow!(
-        "browser opening is unsupported on this platform"
-    ));
-
-    let status = command
-        .status()
-        .context("failed to launch browser command")?;
-    if !status.success() {
-        bail!("browser command exited with status {status}");
-    }
-    Ok(())
+    crate::utils::open_url(url)
 }
 
 fn validate_document(doc: &ConfigUiDocument) -> Result<()> {
@@ -687,7 +685,7 @@ fn apply_reasoning_effort(
     app.last_effective_reasoning_effort = None;
     app.update_model_compaction_budget();
     if persist {
-        commands::persist_root_string_key(
+        crate::config_persistence::persist_root_string_key(
             app.config_path.as_deref(),
             "reasoning_effort",
             effort.as_setting(),
@@ -748,6 +746,7 @@ impl UiThemeValue {
             Self::TokyoNight => "tokyo-night",
             Self::Dracula => "dracula",
             Self::GruvboxDark => "gruvbox-dark",
+            Self::Matrix => "matrix",
         }
     }
 
@@ -761,6 +760,7 @@ impl UiThemeValue {
             Some("tokyo-night") => Ok(Self::TokyoNight),
             Some("dracula") => Ok(Self::Dracula),
             Some("gruvbox-dark") => Ok(Self::GruvboxDark),
+            Some("matrix") => Ok(Self::Matrix),
             Some(other) => bail!("unsupported theme '{other}'"),
             None => bail!("invalid theme '{value}'"),
         }
@@ -791,6 +791,24 @@ impl From<&str> for ComposerVimModeValue {
         match value.trim().to_ascii_lowercase().as_str() {
             "vim" => Self::Vim,
             _ => Self::Normal,
+        }
+    }
+}
+
+impl MentionMenuBehaviorValue {
+    fn as_setting(self) -> &'static str {
+        match self {
+            Self::Fuzzy => "fuzzy",
+            Self::Browser => "browser",
+        }
+    }
+}
+
+impl From<&str> for MentionMenuBehaviorValue {
+    fn from(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "browser" => Self::Browser,
+            _ => Self::Fuzzy,
         }
     }
 }
@@ -1002,6 +1020,7 @@ impl From<StatusItem> for StatusItemValue {
             StatusItem::LastToolElapsed => Self::LastToolElapsed,
             StatusItem::RateLimit => Self::RateLimit,
             StatusItem::Tokens => Self::Tokens,
+            StatusItem::Balance => Self::Balance,
         }
     }
 }
@@ -1023,6 +1042,7 @@ impl From<StatusItemValue> for StatusItem {
             StatusItemValue::LastToolElapsed => Self::LastToolElapsed,
             StatusItemValue::RateLimit => Self::RateLimit,
             StatusItemValue::Tokens => Self::Tokens,
+            StatusItemValue::Balance => Self::Balance,
         }
     }
 }
@@ -1034,7 +1054,7 @@ fn bool_str(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{ApiProvider, Config};
     use crate::test_support::lock_test_env;
     use crate::tui::app::{App, TuiOptions};
     use std::fs;
@@ -1065,7 +1085,19 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        App::new(options, &Config::default())
+        let mut app = App::new(options, &Config::default());
+        // App::new merges developer-local settings, which can include a saved
+        // provider/model from the interactive TUI. Keep these config UI tests
+        // pinned to DeepSeek defaults so they only exercise document apply
+        // semantics.
+        app.model = "deepseek-v4-pro".to_string();
+        app.auto_model = false;
+        app.api_provider = ApiProvider::Deepseek;
+        app.model_ids_passthrough = false;
+        // Synchronise compaction budget with the pinned model so that
+        // apply_document does not see a spurious compaction change.
+        app.update_model_compaction_budget();
+        app
     }
 
     #[test]
@@ -1191,7 +1223,8 @@ background_color = "#1A1B26"
                 "catppuccin-mocha",
                 "tokyo-night",
                 "dracula",
-                "gruvbox-dark"
+                "gruvbox-dark",
+                "matrix"
             ])
         );
     }

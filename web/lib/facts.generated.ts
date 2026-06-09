@@ -18,8 +18,8 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-05-26T17:03:21.939Z",
-  "version": "0.8.46",
+  "generatedAt": "2026-06-08T14:59:09.707Z",
+  "version": "0.8.54",
   "crates": [
     "agent",
     "app-server",
@@ -30,11 +30,13 @@ export const FACTS: RepoFacts = {
     "hooks",
     "mcp",
     "protocol",
+    "release",
     "secrets",
     "state",
     "tools",
     "tui",
-    "tui-core"
+    "tui-core",
+    "whaleflow"
   ],
   "sandboxBackends": [
     "bwrap",
@@ -70,9 +72,19 @@ export const FACTS: RepoFacts = {
       "env": "WANJIE_ARK_API_KEY / WANJIE_API_KEY / WANJIE_MAAS_API_KEY"
     },
     {
+      "id": "volcengine",
+      "label": "Volcengine Ark",
+      "env": "VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY"
+    },
+    {
       "id": "openrouter",
       "label": "OpenRouter",
       "env": "OPENROUTER_API_KEY"
+    },
+    {
+      "id": "xiaomi-mimo",
+      "label": "Xiaomi MiMo",
+      "env": "XIAOMI_MIMO_API_KEY / XIAOMI_API_KEY / MIMO_API_KEY"
     },
     {
       "id": "novita",
@@ -83,6 +95,21 @@ export const FACTS: RepoFacts = {
       "id": "fireworks",
       "label": "Fireworks AI",
       "env": "FIREWORKS_API_KEY"
+    },
+    {
+      "id": "siliconflow",
+      "label": "SiliconFlow",
+      "env": "SILICONFLOW_API_KEY"
+    },
+    {
+      "id": "siliconflow-CN",
+      "label": "SiliconFlow CN",
+      "env": "SILICONFLOW_API_KEY"
+    },
+    {
+      "id": "arcee",
+      "label": "Arcee AI",
+      "env": "ARCEE_API_KEY"
     },
     {
       "id": "moonshot",
@@ -103,11 +130,16 @@ export const FACTS: RepoFacts = {
       "id": "ollama",
       "label": "Ollama",
       "env": "OLLAMA_API_KEY"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face",
+      "env": "HUGGINGFACE_API_KEY / HF_TOKEN"
     }
   ],
   "defaultModel": "deepseek-v4-pro",
   "nodeEngines": ">=18",
-  "toolCount": 70,
+  "toolCount": 76,
   "license": "MIT",
   "latestRelease": null
 };

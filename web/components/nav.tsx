@@ -52,7 +52,7 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
           <Seal char="深" size="md" />
           <div className="leading-tight min-w-0">
             <div className="font-display text-[1.2rem] sm:text-[1.35rem] font-semibold tracking-crisp flex items-center gap-2 truncate">
-              CodeWhale
+              DeepSeek
               <Whale size={20} className="text-indigo hidden sm:inline-block" />
             </div>
             <div className="font-cjk text-[0.65rem] sm:text-[0.7rem] text-ink-mute tracking-widest truncate">

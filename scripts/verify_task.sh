@@ -2,13 +2,31 @@
 # verify_task.sh <task_id> <docker_image>
 # Runs the DeepSWE verifier inside the task's Docker container.
 # Expects model.patch at /tmp/deep-swe-verify/<task_id>/model.patch
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 <task_id> <docker_image>" >&2
+  exit 64
+fi
+
 TASK_ID="$1"
 IMAGE="$2"
-TASKS_DIR="/Volumes/VIXinSSD/whalebro/deepseek/deep-swe/tasks"
-WORK_DIR="/tmp/deep-swe-verify/$TASK_ID"
+TASKS_DIR="${DEEPSWE_TASKS_DIR:-/Volumes/VIXinSSD/whalebro/deepseek/deep-swe/tasks}"
+WORK_BASE="${DEEPSWE_VERIFY_DIR:-/tmp/deep-swe-verify}"
+WORK_DIR="$WORK_BASE/$TASK_ID"
 
 mkdir -p "$WORK_DIR"
 RESULT_FILE="$WORK_DIR/result.txt"
+MODEL_PATCH="$WORK_DIR/model.patch"
+TEST_PATCH="$TASKS_DIR/$TASK_ID/tests/test.patch"
+TEST_SCRIPT="$TASKS_DIR/$TASK_ID/tests/test.sh"
+
+for required in "$MODEL_PATCH" "$TEST_PATCH" "$TEST_SCRIPT"; do
+  if [[ ! -f "$required" ]]; then
+    echo "missing required file: $required" >&2
+    exit 66
+  fi
+done
 
 echo "[$TASK_ID] Pulling image..."
 docker pull "$IMAGE" 2>&1 | tail -1
@@ -16,9 +34,9 @@ docker pull "$IMAGE" 2>&1 | tail -1
 echo "[$TASK_ID] Running verifier..."
 docker run --rm \
   --platform linux/amd64 \
-  -v "$WORK_DIR/model.patch:/model.patch:ro" \
-  -v "$TASKS_DIR/$TASK_ID/tests/test.patch:/tests/test.patch:ro" \
-  -v "$TASKS_DIR/$TASK_ID/tests/test.sh:/verify.sh:ro" \
+  -v "$MODEL_PATCH:/model.patch:ro" \
+  -v "$TEST_PATCH:/tests/test.patch:ro" \
+  -v "$TEST_SCRIPT:/verify.sh:ro" \
   "$IMAGE" \
   bash -c '
     set -e
@@ -44,5 +62,5 @@ docker run --rm \
   ' > "$RESULT_FILE" 2>&1
 
 echo "[$TASK_ID] Done. Result:"
-cat "$RESULT_FILE" | grep -E 'REWARD|FAILED|PATCH_FAILED|passed'
+grep -E 'REWARD|FAILED|PATCH_FAILED|passed' "$RESULT_FILE" || true
 echo ""

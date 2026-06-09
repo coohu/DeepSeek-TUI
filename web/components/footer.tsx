@@ -22,7 +22,7 @@ const EN_COLS = [
       { label: "Pull Requests", href: "https://github.com/coohu//pulls" },
       { label: "Discussions", href: "https://github.com/coohu//discussions" },
       { label: "Contribute", href: "/contribute" },
-      { label: "Sponsor CodeWhale", href: "https://github.com/sponsors/Hmbown" },
+      { label: "Sponsor DeepSeek", href: "https://github.com/sponsors/coohu" },
     ],
   },
   {
@@ -54,7 +54,7 @@ const ZH_COLS = [
       { label: "合并请求", href: "https://github.com/coohu//pulls" },
       { label: "讨论区", href: "https://github.com/coohu//discussions" },
       { label: "参与贡献", href: "/zh/contribute" },
-      { label: "支持 CodeWhale", href: "https://github.com/sponsors/Hmbown" },
+      { label: "支持 DeepSeek", href: "https://github.com/sponsors/coohu" },
     ],
   },
   {
@@ -79,7 +79,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
           <div className="flex items-center gap-3">
             <Seal char="深" size="md" />
             <div>
-              <div className="font-display text-xl font-semibold">CodeWhale</div>
+              <div className="font-display text-xl font-semibold">DeepSeek</div>
               <div className="font-cjk text-[0.7rem] text-ink-mute tracking-widest">
                 {isZh ? "开源模型 · 终端智能体" : "open models · terminal agent"}
               </div>
@@ -135,7 +135,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 font-mono text-[0.7rem] text-ink-mute uppercase tracking-widest">
             <span>© {new Date().getFullYear()} · DeepSeek TUI · coohu</span>
             <span className="font-cjk normal-case tracking-normal">
-              {isZh ? "本网站由 DeepSeek V4-Flash 协助维护" : "本网站由 DeepSeek V4-Flash 协同维护"}
+              {isZh ? "本网站由 DeepSeek V4-Flash 协助维护" : "Maintained with DeepSeek V4-Flash"}
             </span>
           </div>
         </div>

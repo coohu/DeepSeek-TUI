@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 type Arch = "macos-arm64" | "macos-x64" | "linux-x64" | "linux-arm64" | "windows-x64";
 
 const BASE =
-  "https://github.com/Hmbown/CodeWhale/releases/latest/download";
+  "https://github.com/coohu/deepseek-tui/releases/latest/download";
 
 const ASSETS: Record<Arch, { zip: string; sha: string }> = {
   "macos-arm64": {
@@ -138,7 +138,7 @@ export function InstallDownloadTile({
           <span className="text-xs text-ink-mute self-center">
             {/* jsdelivr doesn't directly proxy GitHub Release assets; link to the release page instead */}
             <a
-              href={`https://github.com/Hmbown/CodeWhale/releases/latest`}
+              href={`https://github.com/coohu/deepseek-tui/releases/latest`}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-mono hairline-t hairline-b hairline-l hairline-r hover:bg-paper-deep transition-colors"
               rel="noopener noreferrer"
               target="_blank"

@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-:: CodeWhale Windows installer
+:: DeepSeek Windows installer
 :: Copies deepseek.exe and deepseek-tui.exe to %USERPROFILE%\bin
 
 set "BIN_DIR=%USERPROFILE%\bin"

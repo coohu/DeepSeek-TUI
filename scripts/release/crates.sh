@@ -2,18 +2,20 @@
 
 # Crates published for each deepseek release, in dependency order.
 release_crates=(
-  deepseek-secrets
-  deepseek-config
+  deepseek-mcp
   deepseek-protocol
+  deepseek-release
+  deepseek-secrets
   deepseek-state
-  deepseek-agent
+  deepseek-tui-core
+  deepseek-whaleflow
   deepseek-execpolicy
   deepseek-hooks
-  deepseek-mcp
   deepseek-tools
+  deepseek-config
+  deepseek-agent
+  deepseek-tui
   deepseek-core
   deepseek-app-server
-  deepseek-tui-core
   deepseek-cli
-  deepseek-tui
 )

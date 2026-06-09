@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# CodeWhale multi-arch Docker image (#501)
+# DeepSeek multi-arch Docker image (#501)
 #
 # Build:  docker buildx build --platform linux/amd64,linux/arm64 -t deepseek:latest .
 # Run:    docker run --rm -it -e DEEPSEEK_API_KEY -v deepseek-home:/home/deepseek/.deepseek deepseek
@@ -77,6 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Non-root user with explicit UID/GID for filesystem ownership clarity.
 RUN groupadd --gid 1000 deepseek \
     && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 deepseek \
+    && install -d -m 0700 -o deepseek -g deepseek /home/deepseek/.deepseek \
     && install -d -m 0700 -o deepseek -g deepseek /home/deepseek/.deepseek
 USER deepseek
 WORKDIR /home/deepseek

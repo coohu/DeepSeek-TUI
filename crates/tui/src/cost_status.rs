@@ -1,10 +1,10 @@
 //! Process-wide cost-accrual side-channel (#526).
 //!
 //! Background LLM calls outside the main turn-complete path
-//! (compaction summaries, seam recompaction, cycle briefings) used
+//! (compaction summaries, seam recompaction) used
 //! to drop their token usage on the floor — the dashboard's
 //! session-cost only saw the parent turn's tokens, so a long
-//! session that triggered compaction or cycle-restart under-reported
+//! session that triggered compaction under-reported
 //! cost by however many tokens those background calls consumed.
 //!
 //! Mirrors the [`crate::retry_status`] pattern: background callers
@@ -13,7 +13,7 @@
 //! gets folded into `App::accrue_subagent_cost_estimate`.
 //!
 //! Why a side-channel and not a plumbed callback: the leaky callers
-//! (`compaction.rs`, `seam_manager.rs`, `cycle_manager.rs`) are
+//! (`compaction.rs`, `seam_manager.rs`) are
 //! engine-internal machinery without a direct handle to `App` or
 //! the engine's event channel. A side-channel keeps the change
 //! surface tiny — one new `report` line per call site — and any
@@ -42,19 +42,20 @@ pub fn report(model: &str, usage: &Usage) {
     if !cost.is_positive() {
         return;
     }
-    if let Ok(mut pending) = cell().lock() {
-        pending.usd += cost.usd;
-        pending.cny += cost.cny;
-    }
+    // Recover from poisoned lock — a previous holder panicked but the
+    // accumulated data is still valid.
+    let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
+    pending.usd += cost.usd;
+    pending.cny += cost.cny;
 }
 
 /// Drain the pending cost. Returns the accumulated amount and resets
 /// the pool to zero. Called by the TUI render / event loop on each
 /// frame; any non-zero result gets folded into `accrue_subagent_cost_estimate`.
 pub fn drain() -> CostEstimate {
-    let Ok(mut pending) = cell().lock() else {
-        return CostEstimate::default();
-    };
+    // Recover from poisoned lock — a previous holder panicked but the
+    // accumulated data is still valid.
+    let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
     std::mem::take(&mut *pending)
 }
 
@@ -63,9 +64,8 @@ pub fn drain() -> CostEstimate {
 /// state. Production code should always use [`drain`].
 #[cfg(test)]
 pub fn reset_for_tests() {
-    if let Ok(mut pending) = cell().lock() {
-        *pending = CostEstimate::default();
-    }
+    let mut pending = cell().lock().unwrap_or_else(|e| e.into_inner());
+    *pending = CostEstimate::default();
 }
 
 #[cfg(test)]

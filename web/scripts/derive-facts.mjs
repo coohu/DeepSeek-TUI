@@ -70,13 +70,19 @@ function deriveProviders() {
     Openai: { id: "openai", label: "OpenAI-compatible", env: "OPENAI_API_KEY" },
     Atlascloud: { id: "atlascloud", label: "AtlasCloud", env: "ATLASCLOUD_API_KEY" },
     WanjieArk: { id: "wanjie-ark", label: "Wanjie Ark", env: "WANJIE_ARK_API_KEY / WANJIE_API_KEY / WANJIE_MAAS_API_KEY" },
+    Volcengine: { id: "volcengine", label: "Volcengine Ark", env: "VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY" },
     Openrouter: { id: "openrouter", label: "OpenRouter", env: "OPENROUTER_API_KEY" },
+    XiaomiMimo: { id: "xiaomi-mimo", label: "Xiaomi MiMo", env: "XIAOMI_MIMO_API_KEY / XIAOMI_API_KEY / MIMO_API_KEY" },
     Novita: { id: "novita", label: "Novita AI", env: "NOVITA_API_KEY" },
     Fireworks: { id: "fireworks", label: "Fireworks AI", env: "FIREWORKS_API_KEY" },
+    Siliconflow: { id: "siliconflow", label: "SiliconFlow", env: "SILICONFLOW_API_KEY" },
+    SiliconflowCn: { id: "siliconflow-CN", label: "SiliconFlow CN", env: "SILICONFLOW_API_KEY" },
+    Arcee: { id: "arcee", label: "Arcee AI", env: "ARCEE_API_KEY" },
     Moonshot: { id: "moonshot", label: "Moonshot/Kimi", env: "MOONSHOT_API_KEY / KIMI_API_KEY" },
     Sglang: { id: "sglang", label: "SGLang", env: "SGLANG_API_KEY" },
     Vllm: { id: "vllm", label: "vLLM", env: "VLLM_API_KEY" },
     Ollama: { id: "ollama", label: "Ollama", env: "OLLAMA_API_KEY" },
+    Huggingface: { id: "huggingface", label: "Hugging Face", env: "HUGGINGFACE_API_KEY / HF_TOKEN" },
   };
   return variants.map((v) => labelMap[v]).filter(Boolean);
 }

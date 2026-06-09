@@ -1,27 +1,26 @@
 {
   "name": "deepseek",
-  "version": "0.8.46",
-  "codewhaleBinaryVersion": "0.8.46",
-  "description": "Install and run CodeWhale, the agentic terminal for open-source and open-weight coding models, from GitHub release artifacts.",
-  "author": "Hmbown",
+  "version": "0.8.54",
+  "description": "Install and run DeepSeek, the agentic terminal for open-source and open-weight coding models, from GitHub release artifacts.",
+  "author": "coohu",
   "license": "MIT",
   "funding": [
     {
       "type": "github",
-      "url": "https://github.com/sponsors/Hmbown"
+      "url": "https://github.com/sponsors/coohu"
     },
     {
       "type": "buymeacoffee",
       "url": "https://www.buymeacoffee.com/hmbown"
     }
   ],
-  "homepage": "https://github.com/Hmbown/CodeWhale",
+  "homepage": "https://github.com/coohu/deepseek-tui",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Hmbown/CodeWhale.git"
+    "url": "git+https://github.com/coohu/deepseek-tui.git"
   },
   "bugs": {
-    "url": "https://github.com/Hmbown/CodeWhale/issues"
+    "url": "https://github.com/coohu/deepseek-tui/issues"
   },
   "keywords": [
     "deepseek",

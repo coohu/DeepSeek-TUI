@@ -155,18 +155,18 @@ fn probe_git(workspace: &Path) -> GitProbe {
 }
 
 fn probe_bwrap_available() -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
         crate::sandbox::bwrap::is_available()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
     {
         false
     }
 }
 
 fn probe_cgroup_version() -> Option<u8> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
         let path = std::path::Path::new("/sys/fs/cgroup/cgroup.controllers");
         if path.exists() {
@@ -178,7 +178,7 @@ fn probe_cgroup_version() -> Option<u8> {
         }
         None
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
     {
         None
     }
@@ -228,29 +228,22 @@ fn run_command(program: &str, args: &[&str], cwd: &Path) -> CommandProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dependencies::ExternalTool;
     use std::fs;
     use std::path::Path;
-    use std::process::Command;
     use tempfile::tempdir;
 
     fn git_available() -> bool {
-        Command::new("git")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        crate::dependencies::Git::available()
     }
 
     fn init_git_repo(root: &Path) {
         let run = |args: &[&str]| {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .expect("git should spawn");
+            let status = crate::dependencies::Git::status(args, root).expect("git should spawn");
             assert!(status.success(), "git {args:?} failed");
         };
         run(&["init", "-q"]);
+        run(&["config", "core.autocrlf", "false"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test User"]);
         fs::write(root.join("README.md"), "init\n").expect("write");

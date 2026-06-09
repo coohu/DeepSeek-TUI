@@ -1,28 +1,30 @@
-# Installing CodeWhale
+# Installing DeepSeek
 
 This page covers every supported install path and the most common
 "it didn't install" failures, including **Linux ARM64** and other less
 common platforms.
 
 If you just want the short version, see the
-[main README](../README.md#quickstart) or
-[简体中文 README](../README.zh-CN.md#快速开始).
+[main README](../README.md#install) or
+[简体中文 README](../README.zh-CN.md#安装).
 
 ---
 
 ## 1. Supported platforms
 
-CodeWhale ships matched `deepseek` and `deepseek-tui` prebuilt binaries for
-these platform/architecture combinations from v0.8.8 onward:
+DeepSeek ships matched `deepseek` and `deepseek-tui` prebuilt binaries for
+these platform/architecture combinations. Linux ARM64 is available from
+v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 
 | Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
 | ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
 | Linux        | x64 (x86_64) |     ✅      |       ✅        | `deepseek-linux-x64`, `deepseek-tui-linux-x64`        |
 | Linux        | arm64        |     ✅      |       ✅        | `deepseek-linux-arm64`, `deepseek-tui-linux-arm64`    |
+| Linux        | riscv64      |     ✅      |       ✅        | `deepseek-linux-riscv64`, `deepseek-tui-linux-riscv64`|
 | macOS        | x64          |     ✅      |       ✅        | `deepseek-macos-x64`, `deepseek-tui-macos-x64`        |
 | macOS        | arm64 (M-series) | ✅      |       ✅        | `deepseek-macos-arm64`, `deepseek-tui-macos-arm64`    |
 | Windows      | x64          |     ✅      |       ✅        | `deepseek-windows-x64.exe`, `deepseek-tui-windows-x64.exe` |
-| Other Linux (musl, riscv64, …) | — |   ❌¹    |       ✅²       | build from source                                     |
+| Other Linux (musl, other architectures) | — |   ❌¹    |       ✅²       | build from source                                     |
 | FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | build from source                                     |
 
 ¹ The npm package will exit with a clear error and point you here.
@@ -42,19 +44,16 @@ systems such as Alpine should use [Build from source](#7-build-from-source).
 > and `deepseek-tui-linux-arm64`, so a plain `npm i -g deepseek` works
 > on any glibc-based ARM64 Linux. If you're stuck on v0.8.7, jump to
 > [Build from source](#7-build-from-source) — `cargo install` works fine.
+> For HarmonyOS PC and OpenHarmony cross-build setup, see
+> [HarmonyOS and OpenHarmony](HarmonyOS.md).
 
 ---
 
 ## 2. Download safety and checksums
 
 Official release binaries are published only from
-<<<<<<< HEAD
-`https://github.com/coohu/DeepSeek-TUI/releases` and the npm package named
-``. Do not install release assets from look-alike repositories,
-=======
-`https://github.com/Hmbown/CodeWhale/releases` and the npm package named
+`https://github.com/coohu/deepseek-tui/releases` and the npm package named
 `deepseek`. Do not install release assets from look-alike repositories,
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
 archives, or search-result mirrors unless you deliberately trust that mirror.
 
 Every GitHub release includes `deepseek-artifacts-sha256.txt`. If you download
@@ -62,13 +61,8 @@ binaries manually, verify them before running:
 
 ```bash
 # Run from the directory containing the downloaded binaries.
-<<<<<<< HEAD
-curl -L -O https://github.com/coohu/DeepSeek-TUI/releases/latest/download/deepseek-artifacts-sha256.txt
+curl -L -O https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
 sha256sum -c deepseek-artifacts-sha256.txt --ignore-missing
-=======
-curl -L -O https://github.com/Hmbown/CodeWhale/releases/latest/download/deepseek-artifacts-sha256.txt
-sha256sum -c deepseek-artifacts-sha256.txt --ignore-missing
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
 ```
 
 On macOS, use `shasum -a 256 -c deepseek-artifacts-sha256.txt` instead of
@@ -89,9 +83,15 @@ a download sourced from an impersonating repository or mirror.
 
 ---
 
-## 3. Install via npm (recommended)
+## 3. Install via npm (deferred for v0.8.54)
+
+The `deepseek` npm wrapper for v0.8.54 is intentionally deferred while the
+release asset publication path is being hardened. Use Cargo, GitHub Releases,
+or CNB for v0.8.54. The notes below describe the npm wrapper behavior once a
+matching npm package is published.
 
 ```bash
+# Available only after the matching npm package is published.
 npm install -g deepseek
 deepseek
 ```
@@ -111,7 +111,7 @@ Useful environment variables:
 | `DEEPSEEK_TUI_DISABLE_INSTALL=1`    | Skip the `postinstall` download entirely (CI smoke, vendored binaries)                 |
 | `DEEPSEEK_TUI_OPTIONAL_INSTALL=1`   | Don't fail `npm install` on download/extract errors — useful in CI matrices            |
 
-> **Slow npm download from mainland China?** If `npm install` itself is slow
+> **Slow npm download from mainland China?** Once npm publication resumes, if `npm install` itself is slow
 > (not just the postinstall binary download), use an npm registry mirror:
 > ```bash
 > npm config set registry https://registry.npmmirror.com
@@ -208,22 +208,14 @@ then follow [Tencent Lighthouse Hong Kong Phone Setup](TENCENT_LIGHTHOUSE_HK.md)
 If you already have Nix with flake support, run:
 
 ```sh
-<<<<<<< HEAD
-nix run github:coohu/DeepSeek-TUI
-=======
-nix run github:Hmbown/CodeWhale
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+nix run github:coohu/deepseek-tui
 ```
 
 Nix builds `deepseek-tui` and then starts the `deepseek` dispatcher. Pass
 arguments after `--`, for example:
 
 ```sh
-<<<<<<< HEAD
-nix run github:coohu/DeepSeek-TUI -- --help
-=======
-nix run github:Hmbown/CodeWhale -- --help
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+nix run github:coohu/deepseek-tui -- --help
 ```
 
 ### Flake
@@ -235,13 +227,8 @@ Add inputs to `flake.nix`:
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-<<<<<<< HEAD
-    .url = "github:coohu/DeepSeek-TUI";
-    .inputs.nixpkgs.follows = "nixpkgs";
-=======
-    deepseek-tui.url = "github:Hmbown/CodeWhale";
+    deepseek-tui.url = "github:coohu/deepseek-tui";
     deepseek-tui.inputs.nixpkgs.follows = "nixpkgs";
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
   };
 }
 ```
@@ -275,31 +262,18 @@ Install into a NixOS module:
 ## 6. Manual download from GitHub Releases
 
 Grab the matching pair of binaries for your platform from the
-<<<<<<< HEAD
-[Releases page](https://github.com/coohu/DeepSeek-TUI/releases) and drop them
-=======
-[Releases page](https://github.com/Hmbown/CodeWhale/releases) and drop them
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+[Releases page](https://github.com/coohu/deepseek-tui/releases) and drop them
 side by side into a directory on your `PATH` (e.g. `~/.local/bin`):
 
 ```bash
 # Linux ARM64 example
 mkdir -p ~/.local/bin
-<<<<<<< HEAD
 curl -L -o ~/.local/bin/deepseek      \
-    https://github.com/coohu/DeepSeek-TUI/releases/latest/download/deepseek-linux-arm64
-curl -L -o ~/.local/bin/  \
-    https://github.com/coohu/DeepSeek-TUI/releases/latest/download/-linux-arm64
-chmod +x ~/.local/bin/deepseek ~/.local/bin/
-deepseek --version
-=======
-curl -L -o ~/.local/bin/deepseek      \
-    https://github.com/Hmbown/CodeWhale/releases/latest/download/deepseek-linux-arm64
+    https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-linux-arm64
 curl -L -o ~/.local/bin/deepseek-tui  \
-    https://github.com/Hmbown/CodeWhale/releases/latest/download/deepseek-tui-linux-arm64
+    https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-tui-linux-arm64
 chmod +x ~/.local/bin/deepseek ~/.local/bin/deepseek-tui
 deepseek --version
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
 ```
 
 > **macOS Gatekeeper note.** If you downloaded the binaries with a browser,
@@ -312,18 +286,44 @@ deepseek --version
 Verify integrity against the per-release SHA-256 manifest:
 
 ```bash
-<<<<<<< HEAD
 curl -L -o /tmp/deepseek-artifacts-sha256.txt \
-    https://github.com/coohu/DeepSeek-TUI/releases/latest/download/deepseek-artifacts-sha256.txt
+    https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-artifacts-sha256.txt
 ( cd ~/.local/bin && sha256sum -c /tmp/deepseek-artifacts-sha256.txt --ignore-missing )
-=======
-curl -L -o /tmp/deepseek-artifacts-sha256.txt \
-    https://github.com/Hmbown/CodeWhale/releases/latest/download/deepseek-artifacts-sha256.txt
-( cd ~/.local/bin && sha256sum -c /tmp/deepseek-artifacts-sha256.txt --ignore-missing )
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
 ```
 
 (Use `shasum -a 256 -c` instead of `sha256sum` on macOS.)
+
+### Roll back to a previous release
+
+If a new release is bad on your machine, install the last known-good version
+explicitly. Replace `X.Y.Z` with the version you want to restore.
+
+```bash
+# npm wrapper, only for versions that were published to npm
+npm install -g deepseek@X.Y.Z
+
+# Cargo install path; both crates are required
+cargo install deepseek-cli --version X.Y.Z --locked --force
+cargo install deepseek-tui --version X.Y.Z --locked --force
+```
+
+For manual installs, download both binaries or the platform archive from the
+exact release tag and verify the matching checksum manifest from that same tag:
+
+```bash
+# individual binaries
+curl -L -o deepseek-artifacts-sha256.txt \
+  https://github.com/coohu/deepseek-tui/releases/download/vX.Y.Z/deepseek-artifacts-sha256.txt
+
+# platform archives
+curl -L -o deepseek-bundles-sha256.txt \
+  https://github.com/coohu/deepseek-tui/releases/download/vX.Y.Z/deepseek-bundles-sha256.txt
+```
+
+Inside a DeepSeek workspace, `/restore list [N]` lists side-git file snapshots
+and `/restore <N>` restores files from the chosen snapshot. That workspace
+rollback does not change your installed binary version and does not rewrite
+conversation history.
 
 ### Windows Scoop
 
@@ -338,6 +338,53 @@ deepseek --version
 Scoop manifests are maintained outside this repository's release workflow and
 can lag GitHub/npm/Cargo releases. Use npm or manual GitHub release downloads
 when you need the newest version immediately.
+
+### Windows NSIS Installer
+
+A standalone NSIS-based installer is available starting with v0.8.50 for
+Windows users who prefer a traditional double-click setup (no npm, no Scoop, no
+Cargo required).
+
+**Download** `DeepSeekSetup.exe` from the
+[Releases page](https://github.com/coohu/deepseek-tui/releases/latest).
+
+**Install** by double-clicking the setup executable. The installer:
+
+- Installs `deepseek.exe` and `deepseek-tui.exe` side-by-side into
+  `%LOCALAPPDATA%\Programs\DeepSeek\bin`
+- Adds the install directory to the **current user** `PATH`
+- Registers in Windows **Apps & Features** for easy uninstall
+
+**Silent install** (for IT admins, SCCM, Intune):
+
+```powershell
+DeepSeekSetup.exe /S
+```
+
+The installer is per-user and does not request elevation. Run silent installs in
+the target user's context, or use a deployment tool that can run the installer
+for each user profile that needs DeepSeek.
+
+The release-built installer is currently unsigned and may trigger Windows
+SmartScreen. Verify the SHA-256 checksum from `deepseek-artifacts-sha256.txt`
+before deploying, and sign the installer in your internal deployment pipeline if
+your environment requires signed application packages.
+
+**Build the installer yourself** (requires [NSIS](https://nsis.sourceforge.io)):
+
+```powershell
+cd scripts\installer
+# Place deepseek.exe and deepseek-tui.exe here, then:
+makensis /DVERSION=<version> deepseek.nsi
+```
+
+**Manual fallback** — if the installer is blocked by group policy, see the
+[CLASSROOM_INSTALL.md](CLASSROOM_INSTALL.md) guide for step-by-step PowerShell
+commands.
+
+> **Deploying to a classroom or lab?** See the full
+> [Classroom Install Checklist](CLASSROOM_INSTALL.md) for silent install,
+> API key provisioning, imaging notes, and troubleshooting.
 
 ---
 
@@ -360,13 +407,8 @@ LoongArch, FreeBSD, and pre-2024 ARM64 distros.
 ### Build and install
 
 ```bash
-<<<<<<< HEAD
-git clone https://github.com/coohu/DeepSeek-TUI.git
-cd DeepSeek-TUI
-=======
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+git clone https://github.com/coohu/deepseek-tui.git
+cd DeepSeek
 
 cargo install --path crates/cli --locked   # provides `deepseek`
 cargo install --path crates/tui --locked   # provides `deepseek-tui`
@@ -468,13 +510,8 @@ that session and run `cargo build` from the project root.
 **Build**
 
 ```bash
-<<<<<<< HEAD
-git clone https://github.com/coohu/DeepSeek-TUI.git
-cd DeepSeek-TUI
-=======
-git clone https://github.com/Hmbown/CodeWhale.git
-cd CodeWhale
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+git clone https://github.com/coohu/deepseek-tui.git
+cd DeepSeek
 set CARGO_HTTP_CHECK_REVOKE=false   # may be needed behind some Chinese ISPs
 cargo build --release
 ```
@@ -482,9 +519,9 @@ cargo build --release
 Both binaries appear in `target\release\deepseek.exe` and
 `target\release\deepseek-tui.exe`.
 
-> **Prefer `npm install -g` on Windows unless you need to modify source.**
-> The npm package pulls prebuilt binaries and avoids the C toolchain
-> dependency entirely — see [Section 3](#3-install-via-npm-recommended).
+> For v0.8.54, prefer the GitHub Release installer/archive or the Cargo crates.
+> The npm wrapper path is deferred for this release while release asset
+> publication is hardened.
 
 ---
 
@@ -509,11 +546,7 @@ cargo install deepseek-tui     --locked
 
 ### `deepseek update` reports `no asset found for platform deepseek-linux-aarch64`
 
-<<<<<<< HEAD
-This is [#503](https://github.com/coohu/DeepSeek-TUI/issues/503) in v0.8.7 —
-=======
-This is [#503](https://github.com/Hmbown/CodeWhale/issues/503) in v0.8.7 —
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+This is [#503](https://github.com/coohu/deepseek-tui/issues/503) in v0.8.7 —
 the self-updater used Rust's `aarch64`/`x86_64` arch names instead of the
 release artifact's `arm64`/`x64`. Workaround until v0.8.8:
 
@@ -534,6 +567,9 @@ Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 `deepseek update` normally contacts GitHub Releases for metadata and binary
 assets. On networks where GitHub is blocked or unreliable, use the CNB source
 mirror instead and install both binaries from the release tag:
+
+To check the latest release without downloading or replacing binaries, run
+`deepseek update --check`.
 
 ```bash
 cargo install --git https://cnb.cool/deepseek.net/deepseek --tag vX.Y.Z deepseek-cli --locked --force
@@ -636,9 +672,9 @@ path-agnostic — moving `target-dir` does not help.
 
 1. **Add the project's `target/` directory to your AV exclusions list.**
 2. **Close the antivirus software temporarily** during `cargo build`.
-3. **Use `npm install -g deepseek` instead** — the npm package ships
-   prebuilt binaries and skips the Cargo build entirely
-   ([Section 3](#3-install-via-npm-recommended)).
+3. **Use the GitHub Release installer/archive instead** — the release assets
+   ship prebuilt binaries and skip the Cargo build entirely
+   ([Section 6](#6-manual-download-from-github-releases)).
 4. **Use `cargo install deepseek-cli --locked`** from crates.io — this
    changes the binary path, which some AV tools treat differently.
 
@@ -681,13 +717,8 @@ Use one of these paths:
 3. Install via Cargo, which builds locally and does not download GitHub release
    assets. See [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
 
-<<<<<<< HEAD
-4. Download both `deepseek` and `` manually from the
-   [Releases page](https://github.com/coohu/DeepSeek-TUI/releases), place them
-=======
 4. Download both `deepseek` and `deepseek-tui` manually from the
-   [Releases page](https://github.com/Hmbown/CodeWhale/releases), place them
->>>>>>> 54151a4bc942af69f55298cae986858cd02100d1
+   [Releases page](https://github.com/coohu/deepseek-tui/releases), place them
    in a directory on `PATH`, and make them executable. See
    [Section 6](#6-manual-download-from-github-releases).
 
