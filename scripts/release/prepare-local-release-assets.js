@@ -8,7 +8,7 @@ const {
   allAssetNames,
   CHECKSUM_MANIFEST,
   detectBinaryNames,
-} = require("../../npm/codewhale/scripts/artifacts");
+} = require("../../npm/deepseek/scripts/artifacts");
 
 async function sha256(filePath) {
   const content = await fs.readFile(filePath);
@@ -25,13 +25,13 @@ async function main() {
   const buildDir = path.resolve(
     process.argv[3] || path.join("target", "release"),
   );
-  const { codewhale, tui } = detectBinaryNames();
+  const { deepseek, tui } = detectBinaryNames();
   const isWindows = process.platform === "win32";
 
   const assets = [
     {
-      source: path.join(buildDir, isWindows ? "codewhale.exe" : "codewhale"),
-      target: codewhale,
+      source: path.join(buildDir, isWindows ? "deepseek.exe" : "deepseek"),
+      target: deepseek,
     },
     {
       source: path.join(buildDir, isWindows ? "deepseek-tui.exe" : "deepseek-tui"),
@@ -47,7 +47,7 @@ async function main() {
       assets.push({
         source: assetName.startsWith("deepseek-tui")
           ? path.join(buildDir, isWindows ? "deepseek-tui.exe" : "deepseek-tui")
-          : path.join(buildDir, isWindows ? "codewhale.exe" : "codewhale"),
+          : path.join(buildDir, isWindows ? "deepseek.exe" : "deepseek"),
         target: assetName,
       });
     }

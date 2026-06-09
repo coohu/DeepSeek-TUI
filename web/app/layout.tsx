@@ -40,7 +40,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "CodeWhale",
     description: "The most agentic harness for DeepSeek V4. Constitutional hierarchy, structured trust, verification, and recovery.",
-    url: "https://codewhale.net",
+    url: "https://deepseek.net",
     siteName: "CodeWhale",
     type: "website",
   },

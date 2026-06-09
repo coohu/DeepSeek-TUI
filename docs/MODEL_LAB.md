@@ -17,8 +17,8 @@ implemented today.
   environment variables, and `~/.deepseek` config compatibility.
 - OpenRouter, Novita, Fireworks, NVIDIA NIM, AtlasCloud, Wanjie Ark, generic
   OpenAI-compatible endpoints, SGLang, vLLM, and Ollama are supported provider
-  paths where their IDs appear in `/provider`, `codewhale --provider`, or
-  `codewhale models`.
+  paths where their IDs appear in `/provider`, `deepseek --provider`, or
+  `deepseek models`.
 - Model auto-routing chooses a concrete DeepSeek model and thinking level per
   turn. It is not a TUI mode.
 - Fin is the fast `deepseek-v4-flash` thinking-off path for routing,

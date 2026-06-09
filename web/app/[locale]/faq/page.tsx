@@ -23,7 +23,7 @@ const faqEn: FaqItem[] = [
     q: "What is CodeWhale?",
     a: (
       <>
-        CodeWhale is a terminal-native coding agent for open-source and open-weight models. It runs from the <code className="inline">codewhale</code> command, streams reasoning blocks, edits local workspaces with approval gates, and can auto-route each turn to the right model and thinking level. DeepSeek V4 is the first-class model path; OpenRouter is ready. Hugging Face, self-hosted, and other open-model surfaces are on the roadmap.
+        CodeWhale is a terminal-native coding agent for open-source and open-weight models. It runs from the <code className="inline">deepseek</code> command, streams reasoning blocks, edits local workspaces with approval gates, and can auto-route each turn to the right model and thinking level. DeepSeek V4 is the first-class model path; OpenRouter is ready. Hugging Face, self-hosted, and other open-model surfaces are on the roadmap.
       </>
     ),
     sources: ["README.md", "docs/ARCHITECTURE.md"],
@@ -35,10 +35,10 @@ const faqEn: FaqItem[] = [
         <p className="mb-2">Four paths, same result:</p>
         <pre className="code-block mb-2">
 {`# npm (recommended — no Rust toolchain needed)
-npm install -g codewhale
+npm install -g deepseek
 
 # Cargo (needs Rust 1.88+)
-cargo install codewhale-cli --locked
+cargo install deepseek-cli --locked
 
 # Homebrew (macOS)
 brew tap Hmbown/ && brew install 
@@ -47,7 +47,7 @@ brew tap Hmbown/ && brew install
 # https://github.com/Hmbown/CodeWhale/releases`}
         </pre>
         <p>
-          Run <code className="inline">codewhale</code> to start. First run creates <code className="inline">~/.deepseek/</code> automatically.
+          Run <code className="inline">deepseek</code> to start. First run creates <code className="inline">~/.deepseek/</code> automatically.
           See the <Link href="/install" className="body-link">full install guide</Link> for China mirrors, Docker, and troubleshooting.
         </p>
       </>
@@ -55,12 +55,12 @@ brew tap Hmbown/ && brew install
     sources: ["README.md", "#1860", "#1914"],
   },
   {
-    q: "What's the difference between codewhale and deepseek-tui?",
+    q: "What's the difference between deepseek and deepseek-tui?",
     a: (
       <>
-        <code className="inline">codewhale</code> is the dispatcher CLI — it manages config, auth, updates, and launches the TUI.
+        <code className="inline">deepseek</code> is the dispatcher CLI — it manages config, auth, updates, and launches the TUI.
         <code className="inline">deepseek-tui</code> is the terminal UI binary that runs the agent loop.
-        When you type <code className="inline">codewhale</code>, the dispatcher spawns <code className="inline">deepseek-tui</code> for you.
+        When you type <code className="inline">deepseek</code>, the dispatcher spawns <code className="inline">deepseek-tui</code> for you.
         Both are installed together; you rarely need to think about the split.
       </>
     ),
@@ -71,7 +71,7 @@ brew tap Hmbown/ && brew install
     a: (
       <>
         Yes. CodeWhale is the new name for what was previously called DeepSeek TUI.
-        The canonical command is now <code className="inline">codewhale</code>. Legacy <code className="inline">deepseek</code> and <code className="inline"></code> commands remain as compatibility shims — they still work.
+        The canonical command is now <code className="inline">deepseek</code>. Legacy <code className="inline">deepseek</code> and <code className="inline"></code> commands remain as compatibility shims — they still work.
         Config lives at <code className="inline">~/.deepseek/</code>. <code className="inline">DEEPSEEK_*</code> env vars continue to work.
         DeepSeek is not deprecated. The rename reflects CodeWhale's broader mission as the agentic terminal for open models across providers, not a narrowing away from DeepSeek.
       </>
@@ -87,19 +87,19 @@ brew tap Hmbown/ && brew install
 export DEEPSEEK_API_KEY=sk-...
 
 # Method 2: Saved config (recommended — survives shell restarts)
-codewhale auth set --provider deepseek --api-key sk-...
+deepseek auth set --provider deepseek --api-key sk-...
 
 # Method 3: config.toml
 # Add to ~/.deepseek/config.toml:
 api_key = "sk-..."
 
 # Check what's active:
-codewhale auth status    # shows config, keyring, and env-var state
-codewhale doctor         # full connectivity check`}
+deepseek auth status    # shows config, keyring, and env-var state
+deepseek doctor         # full connectivity check`}
         </pre>
         <p>
           Saved config keys take precedence over environment variables.
-          Use <code className="inline">codewhale auth clear --provider deepseek</code> to remove a saved key.
+          Use <code className="inline">deepseek auth clear --provider deepseek</code> to remove a saved key.
         </p>
       </>
     ),
@@ -136,7 +136,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 api_key = "sk-or-v1-..."
 
 # 3. Run with an OpenRouter model:
-codewhale --model openrouter/deepseek/deepseek-v4-pro
+deepseek --model openrouter/deepseek/deepseek-v4-pro
 
 # Or set it as default in config.toml:
 default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
@@ -183,7 +183,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     a: (
       <>
         <p className="mb-2">
-          Use <code className="inline">codewhale --model auto</code> or <code className="inline">/model auto</code> to let CodeWhale decide how much model power each turn needs.
+          Use <code className="inline">deepseek --model auto</code> or <code className="inline">/model auto</code> to let CodeWhale decide how much model power each turn needs.
         </p>
         <p className="mb-2">
           <strong>Fin</strong> is the fast non-thinking path (<code className="inline">deepseek-v4-flash</code> with thinking off) used for routing decisions, summaries, RLM children, context maintenance, and other coordination work. Before the real turn is sent, Fin makes a small routing call to pick the concrete model and thinking level.
@@ -223,7 +223,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     a: (
       <>
         CodeWhale is a bidirectional MCP client and server. Define servers in <code className="inline">~/.deepseek/mcp.json</code>.
-        Tools appear as <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code>. You can also expose CodeWhale as an MCP server with <code className="inline">codewhale mcp</code>.
+        Tools appear as <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code>. You can also expose CodeWhale as an MCP server with <code className="inline">deepseek mcp</code>.
         See the <Link href="/docs#mcp" className="body-link">docs page</Link> for configuration examples.
       </>
     ),
@@ -248,7 +248,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
         <pre className="code-block my-2">
 {`# npm mirror
 npm config set registry https://registry.npmmirror.com
-npm install -g codewhale
+npm install -g deepseek
 
 # Cargo mirror (Tsinghua TUNA)
 # Add to ~/.cargo/config.toml:
@@ -269,10 +269,10 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     q: "My API key was rejected or I get auth errors on first run.",
     a: (
       <>
-        <p className="mb-2">Run <code className="inline">codewhale doctor</code> — it checks API key, network, sandbox, and MCP servers. Full report is written to <code className="inline">~/.deepseek/doctor.log</code>.</p>
+        <p className="mb-2">Run <code className="inline">deepseek doctor</code> — it checks API key, network, sandbox, and MCP servers. Full report is written to <code className="inline">~/.deepseek/doctor.log</code>.</p>
         <p className="mb-2">Common causes:</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft">
-          <li>Stale <code className="inline">DEEPSEEK_API_KEY</code> in shell startup file — open a fresh shell or use <code className="inline">codewhale auth set</code></li>
+          <li>Stale <code className="inline">DEEPSEEK_API_KEY</code> in shell startup file — open a fresh shell or use <code className="inline">deepseek auth set</code></li>
           <li>Key from wrong provider — make sure the key matches the provider you're using</li>
           <li>Network connectivity — check <code className="inline">curl https://api.deepseek.com/v1/models</code></li>
         </ul>
@@ -310,19 +310,19 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
       <>
         <pre className="code-block mb-2">
 {`# Release-binary updater (works for npm/release-binary installs)
-codewhale update
+deepseek update
 
 # npm
-npm install -g codewhale@latest
+npm install -g deepseek@latest
 
 # Cargo
-cargo install codewhale-cli --locked --force
+cargo install deepseek-cli --locked --force
 
 # Homebrew
 brew update && brew upgrade `}
         </pre>
         <p>
-          If you installed via npm, <code className="inline">codewhale update</code> downloads the latest release binaries.
+          If you installed via npm, <code className="inline">deepseek update</code> downloads the latest release binaries.
           If a mirror is lagging, download directly from <a href="https://github.com/Hmbown/CodeWhale/releases" className="body-link">GitHub Releases</a>.
         </p>
       </>
@@ -336,7 +336,7 @@ const faqZh: FaqItem[] = [
     q: "CodeWhale 是什么？",
     a: (
       <>
-        CodeWhale 是一个面向开源模型的终端原生编程智能体。通过 <code className="inline">codewhale</code> 命令启动，流式输出推理块，在有审批门槛的情况下编辑本地工作区，并可为每个回合自动选择最合适的模型和推理深度。DeepSeek V4 是一级模型路径；OpenRouter 已就绪。Hugging Face、自托管等开放模型接口已在路线图中。
+        CodeWhale 是一个面向开源模型的终端原生编程智能体。通过 <code className="inline">deepseek</code> 命令启动，流式输出推理块，在有审批门槛的情况下编辑本地工作区，并可为每个回合自动选择最合适的模型和推理深度。DeepSeek V4 是一级模型路径；OpenRouter 已就绪。Hugging Face、自托管等开放模型接口已在路线图中。
       </>
     ),
     sources: ["README.md", "docs/ARCHITECTURE.md"],
@@ -348,10 +348,10 @@ const faqZh: FaqItem[] = [
         <p className="mb-2">四种方式，殊途同归：</p>
         <pre className="code-block mb-2">
 {`# npm（推荐 — 无需 Rust 工具链）
-npm install -g codewhale
+npm install -g deepseek
 
 # Cargo（需要 Rust 1.88+）
-cargo install codewhale-cli --locked
+cargo install deepseek-cli --locked
 
 # Homebrew（macOS）
 brew tap Hmbown/ && brew install 
@@ -360,7 +360,7 @@ brew tap Hmbown/ && brew install
 # https://github.com/Hmbown/CodeWhale/releases`}
         </pre>
         <p>
-          输入 <code className="inline">codewhale</code> 即可启动。首次运行会自动创建 <code className="inline">~/.deepseek/</code>。
+          输入 <code className="inline">deepseek</code> 即可启动。首次运行会自动创建 <code className="inline">~/.deepseek/</code>。
           查看 <Link href="/zh/install" className="body-link">完整安装指南</Link> 了解国内镜像、Docker 和故障排除。
         </p>
       </>
@@ -368,12 +368,12 @@ brew tap Hmbown/ && brew install
     sources: ["README.md", "#1860", "#1914"],
   },
   {
-    q: "codewhale 和 deepseek-tui 有什么区别？",
+    q: "deepseek 和 deepseek-tui 有什么区别？",
     a: (
       <>
-        <code className="inline">codewhale</code> 是调度 CLI——管理配置、认证、更新，并启动 TUI。
+        <code className="inline">deepseek</code> 是调度 CLI——管理配置、认证、更新，并启动 TUI。
         <code className="inline">deepseek-tui</code> 是运行智能体循环的终端 UI 二进制文件。
-        当你输入 <code className="inline">codewhale</code> 时，调度器会自动为你启动 <code className="inline">deepseek-tui</code>。
+        当你输入 <code className="inline">deepseek</code> 时，调度器会自动为你启动 <code className="inline">deepseek-tui</code>。
         两者同时安装；通常你不需要关心这个区别。
       </>
     ),
@@ -383,7 +383,7 @@ brew tap Hmbown/ && brew install
     q: "CodeWhale 和 DeepSeek TUI 是什么关系？改名是怎么回事？",
     a: (
       <>
-        CodeWhale 是 DeepSeek TUI 的新名称。当前的主命令是 <code className="inline">codewhale</code>。旧的 <code className="inline">deepseek</code> 和 <code className="inline"></code> 命令作为兼容垫片继续有效。
+        CodeWhale 是 DeepSeek TUI 的新名称。当前的主命令是 <code className="inline">deepseek</code>。旧的 <code className="inline">deepseek</code> 和 <code className="inline"></code> 命令作为兼容垫片继续有效。
         配置仍然存放在 <code className="inline">~/.deepseek/</code>。<code className="inline">DEEPSEEK_*</code> 环境变量继续有效。
         DeepSeek 并未被弃用。改名是为了体现 CodeWhale 更广泛的使命——成为面向所有提供商的开放模型智能体终端，而非弱化 DeepSeek 的地位。
       </>
@@ -399,19 +399,19 @@ brew tap Hmbown/ && brew install
 export DEEPSEEK_API_KEY=sk-...
 
 # 方法 2：保存在配置中（推荐 — 重启 Shell 后仍然有效）
-codewhale auth set --provider deepseek --api-key sk-...
+deepseek auth set --provider deepseek --api-key sk-...
 
 # 方法 3：config.toml
 # 在 ~/.deepseek/config.toml 中添加：
 api_key = "sk-..."
 
 # 查看当前状态：
-codewhale auth status    # 显示配置、密钥环和环境变量状态
-codewhale doctor         # 完整连接检查`}
+deepseek auth status    # 显示配置、密钥环和环境变量状态
+deepseek doctor         # 完整连接检查`}
         </pre>
         <p>
           配置中保存的密钥优先于环境变量。
-          使用 <code className="inline">codewhale auth clear --provider deepseek</code> 移除已保存的密钥。
+          使用 <code className="inline">deepseek auth clear --provider deepseek</code> 移除已保存的密钥。
         </p>
       </>
     ),
@@ -448,7 +448,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 api_key = "sk-or-v1-..."
 
 # 3. 使用 OpenRouter 模型运行：
-codewhale --model openrouter/deepseek/deepseek-v4-pro
+deepseek --model openrouter/deepseek/deepseek-v4-pro
 
 # 或在 config.toml 中设为默认：
 default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
@@ -495,7 +495,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     a: (
       <>
         <p className="mb-2">
-          使用 <code className="inline">codewhale --model auto</code> 或 <code className="inline">/model auto</code> 让 CodeWhale 为每个回合自动选择最合适的模型和推理深度。
+          使用 <code className="inline">deepseek --model auto</code> 或 <code className="inline">/model auto</code> 让 CodeWhale 为每个回合自动选择最合适的模型和推理深度。
         </p>
         <p className="mb-2">
           <strong>Fin</strong> 是快速非推理路径（<code className="inline">deepseek-v4-flash</code>，推理关闭），用于路由决策、摘要、RLM 子任务、上下文维护等协调工作。在真实请求发送前，Fin 会做一个小的路由调用来选择具体的模型和推理级别。
@@ -535,7 +535,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     a: (
       <>
         CodeWhale 是双向 MCP 客户端和服务器。在 <code className="inline">~/.deepseek/mcp.json</code> 中定义服务器。
-        工具以 <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code> 形式呈现。你也可以通过 <code className="inline">codewhale mcp</code> 将 CodeWhale 暴露为 MCP 服务器。
+        工具以 <code className="inline">mcp_&lt;server&gt;_&lt;tool&gt;</code> 形式呈现。你也可以通过 <code className="inline">deepseek mcp</code> 将 CodeWhale 暴露为 MCP 服务器。
         查看 <Link href="/zh/docs#mcp" className="body-link">文档页面</Link> 了解配置示例。
       </>
     ),
@@ -560,7 +560,7 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
         <pre className="code-block my-2">
 {`# npm 镜像
 npm config set registry https://registry.npmmirror.com
-npm install -g codewhale
+npm install -g deepseek
 
 # Cargo 镜像（清华 TUNA）
 # 在 ~/.cargo/config.toml 中添加：
@@ -581,10 +581,10 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
     q: "首次运行时提示 API 密钥被拒绝或认证错误？",
     a: (
       <>
-        <p className="mb-2">运行 <code className="inline">codewhale doctor</code>——它会检查 API 密钥、网络、沙箱和 MCP 服务器。完整报告写入 <code className="inline">~/.deepseek/doctor.log</code>。</p>
+        <p className="mb-2">运行 <code className="inline">deepseek doctor</code>——它会检查 API 密钥、网络、沙箱和 MCP 服务器。完整报告写入 <code className="inline">~/.deepseek/doctor.log</code>。</p>
         <p className="mb-2">常见原因：</p>
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft">
-          <li>Shell 启动文件中的 <code className="inline">DEEPSEEK_API_KEY</code> 已过期——打开新 Shell 或使用 <code className="inline">codewhale auth set</code></li>
+          <li>Shell 启动文件中的 <code className="inline">DEEPSEEK_API_KEY</code> 已过期——打开新 Shell 或使用 <code className="inline">deepseek auth set</code></li>
           <li>密钥来自错误的提供商——确保密钥与你使用的提供商匹配</li>
           <li>网络连接问题——检查 <code className="inline">curl https://api.deepseek.com/v1/models</code></li>
         </ul>
@@ -622,19 +622,19 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
       <>
         <pre className="code-block mb-2">
 {`# 发布二进制更新器（适用于 npm/二进制安装）
-codewhale update
+deepseek update
 
 # npm
-npm install -g codewhale@latest
+npm install -g deepseek@latest
 
 # Cargo
-cargo install codewhale-cli --locked --force
+cargo install deepseek-cli --locked --force
 
 # Homebrew
 brew update && brew upgrade `}
         </pre>
         <p>
-          如果通过 npm 安装，<code className="inline">codewhale update</code> 会下载最新发布二进制。
+          如果通过 npm 安装，<code className="inline">deepseek update</code> 会下载最新发布二进制。
           如果镜像延迟，请从 <a href="https://github.com/Hmbown/CodeWhale/releases" className="body-link">GitHub Releases</a> 直接下载。
         </p>
       </>

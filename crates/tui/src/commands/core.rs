@@ -149,7 +149,8 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
             app.session.last_prompt_tokens = None;
             app.session.last_completion_tokens = None;
         }
-        let save_note = match super::persist_root_string_key(None, "default_text_model", &model_id) {
+        let save_note = match super::persist_root_string_key(None, "default_text_model", &model_id)
+        {
             Ok(path) => format!(" (saved to {})", path.display()),
             Err(err) => format!(" (warning: could not save: {err})"),
         };
@@ -787,7 +788,7 @@ mod tests {
         let result = home_dashboard(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("codewhale Home Dashboard"));
+        assert!(msg.contains("deepseek Home Dashboard"));
         assert!(msg.contains("Model:"));
         assert!(msg.contains("Mode:"));
         assert!(msg.contains("Workspace:"));
@@ -836,7 +837,7 @@ mod tests {
             !msg.lines()
                 .any(|line| line.trim_start().starts_with("/set "))
         );
-        assert!(!msg.contains("/codewhale"));
+        assert!(!msg.contains("/deepseek"));
     }
 
     #[test]

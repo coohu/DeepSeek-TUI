@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # CodeWhale Unix installer
-# Copies codewhale and deepseek-tui to ~/.local/bin (or $PREFIX/bin)
+# Copies deepseek and deepseek-tui to ~/.local/bin (or $PREFIX/bin)
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
@@ -9,9 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$BIN_DIR"
 
-echo "Installing codewhale to $BIN_DIR ..."
+echo "Installing deepseek to $BIN_DIR ..."
 
-for bin in codewhale deepseek-tui; do
+for bin in deepseek deepseek-tui; do
     src="$SCRIPT_DIR/$bin"
     dst="$BIN_DIR/$bin"
     if [[ ! -f "$src" ]]; then
@@ -43,4 +43,4 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
 fi
 
 echo ""
-echo "Then run: codewhale"
+echo "Then run: deepseek"

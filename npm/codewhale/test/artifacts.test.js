@@ -24,7 +24,7 @@ test("openharmony x64 resolves to linux x64 binaries", () => {
   withMockedOs("openharmony", "x64", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
-    assert.equal(result.codewhale, "codewhale-linux-x64");
+    assert.equal(result.deepseek, "deepseek-linux-x64");
     assert.equal(result.tui, "deepseek-tui-linux-x64");
   });
 });
@@ -33,7 +33,7 @@ test("openharmony arm64 resolves to linux arm64 binaries", () => {
   withMockedOs("openharmony", "arm64", () => {
     const { detectBinaryNames } = require(ARTIFACTS_PATH);
     const result = detectBinaryNames();
-    assert.equal(result.codewhale, "codewhale-linux-arm64");
+    assert.equal(result.deepseek, "deepseek-linux-arm64");
     assert.equal(result.tui, "deepseek-tui-linux-arm64");
   });
 });
@@ -53,14 +53,14 @@ test("genuinely unsupported platform throws with raw platform name", () => {
 
 test("known platforms are unaffected by alias map", () => {
   for (const [platform, arch, expectedCodeWhale] of [
-    ["linux", "x64", "codewhale-linux-x64"],
-    ["darwin", "arm64", "codewhale-macos-arm64"],
-    ["win32", "x64", "codewhale-windows-x64.exe"],
+    ["linux", "x64", "deepseek-linux-x64"],
+    ["darwin", "arm64", "deepseek-macos-arm64"],
+    ["win32", "x64", "deepseek-windows-x64.exe"],
   ]) {
     withMockedOs(platform, arch, () => {
       const { detectBinaryNames } = require(ARTIFACTS_PATH);
       const result = detectBinaryNames();
-      assert.equal(result.codewhale, expectedCodeWhale);
+      assert.equal(result.deepseek, expectedCodeWhale);
     });
   }
 });

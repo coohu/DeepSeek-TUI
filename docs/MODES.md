@@ -1,6 +1,6 @@
 # Modes and Approvals
 
-codewhale has two related concepts:
+deepseek has two related concepts:
 
 - **TUI mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
@@ -88,15 +88,15 @@ See `MCP.md`.
 
 ## Related CLI Flags
 
-Run `codewhale --help` for the canonical list. Common flags:
+Run `deepseek --help` for the canonical list. Common flags:
 
 - `-p, --prompt <TEXT>`: one-shot prompt mode (prints and exits)
-- `codewhale exec --auto --output-format stream-json <PROMPT>`: run the tool-backed non-interactive agent and emit one JSON object per line for harnesses and backend wrappers
-- `codewhale exec --resume <ID|PREFIX> <PROMPT>` / `--session-id <ID|PREFIX>`: continue a saved session non-interactively
-- `codewhale exec --continue <PROMPT>`: continue the most recent saved session for this workspace non-interactively
-- `codewhale swebench run --instance-id <ID> --issue-file <PATH>`: run the tool-backed agent on one SWE-bench task and write/update a prediction JSONL row
-- `codewhale fork <ID|PREFIX>` / `codewhale fork --last`: copy a saved session into a new sibling session; forked sessions retain additive parent-session metadata and show that lineage in session listings
-- `--model <MODEL>`: when using the `codewhale` facade, forward a DeepSeek model override to the TUI
+- `deepseek exec --auto --output-format stream-json <PROMPT>`: run the tool-backed non-interactive agent and emit one JSON object per line for harnesses and backend wrappers
+- `deepseek exec --resume <ID|PREFIX> <PROMPT>` / `--session-id <ID|PREFIX>`: continue a saved session non-interactively
+- `deepseek exec --continue <PROMPT>`: continue the most recent saved session for this workspace non-interactively
+- `deepseek swebench run --instance-id <ID> --issue-file <PATH>`: run the tool-backed agent on one SWE-bench task and write/update a prediction JSONL row
+- `deepseek fork <ID|PREFIX>` / `deepseek fork --last`: copy a saved session into a new sibling session; forked sessions retain additive parent-session metadata and show that lineage in session listings
+- `--model <MODEL>`: when using the `deepseek` facade, forward a DeepSeek model override to the TUI
 - `--workspace <DIR>`: workspace root for file tools
 - `--yolo`: start in YOLO mode
 - `-r, --resume <ID|PREFIX|latest>`: resume a saved session
@@ -111,7 +111,7 @@ Run `codewhale --help` for the canonical list. Common flags:
 
 DeepSeek-TUI has three related but intentionally separate recovery paths:
 
-- `codewhale fork <ID>` creates a new saved session from an existing saved
+- `deepseek fork <ID>` creates a new saved session from an existing saved
   conversation and records the source session id. This is the safe way to
   explore a different answer path without overwriting the original session.
 - Esc-Esc backtrack rewinds the live transcript to a previous user prompt and

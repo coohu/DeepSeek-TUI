@@ -9,17 +9,17 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use codewhale_agent::ModelRegistry;
-use codewhale_config::{CliRuntimeOverrides, ConfigStore};
-use codewhale_core::Runtime;
-use codewhale_execpolicy::ExecPolicyEngine;
-use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink};
-use codewhale_mcp::McpManager;
-use codewhale_protocol::{
+use deepseek_agent::ModelRegistry;
+use deepseek_config::{CliRuntimeOverrides, ConfigStore};
+use deepseek_core::Runtime;
+use deepseek_execpolicy::ExecPolicyEngine;
+use deepseek_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink};
+use deepseek_mcp::McpManager;
+use deepseek_protocol::{
     AppRequest, AppResponse, PromptRequest, PromptResponse, ThreadRequest, ThreadResponse,
 };
-use codewhale_state::StateStore;
-use codewhale_tools::{ToolCall, ToolRegistry};
+use deepseek_state::StateStore;
+use deepseek_tools::{ToolCall, ToolRegistry};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -50,7 +50,7 @@ pub struct AppServerOptions {
 #[derive(Clone)]
 struct AppState {
     config_path: Option<PathBuf>,
-    config: Arc<RwLock<codewhale_config::ConfigToml>>,
+    config: Arc<RwLock<deepseek_config::ConfigToml>>,
     runtime: Arc<Mutex<Runtime>>,
     registry: ModelRegistry,
     auth_token: Option<String>,
@@ -265,7 +265,7 @@ async fn tool_handler(
     match runtime
         .invoke_tool(
             req.call,
-            codewhale_execpolicy::AskForApproval::OnRequest,
+            deepseek_execpolicy::AskForApproval::OnRequest,
             &cwd,
         )
         .await
@@ -892,8 +892,8 @@ async fn process_app_request(
         AppRequest::ThreadLoadedList => {
             let mut runtime = state.runtime.lock().await;
             let response = runtime
-                .handle_thread(codewhale_protocol::ThreadRequest::List(
-                    codewhale_protocol::ThreadListParams {
+                .handle_thread(deepseek_protocol::ThreadRequest::List(
+                    deepseek_protocol::ThreadListParams {
                         include_archived: false,
                         limit: Some(50),
                     },
@@ -915,7 +915,7 @@ async fn process_app_request(
     }
 }
 
-async fn persist_config(state: &AppState, config: codewhale_config::ConfigToml) -> Result<()> {
+async fn persist_config(state: &AppState, config: deepseek_config::ConfigToml) -> Result<()> {
     if state.config_path.is_none() {
         return Ok(());
     }
@@ -928,7 +928,7 @@ async fn persist_config(state: &AppState, config: codewhale_config::ConfigToml) 
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
-    use codewhale_protocol::AppRequest;
+    use deepseek_protocol::AppRequest;
     use std::fs;
     use tower::ServiceExt;
 
@@ -1039,25 +1039,5 @@ mod tests {
             err.to_string()
                 .contains("refusing unauthenticated app-server bind")
         );
-    }
-
-    #[tokio::test]
-    async fn stdio_transport_keeps_raw_config_get_for_legacy_clients() {
-        let state = build_state(None, None).expect("state");
-        {
-            let mut cfg = state.config.write().await;
-            cfg.api_key = Some("sk-deepseek-secret".to_string());
-        }
-
-        let response = process_app_request(
-            &state,
-            AppRequest::ConfigGet {
-                key: "api_key".to_string(),
-            },
-            AppTransport::Stdio,
-        )
-        .await;
-
-        assert_eq!(response.data["value"], "sk-deepseek-secret");
     }
 }

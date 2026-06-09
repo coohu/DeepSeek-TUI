@@ -1,5 +1,5 @@
 [package]
-name = "codewhale-cli"
+name = "deepseek-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,31 +7,25 @@ repository.workspace = true
 description = "Agentic terminal facade for open-source and open-weight coding models"
 
 [[bin]]
-name = "codewhale"
+name = "deepseek"
 path = "src/main.rs"
 
-# Short-form convenience alias — forwards to `codewhale` silently.
+# Short-form convenience alias — forwards to `deepseek` silently.
 [[bin]]
 name = "codew"
 path = "src/bin/codew_legacy_shim.rs"
-
-# Legacy alias — forwards to `codewhale` and prints a deprecation notice.
-# Will be removed in v0.9.0.
-[[bin]]
-name = "deepseek"
-path = "src/bin/deepseek_legacy_shim.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
-codewhale-agent = { path = "../agent", version = "0.8.46" }
-codewhale-app-server = { path = "../app-server", version = "0.8.46" }
-codewhale-config = { path = "../config", version = "0.8.46" }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.8.46" }
-codewhale-mcp = { path = "../mcp", version = "0.8.46" }
-codewhale-secrets = { path = "../secrets", version = "0.8.46" }
-codewhale-state = { path = "../state", version = "0.8.46" }
+deepseek-agent = { path = "../agent", version = "0.8.46" }
+deepseek-app-server = { path = "../app-server", version = "0.8.46" }
+deepseek-config = { path = "../config", version = "0.8.46" }
+deepseek-execpolicy = { path = "../execpolicy", version = "0.8.46" }
+deepseek-mcp = { path = "../mcp", version = "0.8.46" }
+deepseek-secrets = { path = "../secrets", version = "0.8.46" }
+deepseek-state = { path = "../state", version = "0.8.46" }
 chrono.workspace = true
 dirs.workspace = true
 serde.workspace = true

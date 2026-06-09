@@ -3,9 +3,9 @@ function assertSupportedNode() {
   const major = Number.parseInt(String(version).split(".")[0], 10);
   if (Number.isNaN(major) || major < 18) {
     process.stderr.write(
-      "codewhale: Node.js 18 or newer is required for npm installation. " +
+      "deepseek: Node.js 18 or newer is required for npm installation. " +
       `Current Node.js version is ${version}. ` +
-      "Please upgrade Node.js and rerun `npm install -g codewhale`.\n",
+      "Please upgrade Node.js and rerun `npm install -g deepseek`.\n",
     );
     process.exit(1);
   }
@@ -136,12 +136,12 @@ function maxAttempts(context = "runtime", env = process.env) {
 }
 
 function binaryPaths() {
-  const { codewhale, tui } = detectBinaryNames();
+  const { deepseek, tui } = detectBinaryNames();
   const releaseDir = releaseBinaryDirectory();
   return {
-    codewhale: {
-      asset: codewhale,
-      target: path.join(releaseDir, process.platform === "win32" ? "codewhale.exe" : "codewhale"),
+    deepseek: {
+      asset: deepseek,
+      target: path.join(releaseDir, process.platform === "win32" ? "deepseek.exe" : "deepseek"),
     },
     tui: {
       asset: tui,
@@ -166,7 +166,7 @@ function logInfo(message) {
   if (isQuietInstall()) {
     return;
   }
-  process.stderr.write(`codewhale: ${message}\n`);
+  process.stderr.write(`deepseek: ${message}\n`);
 }
 
 function installFailureHint(error) {
@@ -195,19 +195,19 @@ function installFailureHint(error) {
 
   if (releaseBase) {
     return [
-      "codewhale install hint:",
+      "deepseek install hint:",
       `  DEEPSEEK_TUI_RELEASE_BASE_URL is set to ${releaseBase}`,
-      "  Verify that this directory contains codewhale-artifacts-sha256.txt",
-      "  plus the codewhale/deepseek-tui binary assets for your platform.",
+      "  Verify that this directory contains deepseek-artifacts-sha256.txt",
+      "  plus the deepseek/deepseek-tui binary assets for your platform.",
     ].join("\n");
   }
 
   return [
-    "codewhale install hint:",
+    "deepseek install hint:",
     "  The npm package downloads prebuilt binaries from GitHub Releases.",
     "  If GitHub is unavailable on this network, mirror the release assets and set:",
     "    DEEPSEEK_TUI_RELEASE_BASE_URL=https://<mirror>/<release-asset-directory>/",
-    "  The directory must contain codewhale-artifacts-sha256.txt and the platform binaries.",
+    "  The directory must contain deepseek-artifacts-sha256.txt and the platform binaries.",
     "  See docs/INSTALL.md#npm-binary-download-times-out.",
   ].join("\n");
 }
@@ -259,14 +259,14 @@ function createProgressReporter(assetName, totalBytes) {
   const render = (final) => {
     if (totalBytes && totalBytes > 0) {
       const pct = Math.min(100, Math.round((received / totalBytes) * 100));
-      const line = `codewhale: downloading ${assetName}: ${formatMb(received)} / ${formatMb(totalBytes)} MB (${pct}%)`;
+      const line = `deepseek: downloading ${assetName}: ${formatMb(received)} / ${formatMb(totalBytes)} MB (${pct}%)`;
       if (interactive) {
         process.stderr.write(`${line}\r`);
       } else {
         process.stderr.write(`${line}\n`);
       }
     } else {
-      const line = `codewhale: downloading ${assetName}: ${formatMb(received)} MB downloaded`;
+      const line = `deepseek: downloading ${assetName}: ${formatMb(received)} MB downloaded`;
       if (interactive) {
         process.stderr.write(`${line}\r`);
       } else {
@@ -296,7 +296,7 @@ function createProgressReporter(assetName, totalBytes) {
         // Move past the carriage-return line and emit a "done" footer.
         process.stderr.write("\n");
       }
-      process.stderr.write(`codewhale: ${assetName} ... done.\n`);
+      process.stderr.write(`deepseek: ${assetName} ... done.\n`);
     },
   };
 }
@@ -407,7 +407,7 @@ function connectThroughProxy(proxy, targetHost, targetPort, timeoutMs) {
       const lines = [
         `CONNECT ${targetHost}:${targetPort} HTTP/1.1`,
         `Host: ${targetHost}:${targetPort}`,
-        "User-Agent: codewhale-installer",
+        "User-Agent: deepseek-installer",
         "Proxy-Connection: keep-alive",
       ];
       if (proxy.auth) {
@@ -556,7 +556,7 @@ function httpRequest(rawUrl, opts = {}) {
         path: `${url.pathname}${url.search || ""}`,
         headers: {
           Host: url.host,
-          "User-Agent": "codewhale-installer",
+          "User-Agent": "deepseek-installer",
           Accept: "*/*",
           Connection: "close",
         },
@@ -643,7 +643,7 @@ function httpRequest(rawUrl, opts = {}) {
               path: rawUrl,
               headers: {
                 Host: url.host,
-                "User-Agent": "codewhale-installer",
+                "User-Agent": "deepseek-installer",
                 Accept: "*/*",
                 Connection: "close",
                 ...(proxy.auth ? { "Proxy-Authorization": `Basic ${proxy.auth}` } : {}),
@@ -707,7 +707,7 @@ function httpRequest(rawUrl, opts = {}) {
               path: `${url.pathname}${url.search || ""}`,
               headers: {
                 Host: url.host,
-                "User-Agent": "codewhale-installer",
+                "User-Agent": "deepseek-installer",
                 Accept: "*/*",
                 Connection: "close",
               },
@@ -1127,7 +1127,7 @@ async function run(options = {}) {
   };
 
   await Promise.all([
-    ensureBinary(paths.codewhale.target, paths.codewhale.asset, version, repo, getChecksums, { context }),
+    ensureBinary(paths.deepseek.target, paths.deepseek.asset, version, repo, getChecksums, { context }),
     ensureBinary(paths.tui.target, paths.tui.asset, version, repo, getChecksums, { context }),
   ]);
 }
@@ -1135,8 +1135,8 @@ async function run(options = {}) {
 async function getBinaryPath(name) {
   await run({ context: "runtime" });
   const paths = binaryPaths();
-  if (name === "codewhale") {
-    return paths.codewhale.target;
+  if (name === "deepseek") {
+    return paths.deepseek.target;
   }
   if (name === "deepseek-tui") {
     return paths.tui.target;
@@ -1163,7 +1163,7 @@ module.exports = {
 
 if (require.main === module) {
   run({ context: "install" }).catch((error) => {
-    console.error("codewhale install failed:", error.message);
+    console.error("deepseek install failed:", error.message);
     const hint = installFailureHint(error);
     if (hint) {
       console.error(hint);

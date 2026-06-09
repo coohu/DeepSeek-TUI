@@ -4,7 +4,7 @@ CodeWhale publishes a multi-arch Linux image to GitHub Container Registry
 for each release.
 
 ```bash
-docker pull ghcr.io/hmbown/codewhale:latest
+docker pull ghcr.io/hmbown/deepseek:latest
 ```
 
 ## Quick start
@@ -12,14 +12,14 @@ docker pull ghcr.io/hmbown/codewhale:latest
 Run the published image with a Docker-managed data volume:
 
 ```bash
-docker volume create codewhale-home
+docker volume create deepseek-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.deepseek \
+  -v deepseek-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/deepseek:latest
 ```
 
 Use a pinned release tag for reproducible installs:
@@ -27,10 +27,10 @@ Use a pinned release tag for reproducible installs:
 ```bash
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.deepseek \
+  -v deepseek-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:vX.Y.Z
+  ghcr.io/hmbown/deepseek:vX.Y.Z
 ```
 
 Replace `vX.Y.Z` with a tag from
@@ -38,14 +38,14 @@ Replace `vX.Y.Z` with a tag from
 
 ## Default image contract
 
-`ghcr.io/hmbown/codewhale:latest` and the semver tags are conservative runtime
+`ghcr.io/hmbown/deepseek:latest` and the semver tags are conservative runtime
 images:
 
-- the container runs as the non-root `codewhale` user with UID/GID `1000:1000`
+- the container runs as the non-root `deepseek` user with UID/GID `1000:1000`
 - the image does not grant passwordless `sudo`
 - the image is meant to run CodeWhale against mounted workspaces, not to mutate
   the base operating system at runtime
-- user state belongs in a volume mounted at `/home/codewhale/.deepseek`
+- user state belongs in a volume mounted at `/home/deepseek/.deepseek`
 
 That default is intentional. Keep using it for the smallest trust boundary. If a
 project needs `apt-get`, compiler toolchains, Node/Python package managers,
@@ -62,9 +62,9 @@ environments:
 
 ```bash
 docker build -f docs/examples/Dockerfile.toolbox \
-  --build-arg CODEWHALE_IMAGE=ghcr.io/hmbown/codewhale:vX.Y.Z \
+  --build-arg CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
   --build-arg TOOLBOX_PACKAGES="git openssh-client curl build-essential pkg-config python3 python3-pip nodejs npm" \
-  -t codewhale-toolbox:my-project .
+  -t deepseek-toolbox:my-project .
 ```
 
 Use `latest` only for throwaway testing. For shared projects, keep the
@@ -74,14 +74,14 @@ development-environment change.
 Run the toolbox image with the same workspace and state mounts:
 
 ```bash
-docker volume create codewhale-my-project-home
+docker volume create deepseek-my-project-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-my-project-home:/home/codewhale/.deepseek \
+  -v deepseek-my-project-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  codewhale-toolbox:my-project
+  deepseek-toolbox:my-project
 ```
 
 Inside this opt-in image, CodeWhale can use commands such as
@@ -100,27 +100,27 @@ the offline queue do not bleed across workspaces:
 
 ```bash
 project="$(basename "$PWD")"
-image="codewhale-toolbox:${project}"
-docker volume create "codewhale-${project}-home"
+image="deepseek-toolbox:${project}"
+docker volume create "deepseek-${project}-home"
 
 docker run --rm -it \
-  --name "codewhale-${project}" \
+  --name "deepseek-${project}" \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v "codewhale-${project}-home:/home/codewhale/.deepseek" \
+  -v "deepseek-${project}-home:/home/deepseek/.deepseek" \
   -v "$PWD:/workspace" \
   -w /workspace \
   "$image"
 ```
 
 For projects with different toolchains, build different toolbox tags, for
-example `codewhale-toolbox:frontend` and `codewhale-toolbox:backend`. The
+example `deepseek-toolbox:frontend` and `deepseek-toolbox:backend`. The
 separate launcher idea discussed in issue #2217 can build on this contract, but
 it is intentionally outside the core Docker image.
 
 ## Project bootstrap scripts
 
 CodeWhale does not automatically execute `.deepseek/setup.sh` or
-`.codewhale/setup.sh`. If you keep one of those files as a local project
+`.deepseek/setup.sh`. If you keep one of those files as a local project
 recipe, run it explicitly. For shared team setup, prefer a committed project
 script or the toolbox Dockerfile so the environment can be reviewed and
 rebuilt.
@@ -130,12 +130,12 @@ For example, to run a committed bootstrap script before starting CodeWhale:
 ```bash
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-my-project-home:/home/codewhale/.deepseek \
+  -v deepseek-my-project-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
   --entrypoint bash \
-  codewhale-toolbox:my-project \
-  -lc './scripts/bootstrap-dev.sh && exec codewhale'
+  deepseek-toolbox:my-project \
+  -lc './scripts/bootstrap-dev.sh && exec deepseek'
 ```
 
 Use the toolbox image for bootstrap scripts that need `sudo`. The default image
@@ -150,7 +150,7 @@ baking trusted CA certificates into a custom toolbox image:
 USER root
 COPY docker/certs/*.crt /usr/local/share/ca-certificates/
 RUN update-ca-certificates
-USER codewhale
+USER deepseek
 ```
 
 All files copied into `/usr/local/share/ca-certificates/` must use the `.crt`
@@ -162,13 +162,13 @@ container start:
 ```bash
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-my-project-home:/home/codewhale/.deepseek \
+  -v deepseek-my-project-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -v "$PWD/docker/certs:/usr/local/share/ca-certificates/local:ro" \
   -w /workspace \
   --entrypoint bash \
-  codewhale-toolbox:my-project \
-  -lc 'sudo update-ca-certificates && exec codewhale'
+  deepseek-toolbox:my-project \
+  -lc 'sudo update-ca-certificates && exec deepseek'
 ```
 
 This CA workflow requires the opt-in toolbox image because the default image
@@ -179,7 +179,7 @@ does not include passwordless `sudo`.
 Build the image locally from a checkout:
 
 ```bash
-docker build -t codewhale .
+docker build -t deepseek .
 ```
 
 Then run it with the same Docker-managed data volume:
@@ -187,10 +187,10 @@ Then run it with the same Docker-managed data volume:
 ```bash
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.deepseek \
+  -v deepseek-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  codewhale
+  deepseek
 ```
 
 Docker Hub publishing is not configured; GHCR is the supported prebuilt image
@@ -206,19 +206,19 @@ registry.
 
 ## Volumes
 
-Mount `/home/codewhale/.deepseek` to persist sessions, config, skills, memory,
+Mount `/home/deepseek/.deepseek` to persist sessions, config, skills, memory,
 and the offline queue across container restarts. A Docker-managed named volume
 is the safest default because Docker creates it with ownership the container can
 write:
 
 ```bash
--v codewhale-home:/home/codewhale/.deepseek
+-v deepseek-home:/home/deepseek/.deepseek
 ```
 
 Without this mount the container starts fresh each time.
 
 If you bind-mount an existing host directory instead, the image runs as the
-non-root `codewhale` user with UID/GID `1000:1000`. The mounted directory must be
+non-root `deepseek` user with UID/GID `1000:1000`. The mounted directory must be
 writable by that user, or startup can fail while creating runtime directories
 under `.deepseek/tasks`. On Linux hosts, either use the named volume above or
 prepare the bind mount explicitly:
@@ -229,8 +229,8 @@ sudo chown -R 1000:1000 ~/.deepseek
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v ~/.deepseek:/home/codewhale/.deepseek \
-  ghcr.io/hmbown/codewhale:latest
+  -v ~/.deepseek:/home/deepseek/.deepseek \
+  ghcr.io/hmbown/deepseek:latest
 ```
 
 That `chown` changes ownership of the host `~/.deepseek` directory. Skip it if
@@ -239,30 +239,30 @@ volume instead.
 
 ## Non-interactive / pipeline usage
 
-When stdin is not a TTY, `codewhale` drops to the dispatcher's one-shot mode
-(`codewhale -c "…"`). Pipe a prompt on stdin:
+When stdin is not a TTY, `deepseek` drops to the dispatcher's one-shot mode
+(`deepseek -c "…"`). Pipe a prompt on stdin:
 
 ```bash
 echo "Explain the Cargo.toml in structured English." | \
-  docker run --rm -i -e DEEPSEEK_API_KEY ghcr.io/hmbown/codewhale:latest
+  docker run --rm -i -e DEEPSEEK_API_KEY ghcr.io/hmbown/deepseek:latest
 ```
 
 ## Building locally
 
 ```bash
 # Single platform (your host architecture)
-docker build -t codewhale .
+docker build -t deepseek .
 
 # Multi-platform (requires a builder with emulation)
 docker buildx create --use
-docker buildx build --platform linux/amd64,linux/arm64 -t codewhale .
+docker buildx build --platform linux/amd64,linux/arm64 -t deepseek .
 ```
 
 ## Devcontainer
 
 The repository includes a [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json)
 configuration for VS Code / GitHub Codespaces. It pre-installs the Rust toolchain,
-rust-analyzer, and the `codewhale` binary. Open the repo in a devcontainer to get a
+rust-analyzer, and the `deepseek` binary. Open the repo in a devcontainer to get a
 ready-to-use development environment.
 
 ## Release status

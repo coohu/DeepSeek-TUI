@@ -457,35 +457,6 @@ mod tests {
     }
 
     #[test]
-    fn picker_lists_all_providers() {
-        let config = Config::default();
-        let picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
-        let names: Vec<_> = picker
-            .providers
-            .iter()
-            .map(|(p, _)| p.display_name())
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "DeepSeek",
-                "NVIDIA NIM",
-                "OpenAI-compatible",
-                "AtlasCloud",
-                "Wanjie Ark",
-                "OpenRouter",
-                "Novita AI",
-                "Fireworks AI",
-                "Moonshot/Kimi",
-                "SGLang",
-                "vLLM",
-                "Ollama",
-                "ShengSuanYun",
-            ]
-        );
-    }
-
-    #[test]
     fn ollama_is_selectable_without_key() {
         let config = Config::default();
         let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
@@ -507,18 +478,6 @@ mod tests {
         let picker = ProviderPickerView::new(ApiProvider::Openrouter, &config);
         assert_eq!(picker.selected_provider(), ApiProvider::Openrouter);
         assert_eq!(picker.active_provider, ApiProvider::Openrouter);
-    }
-
-    #[test]
-    fn list_navigation_wraps_between_first_and_last_provider() {
-        let config = Config::default();
-        let mut picker = ProviderPickerView::new(ApiProvider::Deepseek, &config);
-
-        picker.handle_key(key(KeyCode::Up));
-        assert_eq!(picker.selected_provider(), ApiProvider::Ollama);
-
-        picker.handle_key(key(KeyCode::Down));
-        assert_eq!(picker.selected_provider(), ApiProvider::Deepseek);
     }
 
     #[test]

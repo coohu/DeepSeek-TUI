@@ -4,7 +4,7 @@
 # Expects model.patch at /tmp/deep-swe-verify/<task_id>/model.patch
 TASK_ID="$1"
 IMAGE="$2"
-TASKS_DIR="/Volumes/VIXinSSD/whalebro/codewhale/deep-swe/tasks"
+TASKS_DIR="/Volumes/VIXinSSD/whalebro/deepseek/deep-swe/tasks"
 WORK_DIR="/tmp/deep-swe-verify/$TASK_ID"
 
 mkdir -p "$WORK_DIR"

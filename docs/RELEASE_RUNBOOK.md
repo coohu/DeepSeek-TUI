@@ -1,7 +1,7 @@
 # CodeWhale Release Runbook
 
 This runbook is the source of truth for shipping Rust crates, GitHub release assets,
-and the `codewhale` npm wrapper.
+and the `deepseek` npm wrapper.
 
 Current packaging note:
 - `deepseek-tui` is the live runtime crate shipped to users today.
@@ -11,26 +11,26 @@ Current packaging note:
 
 - End-user crates:
   - `deepseek-tui`
-  - `codewhale-cli`
+  - `deepseek-cli`
 - Supporting crates published from this workspace:
-  - `codewhale-secrets`
-  - `codewhale-config`
-  - `codewhale-protocol`
-  - `codewhale-state`
-  - `codewhale-agent`
-  - `codewhale-execpolicy`
-  - `codewhale-hooks`
-  - `codewhale-mcp`
-  - `codewhale-tools`
-  - `codewhale-core`
-  - `codewhale-app-server`
+  - `deepseek-secrets`
+  - `deepseek-config`
+  - `deepseek-protocol`
+  - `deepseek-state`
+  - `deepseek-agent`
+  - `deepseek-execpolicy`
+  - `deepseek-hooks`
+  - `deepseek-mcp`
+  - `deepseek-tools`
+  - `deepseek-core`
+  - `deepseek-app-server`
   - `deepseek-tui-core`
 
 ## Version Coordination
 
 - Rust crates inherit the shared workspace version from [Cargo.toml](../Cargo.toml).
 - Internal path dependency versions should match the shared workspace version; stale older pins are release blockers once the workspace version moves.
-- The npm wrapper version lives in [npm/codewhale/package.json](../npm/codewhale/package.json).
+- The npm wrapper version lives in [npm/deepseek/package.json](../npm/deepseek/package.json).
 - `codewhaleBinaryVersion` controls which GitHub release binaries the npm wrapper downloads.
 - Packaging-only npm releases are allowed:
   - bump the npm package version
@@ -53,7 +53,7 @@ cargo publish --dry-run --locked --allow-dirty -p deepseek-tui
 
 `check-versions.sh` also runs in CI on every push/PR (the `versions` job in
 `.github/workflows/ci.yml`), so drift between `Cargo.toml`, the per-crate
-manifests, `npm/codewhale/package.json`, and `Cargo.lock` is caught before
+manifests, `npm/deepseek/package.json`, and `Cargo.lock` is caught before
 release time rather than at it.
 
 The source-controlled CNB pipeline mirrors the heavy Linux version/fmt/check/
@@ -69,11 +69,11 @@ new workspace version while still validating package contents before publish.
 For npm wrapper verification, build the two shipped binaries and run the
 cross-platform smoke harness. This packs the npm wrapper, installs it into a
 clean temporary project, serves local release assets over HTTP, and checks both
-the dispatcher-to-TUI path (`codewhale doctor --help`) and the direct TUI
+the dispatcher-to-TUI path (`deepseek doctor --help`) and the direct TUI
 entrypoint (`deepseek-tui --help`).
 
 ```bash
-cargo build --release --locked -p codewhale-cli -p deepseek-tui
+cargo build --release --locked -p deepseek-cli -p deepseek-tui
 node scripts/release/npm-wrapper-smoke.js
 ```
 
@@ -85,7 +85,7 @@ directory with a full asset matrix fixture before starting the server:
 
 ```bash
 DEEPSEEK_TUI_PREPARE_ALL_ASSETS=1 node scripts/release/prepare-local-release-assets.js
-cd npm/codewhale
+cd npm/deepseek
 DEEPSEEK_TUI_VERSION=X.Y.Z DEEPSEEK_TUI_RELEASE_BASE_URL=http://127.0.0.1:8123/ npm run release:check
 ```
 
@@ -100,8 +100,8 @@ After publishing, prove the release is visible in both registries:
 ./scripts/release/check-published.sh X.Y.Z
 ```
 
-Do not mark a Rust release complete until that command sees `codewhale@X.Y.Z`
-on npm and every `codewhale-*` crate at `X.Y.Z` on crates.io. For a rare
+Do not mark a Rust release complete until that command sees `deepseek@X.Y.Z`
+on npm and every `deepseek-*` crate at `X.Y.Z` on crates.io. For a rare
 npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
 release notes explicit that no new Rust binary version shipped.
 
@@ -119,19 +119,19 @@ configured.
    `main` and letting `auto-tag.yml` create the tag — see the npm wrapper
    release section below for the `RELEASE_TAG_PAT` requirement).
 4. Publish crates in this order with `./scripts/release/publish-crates.sh publish`:
-   - `codewhale-secrets`
-   - `codewhale-config`
-   - `codewhale-protocol`
-   - `codewhale-state`
-   - `codewhale-agent`
-   - `codewhale-execpolicy`
-   - `codewhale-hooks`
-   - `codewhale-mcp`
-   - `codewhale-tools`
-   - `codewhale-core`
-   - `codewhale-app-server`
+   - `deepseek-secrets`
+   - `deepseek-config`
+   - `deepseek-protocol`
+   - `deepseek-state`
+   - `deepseek-agent`
+   - `deepseek-execpolicy`
+   - `deepseek-hooks`
+   - `deepseek-mcp`
+   - `deepseek-tools`
+   - `deepseek-core`
+   - `deepseek-app-server`
    - `deepseek-tui-core`
-   - `codewhale-cli`
+   - `deepseek-cli`
    - `deepseek-tui`
 5. Wait for each published crate version to appear on crates.io before publishing dependents.
 
@@ -141,16 +141,16 @@ The publish helper is idempotent for reruns: already-published crate versions ar
 
 `.github/workflows/release.yml` builds these binaries:
 
-- `codewhale-linux-x64`
-- `codewhale-macos-x64`
-- `codewhale-macos-arm64`
-- `codewhale-windows-x64.exe`
+- `deepseek-linux-x64`
+- `deepseek-macos-x64`
+- `deepseek-macos-arm64`
+- `deepseek-windows-x64.exe`
 - `deepseek-tui-linux-x64`
 - `deepseek-tui-macos-x64`
 - `deepseek-tui-macos-arm64`
 - `deepseek-tui-windows-x64.exe`
 
-The release job also uploads `codewhale-artifacts-sha256.txt`. The npm installer and
+The release job also uploads `deepseek-artifacts-sha256.txt`. The npm installer and
 release verification script both depend on that checksum manifest.
 
 ## npm Wrapper Release
@@ -163,14 +163,14 @@ on a workstation with `npm login` and an authenticator app.
 
 ### Steps
 
-1. Set the npm package version in [npm/codewhale/package.json](../npm/codewhale/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
+1. Set the npm package version in [npm/deepseek/package.json](../npm/deepseek/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
 2. Set `codewhaleBinaryVersion` to the GitHub release tag that should supply binaries.
 3. Push the version bump to `main`. `auto-tag.yml` creates the matching `vX.Y.Z` tag, and `release.yml` builds the binary matrix and drafts the GitHub Release.
-4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `codewhale-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
+4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `deepseek-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
 5. From a developer machine, publish the npm wrapper manually:
 
 ```bash
-cd npm/codewhale
+cd npm/deepseek
 npm publish --access public
 # (you will be prompted for the npm OTP from your authenticator)
 ```
@@ -187,13 +187,13 @@ To re-enable automated publish: provision an npm automation token with "Bypass 2
 ## CNB Cool mirror
 
 Every push to `main`, `fix/*`, `rebrand/*`, `work/v*`, and every `v*` tag is mirrored to
-`cnb.cool/codewhale.net/codewhale` via the `Sync to CNB` workflow
+`cnb.cool/deepseek.net/deepseek` via the `Sync to CNB` workflow
 so users behind GitHub-blocking networks can fetch the source and so CNB can
 run the heavy Linux CI lane. After a release tag, **verify the mirror caught
 it** before declaring the release shipped:
 
 ```bash
-git ls-remote https://cnb.cool/codewhale.net/codewhale.git refs/tags/vX.Y.Z
+git ls-remote https://cnb.cool/deepseek.net/deepseek.git refs/tags/vX.Y.Z
 ```
 
 If the workflow failed for the release tag, the manual fallback is

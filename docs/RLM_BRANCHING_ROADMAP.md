@@ -64,7 +64,7 @@ branches prematurely.
 ## v0.9.0
 
 - Emit per-turn `trajectory.jsonl` as the trainset substrate.
-- Add `codewhale replay <turn_id>` for deterministic replay.
+- Add `deepseek replay <turn_id>` for deterministic replay.
 - Render module artifacts from the `[[ ## field ## ]]` form through a Rust
   adapter.
 - Land the eval pipeline: suites, replay evals, and measurement substrate.
@@ -82,7 +82,7 @@ branches prematurely.
 - Land the first optimized tool-description and agent-prompt artifacts through
   PRs. Constitution clauses remain pinned outside the optimized region.
 - Add whale-species module passports, for example
-  `Sei: codewhale-agent-prompt.v0.10.0-gepa-1`.
+  `Sei: deepseek-agent-prompt.v0.10.0-gepa-1`.
 
 ## Trust Boundary
 

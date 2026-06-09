@@ -190,7 +190,7 @@ neither Landlock nor seccomp can provide.
 
 ## Configuration
 
-Relevant config keys in `~/.codewhale/config.toml`:
+Relevant config keys in `~/.deepseek/config.toml`:
 
 ```toml
 # Sandbox policy mode

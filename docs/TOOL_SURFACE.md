@@ -269,7 +269,7 @@ while the registry contract stays stable.
 Version smoke:
 
 ```bash
-codewhale --version
+deepseek --version
 deepseek-tui --version
 ```
 

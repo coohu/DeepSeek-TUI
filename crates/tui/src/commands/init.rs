@@ -35,7 +35,7 @@ pub fn init(app: &mut App) -> CommandResult {
     }
 }
 
-/// If `workspace` is inside a git repository, ensure `.codewhale/` and
+/// If `workspace` is inside a git repository, ensure `.deepseek/` and
 /// `.deepseek/` are listed in the nearest `.gitignore` so that snapshots,
 /// instructions, and other workspace-local state are not accidentally committed.
 fn ensure_deepseek_gitignored(workspace: &Path) {
@@ -45,7 +45,7 @@ fn ensure_deepseek_gitignored(workspace: &Path) {
     }
 
     let gitignore = workspace.join(".gitignore");
-    let entries = [".codewhale/", ".deepseek/"];
+    let entries = [".deepseek/"];
 
     // Read existing contents once.
     let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();

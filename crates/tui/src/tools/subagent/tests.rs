@@ -472,9 +472,9 @@ fn forked_subagent_messages_preserve_parent_prefix_then_append_task() {
     assert_eq!(messages.first(), Some(&parent_message));
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[1].role, "system");
-    assert!(message_text(&messages[1]).contains("<codewhale:fork_state>"));
+    assert!(message_text(&messages[1]).contains("<deepseek:fork_state>"));
     assert_eq!(messages[2].role, "system");
-    assert!(message_text(&messages[2]).contains("<codewhale:subagent_context>"));
+    assert!(message_text(&messages[2]).contains("<deepseek:subagent_context>"));
     assert_eq!(messages[3].role, "user");
     assert!(message_text(&messages[3]).contains("inspect parser"));
 }
@@ -1218,13 +1218,13 @@ fn build_subagent_system_prompt_skips_role_when_blank() {
 fn subagent_done_sentinel_format_is_well_formed() {
     let res = make_snapshot(SubAgentStatus::Completed);
     let sentinel = subagent_done_sentinel("agent_xyz", &res);
-    assert!(sentinel.starts_with("<codewhale:subagent.done>"));
-    assert!(sentinel.ends_with("</codewhale:subagent.done>"));
+    assert!(sentinel.starts_with("<deepseek:subagent.done>"));
+    assert!(sentinel.ends_with("</deepseek:subagent.done>"));
 
     // The inner JSON parses and carries the expected fields.
     let inner = sentinel
-        .trim_start_matches("<codewhale:subagent.done>")
-        .trim_end_matches("</codewhale:subagent.done>");
+        .trim_start_matches("<deepseek:subagent.done>")
+        .trim_end_matches("</deepseek:subagent.done>");
     let parsed: serde_json::Value = serde_json::from_str(inner).expect("inner JSON parses");
     assert_eq!(parsed["agent_id"], "agent_xyz");
     assert_eq!(parsed["status"], "completed");
@@ -1240,8 +1240,8 @@ fn subagent_done_sentinel_format_is_well_formed() {
 fn subagent_failed_sentinel_format_is_well_formed() {
     let sentinel = subagent_failed_sentinel("agent_zzz", "boom");
     let inner = sentinel
-        .trim_start_matches("<codewhale:subagent.done>")
-        .trim_end_matches("</codewhale:subagent.done>");
+        .trim_start_matches("<deepseek:subagent.done>")
+        .trim_end_matches("</deepseek:subagent.done>");
     let parsed: serde_json::Value = serde_json::from_str(inner).expect("inner JSON parses");
     assert_eq!(parsed["agent_id"], "agent_zzz");
     assert_eq!(parsed["status"], "failed");
@@ -1717,7 +1717,7 @@ fn persisted_non_empty_allowed_tools_loads_as_narrow() {
 fn stub_runtime() -> SubAgentRuntime {
     use tokio_util::sync::CancellationToken;
 
-    let workspace = std::env::temp_dir().join("codewhale-test-stub");
+    let workspace = std::env::temp_dir().join("deepseek-test-stub");
     let context = ToolContext::new(workspace.clone());
     SubAgentRuntime {
         client: stub_client(),
@@ -2153,7 +2153,7 @@ fn child_runtime_preserves_step_api_timeout() {
 #[test]
 fn subagent_completion_payload_carries_existing_sentinel_format() {
     // The payload format is the same one already documented in
-    // prompts/base.md: human summary on line 1, `<codewhale:subagent.done>`
+    // prompts/base.md: human summary on line 1, `<deepseek:subagent.done>`
     // sentinel on line 2. This test pins the format so future refactors
     // don't silently break the model's parsing contract.
     let mut snap = make_snapshot(SubAgentStatus::Completed);
@@ -2167,14 +2167,14 @@ fn subagent_completion_payload_carries_existing_sentinel_format() {
     let first = lines.next().expect("first line is summary");
     let second = lines.next().expect("second line is sentinel");
     assert!(
-        !first.starts_with("<codewhale:subagent.done>"),
+        !first.starts_with("<deepseek:subagent.done>"),
         "summary should not be the sentinel itself"
     );
     assert!(
-        second.starts_with("<codewhale:subagent.done>"),
+        second.starts_with("<deepseek:subagent.done>"),
         "second line is the sentinel"
     );
-    assert!(second.ends_with("</codewhale:subagent.done>"));
+    assert!(second.ends_with("</deepseek:subagent.done>"));
     assert!(
         second.contains("\"agent_id\":\"agent_test\""),
         "sentinel JSON includes agent_id"

@@ -1,4 +1,4 @@
-//! Configuration loading and defaults for codewhale.
+//! Configuration loading and defaults for deepseek.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -1092,7 +1092,7 @@ pub struct Config {
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
 
-    /// Provider-specific credentials and defaults shared with the `codewhale` facade.
+    /// Provider-specific credentials and defaults shared with the `deepseek` facade.
     #[serde(default)]
     pub providers: Option<ProvidersConfig>,
 
@@ -1147,7 +1147,7 @@ pub struct Config {
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
-    /// Runtime API server tuning (`codewhale serve --http`). Currently only
+    /// Runtime API server tuning (`deepseek serve --http`). Currently only
     /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
     /// table is absent, the daemon ships with localhost:3000 / localhost:1420
     /// / tauri://localhost as the only allowed dev origins.
@@ -1222,7 +1222,7 @@ impl SkillsConfig {
     }
 }
 
-/// `[network]` table — mirrors `codewhale_config::NetworkPolicyToml` so the live
+/// `[network]` table — mirrors `deepseek_config::NetworkPolicyToml` so the live
 /// TUI runtime can construct a [`crate::network_policy::NetworkPolicy`]
 /// without reaching into the workspace config crate. See `config.example.toml`
 /// for documentation.
@@ -1871,7 +1871,7 @@ impl Config {
         }
 
         // 1. Config file (provider-scoped slot). This intentionally wins
-        // over ambient env so `codewhale auth set` fixes stale shell exports.
+        // over ambient env so `deepseek auth set` fixes stale shell exports.
         if let Some(configured) = self
             .provider_config_for(provider)
             .and_then(|provider| provider.api_key.clone())
@@ -1882,7 +1882,7 @@ impl Config {
 
         // 2. Environment variables. Do not query platform credential stores
         // here; routine startup and doctor checks must stay prompt-free.
-        if let Some(value) = codewhale_secrets::env_for(slot)
+        if let Some(value) = deepseek_secrets::env_for(slot)
             && !value.trim().is_empty()
         {
             return Ok(value);
@@ -1898,7 +1898,7 @@ impl Config {
                  \n\
                  1. Get a key:  https://platform.deepseek.com/api_keys\n\
                  2. Save it (works in every folder, no OS prompts):\n\
-                        codewhale auth set --provider deepseek\n\
+                        deepseek auth set --provider deepseek\n\
                  \n\
                  Alternatives:\n\
                    • export DEEPSEEK_API_KEY=<your-key>      (current shell only;\n\
@@ -1907,40 +1907,41 @@ impl Config {
                    • api_key = \"<your-key>\"  in ~/.deepseek/config.toml"
             ),
             ApiProvider::NvidiaNim => anyhow::bail!(
-                "NVIDIA NIM API key not found. Run 'codewhale auth set --provider nvidia-nim', \
+                "NVIDIA NIM API key not found. Run 'deepseek auth set --provider nvidia-nim', \
                  set NVIDIA_API_KEY/NVIDIA_NIM_API_KEY, or save api_key in ~/.deepseek/config.toml \
                  with provider = \"nvidia-nim\"."
             ),
             ApiProvider::Openai => anyhow::bail!(
-                "OpenAI-compatible API key not found. Run 'codewhale auth set --provider openai', \
+                "OpenAI-compatible API key not found. Run 'deepseek auth set --provider openai', \
                  set OPENAI_API_KEY, or add [providers.openai] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::Atlascloud => anyhow::bail!(
-                "AtlasCloud API key not found. Run 'codewhale auth set --provider atlascloud', \
+                "AtlasCloud API key not found. Run 'deepseek auth set --provider atlascloud', \
                  set ATLASCLOUD_API_KEY, or add [providers.atlascloud] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::WanjieArk => anyhow::bail!(
-                "Wanjie Ark API key not found. Run 'codewhale auth set --provider wanjie-ark', \
+                "Wanjie Ark API key not found. Run 'deepseek auth set --provider wanjie-ark', \
                  set WANJIE_ARK_API_KEY/WANJIE_API_KEY/WANJIE_MAAS_API_KEY, or add \
                  [providers.wanjie_ark] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::Openrouter => anyhow::bail!(
-                "OpenRouter API key not found. Run 'codewhale auth set --provider openrouter', \
+                "OpenRouter API key not found. Run 'deepseek auth set --provider openrouter', \
                  set OPENROUTER_API_KEY, or add [providers.openrouter] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::Novita => anyhow::bail!(
-                "Novita API key not found. Run 'codewhale auth set --provider novita', \
+                "Novita API key not found. Run 'deepseek auth set --provider novita', \
                  set NOVITA_API_KEY, or add [providers.novita] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::Fireworks => anyhow::bail!(
-                "Fireworks AI API key not found. Run 'codewhale auth set --provider fireworks', \
+                "Fireworks AI API key not found. Run 'deepseek auth set --provider fireworks', \
                  set FIREWORKS_API_KEY, or add [providers.fireworks] api_key in ~/.deepseek/config.toml."
             ),
             ApiProvider::ShengSuanYun => anyhow::bail!(
                 "ShengSuanYun API key not found. Run 'deepseek auth set --provider shengsuanyun', \
-                 set SHENGSUANYUN_API_KEY, or add [providers.shengsuanyun] api_key in ~/.deepseek/config.toml."),
+                 set SHENGSUANYUN_API_KEY, or add [providers.shengsuanyun] api_key in ~/.deepseek/config.toml."
+            ),
             ApiProvider::Moonshot => anyhow::bail!(
-                "Moonshot/Kimi API key not found. Run 'codewhale auth set --provider moonshot', \
+                "Moonshot/Kimi API key not found. Run 'deepseek auth set --provider moonshot', \
                  set MOONSHOT_API_KEY/KIMI_API_KEY, or add [providers.moonshot] api_key. \
                  For a Kimi Code plan key, set [providers.moonshot] base_url = \
                  \"https://api.kimi.com/coding/v1\" and model = \"kimi-for-coding\"."
@@ -2224,7 +2225,7 @@ pub(crate) fn effective_home_dir() -> Option<PathBuf> {
 
 fn home_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("config.toml");
+        let primary = home.join(".deepseek").join("config.toml");
         if primary.exists() {
             return primary;
         }
@@ -2350,7 +2351,7 @@ fn resolve_load_config_path(path: Option<PathBuf>) -> Option<PathBuf> {
 
 /// Create an inspectable config file on first interactive launch.
 ///
-/// The file intentionally omits `api_key`; onboarding or `codewhale auth set`
+/// The file intentionally omits `api_key`; onboarding or `deepseek auth set`
 /// writes that field after the user supplies a key.
 pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf>> {
     let config_path = path
@@ -2363,9 +2364,9 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 
     ensure_parent_dir(&config_path)?;
     let content = format!(
-        r#"# codewhale Configuration
+        r#"# deepseek Configuration
 # Get your API key from https://platform.deepseek.com
-# Save it with: codewhale auth set --provider deepseek
+# Save it with: deepseek auth set --provider deepseek
 
 # Base URL (default: https://api.deepseek.com/beta)
 # Set https://api.deepseek.com to opt out of beta features.
@@ -2393,7 +2394,7 @@ fn default_managed_config_path() -> Option<PathBuf> {
     #[cfg(not(unix))]
     {
         effective_home_dir().map(|home| {
-            let primary = home.join(".codewhale").join("managed_config.toml");
+            let primary = home.join(".deepseek").join("managed_config.toml");
             if primary.exists() {
                 return primary;
             }
@@ -2410,7 +2411,7 @@ fn default_requirements_path() -> Option<PathBuf> {
     #[cfg(not(unix))]
     {
         effective_home_dir().map(|home| {
-            let primary = home.join(".codewhale").join("requirements.toml");
+            let primary = home.join(".deepseek").join("requirements.toml");
             if primary.exists() {
                 return primary;
             }
@@ -2436,12 +2437,12 @@ pub(crate) fn expand_path(path: &str) -> PathBuf {
 }
 
 fn default_skills_dir() -> Option<PathBuf> {
-    effective_home_dir().map(|home| home.join(".codewhale").join("skills"))
+    effective_home_dir().map(|home| home.join(".deepseek").join("skills"))
 }
 
 fn default_mcp_config_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("mcp.json");
+        let primary = home.join(".deepseek").join("mcp.json");
         if primary.exists() {
             return primary;
         }
@@ -2451,7 +2452,7 @@ fn default_mcp_config_path() -> Option<PathBuf> {
 
 fn default_notes_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("notes.txt");
+        let primary = home.join(".deepseek").join("notes.txt");
         if primary.exists() {
             return primary;
         }
@@ -2461,7 +2462,7 @@ fn default_notes_path() -> Option<PathBuf> {
 
 fn default_memory_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("memory.md");
+        let primary = home.join(".deepseek").join("memory.md");
         if primary.exists() {
             return primary;
         }
@@ -2474,11 +2475,8 @@ fn default_memory_path() -> Option<PathBuf> {
 /// Read a CodeWhale env var, preferring the `CODEWHALE_*` form over the
 /// legacy `DEEPSEEK_*` form. Empty values are ignored so a blank shell export
 /// does not erase configured provider settings.
-fn codewhale_env_var(
-    codewhale_name: &str,
-    legacy_name: &str,
-) -> Result<String, std::env::VarError> {
-    std::env::var(codewhale_name)
+fn deepseek_env_var(deepseek_name: &str, legacy_name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(deepseek_name)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
@@ -2490,10 +2488,10 @@ fn codewhale_env_var(
 }
 
 fn apply_env_overrides(config: &mut Config) {
-    if let Ok(value) = codewhale_env_var("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
+    if let Ok(value) = deepseek_env_var("CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER") {
         config.provider = Some(value);
     }
-    if let Ok(value) = codewhale_env_var("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
+    if let Ok(value) = deepseek_env_var("CODEWHALE_BASE_URL", "DEEPSEEK_BASE_URL") {
         match config.api_provider() {
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
                 config.base_url = Some(value);
@@ -2784,7 +2782,7 @@ fn apply_env_overrides(config: &mut Config) {
             .moonshot
             .model = Some(value);
     }
-    if let Some(value) = codewhale_env_var("CODEWHALE_MODEL", "DEEPSEEK_MODEL")
+    if let Some(value) = deepseek_env_var("CODEWHALE_MODEL", "DEEPSEEK_MODEL")
         .ok()
         .or_else(|| {
             std::env::var("DEEPSEEK_DEFAULT_TEXT_MODEL")
@@ -3492,7 +3490,7 @@ pub fn ensure_parent_dir(path: &Path) -> Result<()> {
                     perms.set_mode(mode & !0o077);
                     if let Err(err) = fs::set_permissions(parent, perms) {
                         tracing::warn!(
-                            target: "codewhale::config",
+                            target: "deepseek::config",
                             path = %parent.display(),
                             error = %err,
                             "could not tighten parent dir permissions; \
@@ -3530,7 +3528,7 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
         // system's native ACL model is doing the access control.
         if let Err(err) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
             tracing::warn!(
-                target: "codewhale::config",
+                target: "deepseek::config",
                 path = %path.display(),
                 error = %err,
                 "could not enforce 0o600 on config file; filesystem may \
@@ -3550,13 +3548,13 @@ fn write_config_file_secure(path: &Path, content: &str) -> Result<()> {
 /// the caller can show a confirmation message without leaking the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedCredential {
-    /// Stored in **both** the OS keyring and the codewhale config file.
+    /// Stored in **both** the OS keyring and the deepseek config file.
     /// This is the default outcome on platforms with a working keyring
     /// backend: writing both layers defeats the
     /// `keyring → env → config-file` resolution-order shadow that
     /// would otherwise let a stale OS-keyring entry from a previous
     /// install hide the freshly-entered key (#593). The `backend`
-    /// label is the value of [`codewhale_secrets::Secrets::backend_name`]
+    /// label is the value of [`deepseek_secrets::Secrets::backend_name`]
     /// at write time so the toast text can name the actual backend
     /// (`"system keyring"`, `"file-based (~/.deepseek/secrets/)"`).
     KeyringAndConfigFile {
@@ -3565,7 +3563,7 @@ pub enum SavedCredential {
         /// Absolute path to the config file that was also updated.
         path: PathBuf,
     },
-    /// Stored in the codewhale config file only. Fallback when no
+    /// Stored in the deepseek config file only. Fallback when no
     /// keyring backend is reachable, or under `cfg(test)` so unit
     /// tests don't pollute the host keyring.
     ConfigFile(PathBuf),
@@ -3628,7 +3626,7 @@ pub fn save_active_provider_to_config(
 /// Save the active provider's API key.
 ///
 /// **Dual-write strategy (#593):** writes to `~/.deepseek/config.toml`
-/// (always) and to the OS keyring via [`codewhale_secrets::Secrets`]
+/// (always) and to the OS keyring via [`deepseek_secrets::Secrets`]
 /// (when a backend is reachable). The runtime resolves credentials in
 /// `keyring → env → config-file` order; writing to the config file
 /// alone — as v0.8.8 through v0.8.10 did — let a stale keyring entry
@@ -3666,7 +3664,7 @@ pub fn save_api_key(api_key: &str) -> Result<SavedCredential> {
     // cross-test contamination).
     #[cfg(not(test))]
     {
-        let secrets = codewhale_secrets::Secrets::auto_detect();
+        let secrets = deepseek_secrets::Secrets::auto_detect();
         match secrets.set("deepseek", trimmed) {
             Ok(()) => {
                 let backend = secrets.backend_name().to_string();
@@ -3728,7 +3726,7 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
     } else {
         // Create new minimal config
         format!(
-            r#"# codewhale Configuration
+            r#"# deepseek Configuration
 # Get your API key from https://platform.deepseek.com
 # Or set DEEPSEEK_API_KEY environment variable
 
@@ -4216,7 +4214,7 @@ fn write_kimi_oauth_credential(path: &Path, credential: &KimiOAuthCredential) ->
     #[cfg(unix)]
     if let Err(err) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
         tracing::warn!(
-            target: "codewhale::config",
+            target: "deepseek::config",
             path = %path.display(),
             error = %err,
             "could not enforce 0o600 on Kimi OAuth credentials; relying on host ACLs"
@@ -5199,7 +5197,7 @@ api_key = "old-openrouter-key"
         );
         assert!(
             !after.contains("old-provider-key"),
-            "provider-scoped codewhale key must be stripped: {after}"
+            "provider-scoped deepseek key must be stripped: {after}"
         );
         assert!(
             !after.contains("old-openrouter-key"),
@@ -6224,7 +6222,7 @@ model = "glm-5"
         Ok(())
     }
 
-    // Regression for issue #1714: `codewhale --provider openai --model
+    // Regression for issue #1714: `deepseek --provider openai --model
     // MiniMax-M2.7` forwards the choice via DEEPSEEK_MODEL (never
     // OPENAI_MODEL) and uses the DEFAULT base_url. The explicit custom model
     // must pass through verbatim instead of silently becoming a
@@ -6933,7 +6931,7 @@ api_key = "kimi-code-env-key"
     /// Regression for issue #2160: a stale root `default_text_model` carried
     /// over from a DeepSeek setup must not steer the Kimi Code endpoint to
     /// `deepseek-v4-pro`. The user-facing trigger here is the legacy
-    /// `DEEPSEEK_PROVIDER` env var (still produced by the `codewhale
+    /// `DEEPSEEK_PROVIDER` env var (still produced by the `deepseek
     /// --provider moonshot` dispatcher for compat); the test also has a
     /// `CODEWHALE_PROVIDER` twin below for the public env path.
     #[test]
@@ -6976,10 +6974,10 @@ base_url = "https://api.kimi.com/coding/v1"
     /// Same regression as above, but driven by the public `CODEWHALE_PROVIDER`
     /// env var. Documents the recommended user-facing setup path: never
     /// `DEEPSEEK_PROVIDER=moonshot`, always `CODEWHALE_PROVIDER=moonshot`
-    /// (or `codewhale --provider moonshot`, which also resolves through
+    /// (or `deepseek --provider moonshot`, which also resolves through
     /// this code path internally).
     #[test]
-    fn moonshot_kimi_code_model_resolves_via_codewhale_provider_env() -> Result<()> {
+    fn moonshot_kimi_code_model_resolves_via_deepseek_provider_env() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -7019,7 +7017,7 @@ base_url = "https://api.kimi.com/coding/v1"
     /// `DEEPSEEK_PROVIDER` are set, so a user adding the new alias to their
     /// shell isn't surprised by a stale legacy export.
     #[test]
-    fn codewhale_provider_env_takes_precedence_over_deepseek_provider() -> Result<()> {
+    fn deepseek_provider_env_takes_precedence_over_deepseek_provider() -> Result<()> {
         let _lock = lock_test_env();
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -7353,7 +7351,7 @@ model = "deepseek-v4-pro"
         ensure_parent_dir(&config_path)?;
         fs::write(
             &config_path,
-            r#"api_key = "codewhale-root-key"
+            r#"api_key = "deepseek-root-key"
 provider = "nvidia-nim"
 
 [providers.nvidia_nim]

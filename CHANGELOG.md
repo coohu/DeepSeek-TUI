@@ -29,9 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **macOS onboarding and empty-state layout pinned to top** instead
   of vertically centered (#1837).
 - **State-root migration continues.** Migrated 15+ storage paths to
-  prefer `~/.codewhale` with `~/.deepseek` fallback (#2231).
+  prefer `~/.deepseek` with `~/.deepseek` fallback (#2231).
 - **READMEs updated for the CodeWhale rename.** All three READMEs now
-  reference canonical `~/.codewhale` paths.
+  reference canonical `~/.deepseek` paths.
 
 ### Fixed
 
@@ -67,9 +67,9 @@ Thanks to contributors whose PRs landed in this release:
   remain accepted for back-compat.
 - **Platform archive bundles.** Release artifacts now ship as per-platform
   archives (`tar.gz` for Linux/macOS, `.zip` for Windows) containing both
-  `codewhale` and `deepseek-tui` binaries plus an install script. No more
+  `deepseek` and `deepseek-tui` binaries plus an install script. No more
   downloading two loose files and guessing which ones to pick (#2193).
-- **Windows portable archive.** `codewhale-windows-x64-portable.zip` ships
+- **Windows portable archive.** `deepseek-windows-x64-portable.zip` ships
   the two binaries without an install script for USB-stick distribution
   (#2193).
 - **Web install download tile.** The website install page now shows a
@@ -107,7 +107,7 @@ Thanks to contributors whose PRs landed in this release:
   with Esc now applies the last-highlighted choice instead of reverting
   (#2196).
 - **Web install downloads both binaries.** The `install-binary.tsx`
-  snippet now fetches both `codewhale` and `deepseek-tui`, fixing the
+  snippet now fetches both `deepseek` and `deepseek-tui`, fixing the
   `MISSING_COMPANION_BINARY` trap on fresh npm installs (#2191).
 - **`grep_files` skips large directories.** The pure-Rust search tool
   now skips known-large directories (`.git`, `node_modules`, `target`)
@@ -186,9 +186,9 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   Thanks @reidliu41 (#2143).
 - **Model picker selection survives Esc.** Dismissing the model picker with Esc
   no longer loses the highlighted selection. Thanks @reidliu41 (#2056).
-- **Moonshot/Kimi sessions launch from the dispatcher.** The `codewhale`
+- **Moonshot/Kimi sessions launch from the dispatcher.** The `deepseek`
   wrapper now includes Moonshot/Kimi in the TUI provider allowlist, so
-  `codewhale --provider moonshot --model kimi-k2.6` reaches the TUI instead of
+  `deepseek --provider moonshot --model kimi-k2.6` reaches the TUI instead of
   stopping after config resolution.
 - **Slash recovery no longer restores command tails in the composer.**
   Resuming a session or recovering from a crash no longer leaves stale
@@ -224,8 +224,8 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
 ### Added
 
 - **`codew` convenience alias.** `codew` is a short-form command that silently
-  forwards to `codewhale`. Six fewer keystrokes, same binary. Ships with the
-  Rust `codewhale-cli` crate and the npm `codewhale` package (#2013).
+  forwards to `deepseek`. Six fewer keystrokes, same binary. Ships with the
+  Rust `deepseek-cli` crate and the npm `deepseek` package (#2013).
 - **Session picker inline rename.** Press `r` in the session picker (Ctrl+R)
   to rename the selected session inline. Type the new title, Enter to confirm,
   Esc to cancel (#1600).
@@ -235,17 +235,17 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
 - **Agent team UX.** Delegate cards in the transcript now show human-readable
   roles (scout, builder, reviewer, verifier, executor) and the completion
   summary instead of raw `agent_xxx` IDs (#1981).
-- **`--continue` / `-c` CLI flag.** `codewhale --continue` resumes your most
+- **`--continue` / `-c` CLI flag.** `deepseek --continue` resumes your most
   recent interactive session for the current workspace.
 
 ### Changed
 
-- **App state migrates to `~/.codewhale/`.** New installs write product-owned
-  state (config, sessions, tasks, skills, logs, etc.) under `~/.codewhale/`.
+- **App state migrates to `~/.deepseek/`.** New installs write product-owned
+  state (config, sessions, tasks, skills, logs, etc.) under `~/.deepseek/`.
   `~/.deepseek/` continues to work as a compatibility fallback — no data loss,
   no forced migration. `CODEWHALE_HOME` and `CODEWHALE_CONFIG_PATH` env vars
   are now supported alongside existing `DEEPSEEK_*` vars (#2011).
-- **Project config overlay prefers `.codewhale/config.toml`** before
+- **Project config overlay prefers `.deepseek/config.toml`** before
   `.deepseek/config.toml`. Both are read; the CodeWhale root takes precedence.
 - **Doctor reports active state root** and whether legacy `~/.deepseek/`
   state is also present.
@@ -278,10 +278,10 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   now go to the managed sessions directory instead of the current workspace.
   Explicit `/save path/to/file.json` exports still work as before (#2010).
 - **Boot-time session prune** caps managed sessions at 50 on every startup,
-  preventing unbounded growth of `~/.codewhale/sessions/`.
+  preventing unbounded growth of `~/.deepseek/sessions/`.
 - **Checkpoint path resolution** no longer hardcodes `~/.deepseek/` — uses
   the resolved session directory instead.
-- **Plain startup no longer auto-opens the session picker.** `codewhale` and
+- **Plain startup no longer auto-opens the session picker.** `deepseek` and
   `codew` start in a fresh composer again even when saved sessions exist.
   Use `/sessions`, Ctrl+R, `--resume`, or `--continue` when you want to resume.
 - **Work sidebar now refreshes immediately** after `checklist_write`,
@@ -360,9 +360,9 @@ and continuing contributors **@reidliu41**, **@cyq1017**, **@idling11**,
   loop now drains late-arriving sub-agent completions at the final checkpoint
   before breaking, so child-agent sentinels surface immediately instead of
   appearing in the following turn (#1961).
-- **`codewhale doctor` now referenced correctly in SSE timeout errors.**
+- **`deepseek doctor` now referenced correctly in SSE timeout errors.**
   The error message shown when SSE streams fail to connect now points users to
-  `codewhale doctor` (not the legacy `deepseek doctor`).
+  `deepseek doctor` (not the legacy `deepseek doctor`).
 
 ## [0.8.42] - 2026-05-24
 
@@ -434,11 +434,11 @@ and selection fix in #1964.
 
 ### Changed
 
-- **Project renamed to codewhale.** The canonical CLI dispatcher is now
-  `codewhale` (was `deepseek`) and the TUI runtime is `deepseek-tui`
+- **Project renamed to deepseek.** The canonical CLI dispatcher is now
+  `deepseek` (was `deepseek`) and the TUI runtime is `deepseek-tui`
   (was ``). The 14 workspace crates are renamed from
-  `deepseek-*` / `-*` to `codewhale-*` / `deepseek-tui-*`.
-  The npm wrapper package is now `codewhale` (was ``). See
+  `deepseek-*` / `-*` to `deepseek-*` / `deepseek-tui-*`.
+  The npm wrapper package is now `deepseek` (was ``). See
   [docs/REBRAND.md](docs/REBRAND.md) for migration notes.
 - **DeepSeek provider integration is unchanged.** `DEEPSEEK_*` env vars,
   model IDs (`deepseek-v4-pro`, `deepseek-v4-flash`, the legacy
@@ -453,7 +453,7 @@ and selection fix in #1964.
   renamed binaries. They will be removed in v0.9.0.
 - The `` npm package continues to publish for one release
   cycle as a no-`bin` deprecation shim whose postinstall directs users
-  to `npm install -g codewhale`. It will be removed in v0.9.0.
+  to `npm install -g deepseek`. It will be removed in v0.9.0.
 
 ### Fixed
 
@@ -488,7 +488,7 @@ and selection fix in #1964.
 ### Thanks
 
 Thanks to **OpenWarp ([@zerx-lab](https://github.com/zerx-lab))** for
-prioritizing codewhale support and collaborating on terminal-agent UX.
+prioritizing deepseek support and collaborating on terminal-agent UX.
 Thanks to **[@leo119](https://github.com/leo119)** for the update-command
 documentation lineage now preserved through the rename.
 

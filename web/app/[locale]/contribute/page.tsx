@@ -216,7 +216,7 @@ git checkout -b feat/your-thing
 
 # 本地构建运行
 cargo build
-cargo run --bin codewhale
+cargo run --bin deepseek
 
 # 检查（与 CI 完全一致）
 cargo fmt --all -- --check
@@ -225,8 +225,8 @@ cargo test --workspace --all-features --locked
 
 # 一致性验证
 cargo test -p deepseek-tui-core --test snapshot --locked
-cargo test -p codewhale-protocol --test parity_protocol --locked
-cargo test -p codewhale-state --test parity_state --locked
+cargo test -p deepseek-protocol --test parity_protocol --locked
+cargo test -p deepseek-state --test parity_state --locked
 
 # 提交 + 推送 + PR
 git commit -m "feat: short subject in conventional-commit form"
@@ -335,7 +335,7 @@ git checkout -b feat/your-thing
 
 # build and run locally
 cargo build
-cargo run --bin codewhale
+cargo run --bin deepseek
 
 # checks (matches CI exactly)
 cargo fmt --all -- --check
@@ -344,8 +344,8 @@ cargo test --workspace --all-features --locked
 
 # parity gates
 cargo test -p deepseek-tui-core --test snapshot --locked
-cargo test -p codewhale-protocol --test parity_protocol --locked
-cargo test -p codewhale-state --test parity_state --locked
+cargo test -p deepseek-protocol --test parity_protocol --locked
+cargo test -p deepseek-state --test parity_state --locked
 
 # commit + push + PR
 git commit -m "feat: short subject in conventional-commit form"

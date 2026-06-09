@@ -35,7 +35,7 @@ async function run(binaryName) {
 }
 
 async function runCodeWhale() {
-  await run("codewhale");
+  await run("deepseek");
 }
 
 async function runCodeWhaleTui() {

@@ -1,6 +1,6 @@
 # CNB Cool mirror
 
-`cnb.cool/codewhale.net/codewhale` is a one-way mirror of this
+`cnb.cool/deepseek.net/deepseek` is a one-way mirror of this
 GitHub repository for users on networks where GitHub is slow or blocked
 (primarily mainland China). The mirror receives every push to `main`, every
 `fix/*`, `rebrand/*`, and `work/v*` branch used for first-party release work,
@@ -41,9 +41,9 @@ mirror carry them to CNB.
 When CNB receives a `v*` tag, the root `.cnb.yml` tag pipeline builds Linux x64
 release assets from source and publishes a CNB release with:
 
-- `codewhale-linux-x64`
+- `deepseek-linux-x64`
 - `deepseek-tui-linux-x64`
-- `codewhale-artifacts-sha256.txt`
+- `deepseek-artifacts-sha256.txt`
 
 This gives users who can reach CNB but not GitHub a CNB-native release path.
 GitHub remains the canonical macOS/Windows release matrix; the CNB tag pipeline
@@ -59,7 +59,7 @@ Linux Rust gates run on Tencent-hosted runners instead of GitHub Actions:
 - `cargo check --workspace --all-targets --locked`
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - `cargo test --workspace --all-features --locked`
-- `cargo build --release --locked -p codewhale-cli -p deepseek-tui`
+- `cargo build --release --locked -p deepseek-cli -p deepseek-tui`
 - `node scripts/release/npm-wrapper-smoke.js`
 
 Release branches matching `work/v*` also run the Feishu bridge checks and
@@ -73,7 +73,7 @@ should have both the new commit on `main` and the new tag:
 
 ```bash
 # Quick check: does the new tag exist on CNB?
-git ls-remote https://cnb.cool/codewhale.net/codewhale.git \
+git ls-remote https://cnb.cool/deepseek.net/deepseek.git \
     refs/tags/vX.Y.Z
 
 # Quick check: is CNB's main at the same commit as origin/main?
@@ -103,10 +103,10 @@ password manager.
 
 ```bash
 # Add the CNB remote alongside origin.
-git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/codewhale.net/codewhale.git
+git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/deepseek.net/deepseek.git
 
 # Or, if you don't want the token in your shell history:
-git remote add cnb https://cnb.cool/codewhale.net/codewhale.git
+git remote add cnb https://cnb.cool/deepseek.net/deepseek.git
 # (you'll be prompted for username `cnb` and password ${CNB_TOKEN}
 #  on the first push; subsequent pushes use the credential helper.)
 ```
@@ -156,7 +156,7 @@ expired:
    ```
 4. Confirm the run succeeds via `gh run list --workflow=sync-cnb.yml`.
 
-## Binary release assets and `codewhale update`
+## Binary release assets and `deepseek update`
 
 CNB now builds Linux x64 assets for `v*` tags from the source-controlled
 `.cnb.yml` pipeline. GitHub remains the canonical macOS/Windows release matrix. Users
@@ -164,24 +164,24 @@ behind GitHub-blocking networks should use one of these paths:
 
 - **`cargo install`** from the CNB mirror:
   ```bash
-  cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z codewhale-cli
-  cargo install --git https://cnb.cool/codewhale.net/codewhale --tag vX.Y.Z deepseek-tui
+  cargo install --git https://cnb.cool/deepseek.net/deepseek --tag vX.Y.Z deepseek-cli
+  cargo install --git https://cnb.cool/deepseek.net/deepseek --tag vX.Y.Z deepseek-tui
   ```
   (Both binaries are required — the dispatcher and the TUI ship
   separately; see `AGENTS.md` for the two-binary install rationale.)
 
 - **CNB release assets** for Linux x64, when the matching CNB tag pipeline has
-  completed successfully. Download `codewhale-linux-x64`,
-  `deepseek-tui-linux-x64`, and `codewhale-artifacts-sha256.txt` from the CNB
+  completed successfully. Download `deepseek-linux-x64`,
+  `deepseek-tui-linux-x64`, and `deepseek-artifacts-sha256.txt` from the CNB
   release for `vX.Y.Z`, then verify the binaries against the manifest.
 
 - **`DEEPSEEK_TUI_RELEASE_BASE_URL`** environment variable, if a
   CDN mirror of release assets exists. The npm
-  wrapper installer and `codewhale update` read this variable to redirect
-  binary downloads. For `codewhale update`, also set
+  wrapper installer and `deepseek update` read this variable to redirect
+  binary downloads. For `deepseek update`, also set
   `DEEPSEEK_TUI_VERSION=X.Y.Z` so the updater can label the mirrored
   release without contacting GitHub. The directory pointed to must contain
-  `codewhale-artifacts-sha256.txt` and the platform binaries; format matches
+  `deepseek-artifacts-sha256.txt` and the platform binaries; format matches
   a GitHub Release asset directory.
 
 ## Tencent Cloud remote-first path
@@ -190,7 +190,7 @@ The Lighthouse + Feishu/Lark tutorial uses CNB as the Tencent-side source and
 automation lane. For a stable install, clone `main` or a release tag from:
 
 ```bash
-https://cnb.cool/codewhale.net/codewhale.git
+https://cnb.cool/deepseek.net/deepseek.git
 ```
 
 The mirror receives `main`, release tags, and the Tencent setup branch patterns

@@ -120,8 +120,8 @@ impl DeepSeekClient {
             Err(_elapsed) => {
                 anyhow::bail!(
                     "SSE stream request did not receive response headers after {}s. \
-                     `codewhale doctor` can still pass when non-streaming requests work; \
-                     on Windows or proxy networks, try `DEEPSEEK_FORCE_HTTP1=1` and rerun `codewhale`.",
+                     `deepseek doctor` can still pass when non-streaming requests work; \
+                     on Windows or proxy networks, try `DEEPSEEK_FORCE_HTTP1=1` and rerun `deepseek`.",
                     open_timeout.as_secs()
                 );
             }
@@ -1520,7 +1520,7 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
 /// reasoning can stay omitted once a later user text turn begins.
 ///
 /// Also tallies the size of all replayed `reasoning_content` and logs it, so
-/// users on `RUST_LOG=codewhale_tui=debug` can see how much of their input
+/// users on `RUST_LOG=deepseek_tui=debug` can see how much of their input
 /// budget is being spent re-sending prior thinking traces.
 pub(super) fn sanitize_thinking_mode_messages(
     body: &mut Value,

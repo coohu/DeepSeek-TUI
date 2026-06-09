@@ -9,17 +9,17 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
-use codewhale_agent::ModelRegistry;
-use codewhale_app_server::{
+use deepseek_agent::ModelRegistry;
+use deepseek_app_server::{
     AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
 };
-use codewhale_config::{
+use deepseek_config::{
     CliRuntimeOverrides, ConfigStore, ProviderKind, ResolvedRuntimeOptions, RuntimeApiKeySource,
 };
-use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use codewhale_mcp::{McpServerDefinition, run_stdio_server};
-use codewhale_secrets::Secrets;
-use codewhale_state::{StateStore, ThreadListFilters};
+use deepseek_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
+use deepseek_mcp::{McpServerDefinition, run_stdio_server};
+use deepseek_secrets::Secrets;
+use deepseek_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProviderArg {
@@ -60,10 +60,10 @@ impl From<ProviderArg> for ProviderKind {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "codewhale",
+    name = "deepseek",
     version = env!("DEEPSEEK_BUILD_VERSION"),
-    bin_name = "codewhale",
-    override_usage = "codewhale [OPTIONS] [PROMPT]\n       codewhale [OPTIONS] <COMMAND> [ARGS]"
+    bin_name = "deepseek",
+    override_usage = "deepseek [OPTIONS] [PROMPT]\n       deepseek [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct Cli {
     #[arg(long)]
@@ -142,9 +142,9 @@ enum Commands {
     /// Run a non-interactive prompt through the TUI runtime.
     #[command(after_help = "\
 Examples:
-  codewhale exec \"explain this function\"
-  codewhale exec --auto \"list crates/ with ls\"
-  codewhale exec --auto --output-format stream-json \"fix the failing test\"
+  deepseek exec \"explain this function\"
+  deepseek exec --auto \"list crates/ with ls\"
+  deepseek exec --auto --output-format stream-json \"fix the failing test\"
 
 Common forwarded flags:
   --auto                           Enable tool-backed agent mode with auto-approvals
@@ -154,7 +154,7 @@ Common forwarded flags:
   --continue                       Continue the most recent session for this workspace
   --output-format <FORMAT>         Output format: text or stream-json
 
-Plain `codewhale exec` is a one-shot model response. Use `--auto` for
+Plain `deepseek exec` is a one-shot model response. Use `--auto` for
 non-interactive filesystem/shell tool use, matching the supported automation
 path used by stream-json wrappers.
 ")]
@@ -162,8 +162,8 @@ path used by stream-json wrappers.
     /// Generate SWE-bench prediction rows from CodeWhale runs.
     #[command(after_help = "\
 Examples:
-  codewhale swebench run --instance-id django__django-12345 --issue-file issue.md
-  codewhale swebench export --instance-id django__django-12345 --predictions-path all_preds.jsonl
+  deepseek swebench run --instance-id django__django-12345 --issue-file issue.md
+  deepseek swebench export --instance-id django__django-12345 --predictions-path all_preds.jsonl
 
 This command forwards to the TUI runtime. `run` invokes tool-backed agent mode
 and writes a SWE-bench-compatible JSONL prediction row from the resulting
@@ -205,26 +205,26 @@ working-tree diff. `export` only writes the current diff.
     /// Generate shell completions.
     #[command(after_help = r#"Examples:
   Bash (current shell only):
-    source <(codewhale completion bash)
+    source <(deepseek completion bash)
 
   Bash (persistent, Linux/bash-completion):
     mkdir -p ~/.local/share/bash-completion/completions
-    codewhale completion bash > ~/.local/share/bash-completion/completions/codewhale
+    deepseek completion bash > ~/.local/share/bash-completion/completions/deepseek
     # Requires bash-completion to be installed and loaded by your shell.
 
   Zsh:
     mkdir -p ~/.zfunc
-    codewhale completion zsh > ~/.zfunc/_codewhale
+    deepseek completion zsh > ~/.zfunc/_codewhale
     # Add to ~/.zshrc if needed:
     #   fpath=(~/.zfunc $fpath)
     #   autoload -Uz compinit && compinit
 
   Fish:
     mkdir -p ~/.config/fish/completions
-    codewhale completion fish > ~/.config/fish/completions/codewhale.fish
+    deepseek completion fish > ~/.config/fish/completions/deepseek.fish
 
   PowerShell (current shell only):
-    codewhale completion powershell | Out-String | Invoke-Expression
+    deepseek completion powershell | Out-String | Invoke-Expression
 
 The command prints the completion script to stdout; redirect it to a path your shell loads automatically."#)]
     Completion {
@@ -233,7 +233,7 @@ The command prints the completion script to stdout; redirect it to a path your s
     },
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
-    /// Check for and apply updates to the `codewhale` binary.
+    /// Check for and apply updates to the `deepseek` binary.
     Update(UpdateArgs),
 }
 
@@ -567,7 +567,7 @@ fn run() -> Result<()> {
         Some(Commands::AppServer(args)) => run_app_server_command(args),
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "codewhale", &mut io::stdout());
+            generate(shell, &mut cmd, "deepseek", &mut io::stdout());
             Ok(())
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
@@ -600,7 +600,7 @@ fn root_tui_passthrough(cli: &Cli) -> Result<Vec<String>> {
     if !prompt.is_empty() {
         if cli.continue_session {
             bail!(
-                "`codewhale --continue` resumes the interactive TUI. Use `codewhale exec --continue <PROMPT>` to continue a session non-interactively."
+                "`deepseek --continue` resumes the interactive TUI. Use `deepseek exec --continue <PROMPT>` to continue a session non-interactively."
             );
         }
         forwarded.push("--prompt".to_string());
@@ -750,7 +750,7 @@ const PROVIDER_LIST: [ProviderKind; 13] = [
 #[cfg(test)]
 fn no_keyring_secrets() -> Secrets {
     Secrets::new(std::sync::Arc::new(
-        codewhale_secrets::InMemoryKeyringStore::new(),
+        deepseek_secrets::InMemoryKeyringStore::new(),
     ))
 }
 
@@ -1415,7 +1415,7 @@ fn run_dispatcher_resume_picker(
 
     println!();
     println!("Windows note: enter a session id or prefix from the list above.");
-    println!("You can also run `codewhale resume --last` to skip this prompt.");
+    println!("You can also run `deepseek resume --last` to skip this prompt.");
     print!("Session id/prefix (Enter to cancel): ");
     io::stdout().flush()?;
 
@@ -1580,12 +1580,12 @@ fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
     format!(
         "failed to spawn companion TUI binary at {}: {err}\n\
 \n\
-The `codewhale` dispatcher found a `deepseek-tui` file, but the OS refused \
+The `deepseek` dispatcher found a `deepseek-tui` file, but the OS refused \
 to execute it. Common fixes:\n\
-  - Reinstall with `npm install -g codewhale`, or run `codewhale update`.\n\
-  - On Windows, run `where codewhale` and `where deepseek-tui`; both should \
+  - Reinstall with `npm install -g deepseek`, or run `deepseek update`.\n\
+  - On Windows, run `where deepseek` and `where deepseek-tui`; both should \
 come from the same install directory.\n\
-  - If you downloaded release assets manually, keep both `codewhale` and \
+  - If you downloaded release assets manually, keep both `deepseek` and \
 `deepseek-tui` binaries together and make sure the TUI binary is executable.\n\
   - Set DEEPSEEK_TUI_BIN to the absolute path of a working `deepseek-tui` \
 binary.",
@@ -1820,13 +1820,13 @@ mod tests {
 
     #[test]
     fn parses_update_beta_flag() {
-        let cli = parse_ok(&["codewhale", "update"]);
+        let cli = parse_ok(&["deepseek", "update"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs { beta: false }))
         ));
 
-        let cli = parse_ok(&["codewhale", "update", "--beta"]);
+        let cli = parse_ok(&["deepseek", "update", "--beta"]);
         assert!(matches!(
             cli.command,
             Some(Commands::Update(UpdateArgs { beta: true }))
@@ -2239,7 +2239,7 @@ mod tests {
 
     #[test]
     fn auth_set_writes_to_shared_config_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2310,7 +2310,7 @@ mod tests {
 
     #[test]
     fn auth_clear_removes_from_config() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2345,7 +2345,7 @@ mod tests {
 
     #[test]
     fn auth_status_and_list_only_probe_active_provider_keyring() {
-        use codewhale_secrets::{KeyringStore, SecretsError};
+        use deepseek_secrets::{KeyringStore, SecretsError};
         use std::sync::{Arc, Mutex};
 
         #[derive(Default)]
@@ -2397,7 +2397,7 @@ mod tests {
 
     #[test]
     fn auth_status_reports_all_active_provider_sources_with_last4() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let _lock = env_lock();
@@ -2435,7 +2435,7 @@ mod tests {
 
     #[test]
     fn dispatch_keyring_recovery_self_heals_into_config_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2508,7 +2508,7 @@ mod tests {
 
     #[test]
     fn auth_migrate_moves_plaintext_keys_into_keyring_and_strips_file() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2553,7 +2553,7 @@ mod tests {
 
     #[test]
     fn auth_migrate_dry_run_does_not_modify_anything() {
-        use codewhale_secrets::{InMemoryKeyringStore, KeyringStore};
+        use deepseek_secrets::{InMemoryKeyringStore, KeyringStore};
         use std::sync::Arc;
 
         let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
@@ -2653,7 +2653,7 @@ mod tests {
             "--provider",
             "openai",
             "--workspace",
-            "/tmp/codewhale-workspace",
+            "/tmp/deepseek-workspace",
         ]);
         let resolved = ResolvedRuntimeOptions {
             provider: ProviderKind::Openai,
@@ -2695,7 +2695,7 @@ mod tests {
             .collect();
         assert!(
             args.windows(2)
-                .any(|pair| pair == ["--workspace", "/tmp/codewhale-workspace"]),
+                .any(|pair| pair == ["--workspace", "/tmp/deepseek-workspace"]),
             "expected workspace forwarding in args: {args:?}"
         );
     }
@@ -2761,13 +2761,13 @@ mod tests {
         let _bin = ScopedEnvVar::set("DEEPSEEK_TUI_BIN", &custom_str);
 
         let cli = parse_ok(&[
-            "codewhale",
+            "deepseek",
             "--provider",
             "moonshot",
             "--model",
             "kimi-k2.6",
             "--workspace",
-            "/tmp/codewhale-workspace",
+            "/tmp/deepseek-workspace",
         ]);
         let resolved = ResolvedRuntimeOptions {
             provider: ProviderKind::Moonshot,
@@ -2913,11 +2913,11 @@ mod tests {
 
         for &(provider, flag, expected_vars) in cases {
             let cli = parse_ok(&[
-                "codewhale",
+                "deepseek",
                 "--provider",
                 flag,
                 "--workspace",
-                "/tmp/codewhale-workspace",
+                "/tmp/deepseek-workspace",
             ]);
             let resolved = ResolvedRuntimeOptions {
                 provider,
@@ -2973,7 +2973,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_continue_for_interactive_resume() {
-        let cli = parse_ok(&["codewhale", "--continue"]);
+        let cli = parse_ok(&["deepseek", "--continue"]);
 
         assert!(cli.continue_session);
         assert!(cli.prompt_flag.is_none());
@@ -2983,12 +2983,12 @@ mod tests {
 
     #[test]
     fn top_level_continue_rejects_one_shot_prompt() {
-        let cli = parse_ok(&["codewhale", "--continue", "-p", "follow up"]);
+        let cli = parse_ok(&["deepseek", "--continue", "-p", "follow up"]);
 
         let err = root_tui_passthrough(&cli).expect_err("prompted continue should be rejected");
         assert!(
             err.to_string()
-                .contains("codewhale exec --continue <PROMPT>")
+                .contains("deepseek exec --continue <PROMPT>")
         );
     }
 
@@ -3102,11 +3102,11 @@ mod tests {
                 vec![
                     "<SHELL>",
                     "bash",
-                    "source <(codewhale completion bash)",
-                    "~/.local/share/bash-completion/completions/codewhale",
+                    "source <(deepseek completion bash)",
+                    "~/.local/share/bash-completion/completions/deepseek",
                     "fpath=(~/.zfunc $fpath)",
-                    "codewhale completion fish > ~/.config/fish/completions/codewhale.fish",
-                    "codewhale completion powershell | Out-String | Invoke-Expression",
+                    "deepseek completion fish > ~/.config/fish/completions/deepseek.fish",
+                    "deepseek completion powershell | Out-String | Invoke-Expression",
                 ],
             ),
             ("metrics", vec!["--json", "--since"]),
@@ -3134,7 +3134,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let dispatcher = dir
             .path()
-            .join("codewhale")
+            .join("deepseek")
             .with_extension(std::env::consts::EXE_EXTENSION);
         // Touch the dispatcher so its parent dir is the lookup root.
         std::fs::write(&dispatcher, b"").unwrap();
@@ -3157,7 +3157,7 @@ mod tests {
 
         assert!(message.contains("C:/tools/deepseek-tui.exe"));
         assert!(message.contains("access is denied"));
-        assert!(message.contains("where codewhale"));
+        assert!(message.contains("where deepseek"));
         assert!(message.contains("DEEPSEEK_TUI_BIN"));
     }
 
@@ -3169,7 +3169,7 @@ mod tests {
     #[test]
     fn sibling_tui_candidate_windows_falls_back_to_suffixless() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let dispatcher = dir.path().join("codewhale.exe");
+        let dispatcher = dir.path().join("deepseek.exe");
         std::fs::write(&dispatcher, b"").unwrap();
 
         // Only the suffixless name exists — emulates the manual rename.

@@ -5,11 +5,11 @@
 # Checks performed:
 #   1. No `crates/*/Cargo.toml` carries a literal `version = "x.y.z"`; every
 #      crate must inherit `version.workspace = true`.
-#   2. `npm/codewhale/package.json` `version` matches the workspace
+#   2. `npm/deepseek/package.json` `version` matches the workspace
 #      `version` in the root `Cargo.toml`. (`npm//` still
 #      exists during the transition as a deprecation shim package; its
 #      version is also checked.)
-#   3. Internal `codewhale-*` path dependency pins match the workspace version.
+#   3. Internal `deepseek-*` path dependency pins match the workspace version.
 #   4. The TUI crate's packaged changelog copy matches root `CHANGELOG.md`.
 #   5. The current release has a dated Keep a Changelog entry and compare link.
 #   6. README contributor additions are mentioned in the current release entry.
@@ -32,9 +32,9 @@ fi
 
 # 2) Workspace ↔ npm package.json.
 workspace_version="$(grep -E '^version = "' Cargo.toml | head -n1 | sed -E 's/^version = "([^"]+)".*/\1/')"
-npm_version="$(node -p "require('./npm/codewhale/package.json').version")"
+npm_version="$(node -p "require('./npm/deepseek/package.json').version")"
 if [[ "${workspace_version}" != "${npm_version}" ]]; then
-  echo "::error::npm/codewhale/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
+  echo "::error::npm/deepseek/package.json version (${npm_version}) does not match workspace Cargo.toml (${workspace_version})." >&2
   fail=1
 fi
 # Also pin the legacy deprecation shim package to the same workspace version
@@ -49,11 +49,11 @@ fi
 
 # 3) Internal path dependency pins.
 internal_dep_drift="$(
-  grep -nE 'codewhale-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
+  grep -nE 'deepseek-[a-z-]+[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"' crates/*/Cargo.toml \
     | grep -v "version[[:space:]]*=[[:space:]]*\"${workspace_version}\"" || true
 )"
 if [[ -n "${internal_dep_drift}" ]]; then
-  echo "::error::Internal codewhale-* path dependency versions must match workspace version ${workspace_version}:" >&2
+  echo "::error::Internal deepseek-* path dependency versions must match workspace version ${workspace_version}:" >&2
   echo "${internal_dep_drift}" >&2
   fail=1
 fi

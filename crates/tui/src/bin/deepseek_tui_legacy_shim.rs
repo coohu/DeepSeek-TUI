@@ -11,7 +11,7 @@ use std::process::Command;
 
 fn main() {
     eprintln!(
-        "warning: `` is deprecated; run `deepseek-tui` (or `codewhale`) instead. \
+        "warning: `` is deprecated; run `deepseek-tui` (or `deepseek`) instead. \
          This alias will be removed in v0.9.0."
     );
     let args: Vec<String> = env::args_os()

@@ -510,7 +510,7 @@ impl DeepSeekClient {
         let mut builder = reqwest::Client::builder()
             .default_headers(headers)
             .user_agent(concat!(
-                "Mozilla/5.0 (compatible; codewhale/",
+                "Mozilla/5.0 (compatible; deepseek/",
                 env!("CARGO_PKG_VERSION"),
                 "; +https://github.com/coohu/DeepSeek-TUI)"
             ))
@@ -923,7 +923,10 @@ pub(super) fn apply_reasoning_effort(
         },
         "low" | "minimal" | "medium" | "mid" | "high" | "" => match provider {
             // DeepSeek compatibility: low/medium both map to high
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::Sglang | ApiProvider::ShengSuanYun => {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Sglang
+            | ApiProvider::ShengSuanYun => {
                 body["reasoning_effort"] = json!("high");
                 body["thinking"] = json!({ "type": "enabled" });
             }
@@ -968,7 +971,10 @@ pub(super) fn apply_reasoning_effort(
             }
         },
         "xhigh" | "max" | "highest" => match provider {
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::Sglang | ApiProvider::ShengSuanYun=> {
+            ApiProvider::Deepseek
+            | ApiProvider::DeepseekCN
+            | ApiProvider::Sglang
+            | ApiProvider::ShengSuanYun => {
                 body["reasoning_effort"] = json!("max");
                 body["thinking"] = json!({ "type": "enabled" });
             }

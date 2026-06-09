@@ -66,10 +66,10 @@ function detectBinaryRequiredGlibc(filePath) {
 
 function buildFromSourceHint() {
   return [
-    "You can still run codewhale by building from source with Cargo:",
+    "You can still run deepseek by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install codewhale-cli --locked   # provides `codewhale`",
+    "  cargo install deepseek-cli --locked   # provides `deepseek`",
     "  cargo install deepseek-tui --locked   # provides `deepseek-tui`",
     "",
     "Or build from a checkout:",

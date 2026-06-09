@@ -5,7 +5,7 @@
 //! filesystem-discovered `SkillRegistry`: the registry tells us which skills
 //! exist on disk, and this store tells API clients which ones are marked active.
 //!
-//! Storage shape (TOML at `~/.codewhale/skills_state.toml`, legacy `~/.deepseek/skills_state.toml`):
+//! Storage shape (TOML at `~/.deepseek/skills_state.toml`, legacy `~/.deepseek/skills_state.toml`):
 //!
 //! ```toml
 //! disabled = ["skill-name-1", "skill-name-2"]
@@ -104,7 +104,7 @@ impl SkillStateStore {
 }
 
 fn default_state_path() -> Result<PathBuf> {
-    let dir = codewhale_config::ensure_state_dir(".")
+    let dir = deepseek_config::ensure_state_dir(".")
         .context("could not resolve or create CodeWhale state directory")?;
     Ok(dir.join(STATE_FILE_NAME))
 }

@@ -101,7 +101,7 @@ fn render_session_html(history_json: &str, model: &str, mode: &str) -> String {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>codewhale Session Export</title>
+<title>deepseek Session Export</title>
 <style>
   body {{
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -119,7 +119,7 @@ fn render_session_html(history_json: &str, model: &str, mode: &str) -> String {
 </style>
 </head>
 <body>
-<h1>codewhale Session</h1>
+<h1>deepseek Session</h1>
 <div class="meta">
   <strong>Model:</strong> {escaped_model} · <strong>Mode:</strong> {escaped_mode}<br>
   <strong>Exported:</strong> {timestamp}
@@ -145,7 +145,7 @@ fn html_escape(s: &str) -> String {
 /// Write HTML to a secure temp file and keep it alive for upload.
 fn write_temp_html(html: &str) -> Result<tempfile::NamedTempFile, String> {
     let mut tmp = tempfile::Builder::new()
-        .prefix("codewhale-share-")
+        .prefix("deepseek-share-")
         .suffix(".html")
         .tempfile()
         .map_err(|e| format!("{e}"))?;
@@ -164,7 +164,7 @@ async fn upload_gist(path: &Path) -> Result<String, String> {
             "--filename",
             "session-export.html",
             "--desc",
-            "codewhale Session Export",
+            "deepseek Session Export",
         ])
         .output()
         .await
@@ -194,7 +194,7 @@ mod tests {
         assert!(html.contains("deepseek-v4-pro"));
         assert!(html.contains("agent"));
         assert!(html.contains("[{}]"));
-        assert!(html.contains("codewhale"));
+        assert!(html.contains("deepseek"));
     }
 
     #[test]

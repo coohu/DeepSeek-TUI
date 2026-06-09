@@ -422,9 +422,7 @@ mod tests {
         assert!(content.contains("tool: exec_shell"));
         assert!(content.contains("detail_handle: art_call-big"));
         assert!(content.contains("retrieve: retrieve_tool_result ref=art_call-big"));
-        assert!(
-            content.contains("command_or_query: {\"command\":\"cargo test -p deepseek-tui\"}")
-        );
+        assert!(content.contains("command_or_query: {\"command\":\"cargo test -p deepseek-tui\"}"));
     }
 
     #[test]

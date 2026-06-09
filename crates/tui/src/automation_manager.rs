@@ -796,14 +796,14 @@ pub fn default_automations_dir() -> PathBuf {
     }
     dirs::home_dir()
         .map(|home| {
-            let primary = home.join(".codewhale").join("automations");
+            let primary = home.join(".deepseek").join("automations");
             if primary.exists() {
                 primary
             } else {
                 home.join(".deepseek").join("automations")
             }
         })
-        .unwrap_or_else(|| PathBuf::from(".codewhale").join("automations"))
+        .unwrap_or_else(|| PathBuf::from(".deepseek").join("automations"))
 }
 
 pub type SharedAutomationManager = Arc<Mutex<AutomationManager>>;

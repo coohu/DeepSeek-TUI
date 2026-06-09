@@ -31,8 +31,8 @@ const MAX_AVAILABLE_SKILLS_CHARS: usize = 12_000;
 #[must_use]
 pub fn default_skills_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
-        || PathBuf::from("/tmp/codewhale/skills"),
-        |p| p.join(".codewhale").join("skills"),
+        || PathBuf::from("/tmp/deepseek/skills"),
+        |p| p.join(".deepseek").join("skills"),
     )
 }
 
@@ -451,9 +451,9 @@ impl SkillRegistry {
 /// Resolve the active skills directory given a workspace, mirroring the
 /// hierarchy `App::new` walks: `<workspace>/.agents/skills` →
 /// `<workspace>/skills` → [`agents_global_skills_dir`] (`~/.agents/skills`,
-/// when present) → [`default_skills_dir`] (`~/.codewhale/skills`).
+/// when present) → [`default_skills_dir`] (`~/.deepseek/skills`).
 /// Returns the first directory that exists, or the global default
-/// (which itself falls back to `/tmp/codewhale/skills` if the user
+/// (which itself falls back to `/tmp/deepseek/skills` if the user
 /// has no home directory).
 ///
 /// Kept for callers that want a single canonical directory (e.g.
@@ -492,10 +492,10 @@ pub fn resolve_skills_dir(workspace: &Path) -> PathBuf {
 /// 3. `<workspace>/.opencode/skills` — OpenCode interop.
 /// 4. `<workspace>/.claude/skills` — Claude Code interop.
 /// 5. `<workspace>/.cursor/skills` — Cursor interop.
-/// 6. `<workspace>/.codewhale/skills` — CodeWhale workspace skills.
+/// 6. `<workspace>/.deepseek/skills` — CodeWhale workspace skills.
 /// 7. [`agents_global_skills_dir`] — agentskills.io global.
 /// 8. [`claude_global_skills_dir`] — Claude-ecosystem global (#902).
-/// 9. `~/.codewhale/skills` — CodeWhale global, primary install target.
+/// 9. `~/.deepseek/skills` — CodeWhale global, primary install target.
 /// 10. `~/.deepseek/skills` — legacy DeepSeek global fallback.
 ///
 /// Only directories that exist on disk are returned — callers don't
@@ -514,15 +514,15 @@ fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Ve
         workspace.join(".opencode").join("skills"),
         workspace.join(".claude").join("skills"),
         workspace.join(".cursor").join("skills"),
-        workspace.join(".codewhale").join("skills"),
+        workspace.join(".deepseek").join("skills"),
     ];
     if let Some(home) = home_dir {
         candidates.push(home.join(".agents").join("skills"));
         candidates.push(home.join(".claude").join("skills"));
-        candidates.push(home.join(".codewhale").join("skills"));
+        candidates.push(home.join(".deepseek").join("skills"));
         candidates.push(home.join(".deepseek").join("skills"));
     } else {
-        candidates.push(PathBuf::from("/tmp/codewhale/skills"));
+        candidates.push(PathBuf::from("/tmp/deepseek/skills"));
     }
     existing_skill_dirs(candidates)
 }
@@ -1382,7 +1382,7 @@ mod tests {
 
     /// Mirrors the qa_pty `skills_menu_shows_local_and_global_skills`
     /// scenario without the PTY harness: a workspace-level skill in
-    /// `.agents/skills/` and a global skill in `~/.codewhale/skills/`
+    /// `.agents/skills/` and a global skill in `~/.deepseek/skills/`
     /// must both be discoverable.
     #[test]
     fn discover_finds_both_workspace_and_global_skills() {

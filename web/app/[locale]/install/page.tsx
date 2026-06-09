@@ -9,22 +9,22 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
   return {
     title: isZh ? "安装 · CodeWhale" : "Install · CodeWhale",
     description: isZh
-      ? "通过 Cargo 安装 codewhale-cli。其他方式：npm、Homebrew、预编译二进制、Docker、国内镜像。"
-      : "Install codewhale-cli via Cargo. Other ways: npm, Homebrew, prebuilt binary, Docker, source.",
+      ? "通过 Cargo 安装 deepseek-cli。其他方式：npm、Homebrew、预编译二进制、Docker、国内镜像。"
+      : "Install deepseek-cli via Cargo. Other ways: npm, Homebrew, prebuilt binary, Docker, source.",
   };
 }
 
-const CARGO_INSTALL = `cargo install codewhale-cli --locked`;
-const FIRST_RUN = `codewhale`;
-const VERIFY = `codewhale --version
-codewhale doctor`;
+const CARGO_INSTALL = `cargo install deepseek-cli --locked`;
+const FIRST_RUN = `deepseek`;
+const VERIFY = `deepseek --version
+deepseek doctor`;
 
-const UPDATE = `codewhale update`;
+const UPDATE = `deepseek update`;
 
 const SET_KEY_BASH = `export DEEPSEEK_API_KEY=sk-...`;
-const SET_KEY_AUTH = `codewhale auth set --provider deepseek --api-key sk-...`;
+const SET_KEY_AUTH = `deepseek auth set --provider deepseek --api-key sk-...`;
 
-const NPM_INSTALL = `npm install -g codewhale`;
+const NPM_INSTALL = `npm install -g deepseek`;
 
 const TUNA_CONFIG = `# ~/.cargo/config.toml
 [source.crates-io]
@@ -32,9 +32,9 @@ replace-with = "tuna"
 
 [source.tuna]
 registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`;
-const TUNA_INSTALL = `cargo install codewhale-cli --locked`;
+const TUNA_INSTALL = `cargo install deepseek-cli --locked`;
 const NPMMIRROR = `npm config set registry https://registry.npmmirror.com
-npm install -g codewhale`;
+npm install -g deepseek`;
 
 const BREW = `brew tap coohu/
 brew install `;
@@ -45,16 +45,16 @@ docker build -t  .
 
 docker run --rm -it \\
   -e DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY \\
-  -v ~/.deepseek:/home/codewhale/.deepseek \\
+  -v ~/.deepseek:/home/deepseek/.deepseek \\
   -v "$PWD:/work" -w /work \\
-  codewhale`;
+  deepseek`;
 
 const FROM_SOURCE = `git clone https://github.com/coohu/
 cd 
 cargo build --release --locked
 
 # Install both binaries from the local checkout
-cargo install --path crates/cli --locked   # codewhale
+cargo install --path crates/cli --locked   # deepseek
 cargo install --path crates/tui --locked   # deepseek-tui`;
 
 const CONFIG_TREE = `~/.deepseek/
@@ -108,14 +108,14 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
           {isZh ? (
             <>
-              编译并安装 <code className="inline">codewhale</code> 到 <code className="inline">~/.cargo/bin</code>。
+              编译并安装 <code className="inline">deepseek</code> 到 <code className="inline">~/.cargo/bin</code>。
               需要 Rust 1.88+——如未安装可访问{" "}
               <a href="https://rustup.rs" className="body-link">rustup.rs</a>。
               下方「其他安装方式」列出了不用 Rust 工具链、国内镜像、Homebrew、预编译二进制等替代选项。
             </>
           ) : (
             <>
-              Compiles and installs <code className="inline">codewhale</code> to{" "}
+              Compiles and installs <code className="inline">deepseek</code> to{" "}
               <code className="inline">~/.cargo/bin</code>. Requires Rust 1.88+ — install via{" "}
               <a href="https://rustup.rs" className="body-link">rustup.rs</a> if you don&apos;t have it.
               See <a href="#other-ways" className="body-link">Other ways to install</a> below for
@@ -137,13 +137,13 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
           {isZh ? (
             <>
-              <code className="inline">codewhale doctor</code> 检查 API 密钥、网络、沙箱可用性、
+              <code className="inline">deepseek doctor</code> 检查 API 密钥、网络、沙箱可用性、
               MCP 服务器，并将完整报告写入{" "}
               <code className="inline">~/.deepseek/doctor.log</code>。
             </>
           ) : (
             <>
-              <code className="inline">codewhale doctor</code> checks your API key, network,
+              <code className="inline">deepseek doctor</code> checks your API key, network,
               sandbox availability, and MCP servers. Full report is written to{" "}
               <code className="inline">~/.deepseek/doctor.log</code>.
             </>
@@ -166,17 +166,17 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               检查 GitHub Releases 是否有新版本并就地替换二进制。
               通过 Homebrew 或 npm 安装的话，使用包管理器升级更稳：
               <code className="inline">brew upgrade </code> 或{" "}
-              <code className="inline">npm update -g codewhale</code>。
+              <code className="inline">npm update -g deepseek</code>。
               Cargo 安装的可以重跑{" "}
-              <code className="inline">cargo install codewhale-cli --locked --force</code>。
+              <code className="inline">cargo install deepseek-cli --locked --force</code>。
             </>
           ) : (
             <>
               Checks GitHub Releases for a newer version and replaces the binary in place. If you
               installed via Homebrew or npm, prefer the package manager instead:{" "}
               <code className="inline">brew upgrade </code> or{" "}
-              <code className="inline">npm update -g codewhale</code>. Cargo users can re-run{" "}
-              <code className="inline">cargo install codewhale-cli --locked --force</code>.
+              <code className="inline">npm update -g deepseek</code>. Cargo users can re-run{" "}
+              <code className="inline">cargo install deepseek-cli --locked --force</code>.
             </>
           )}
         </p>
@@ -265,8 +265,8 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
           </h2>
           <p className="text-sm text-ink-soft max-w-2xl mb-10">
             {isZh
-              ? "如果上面的 Cargo 路径不适合你，从下面找到匹配你情况的一条。每条都安装同一个 codewhale 二进制。"
-              : "If the Cargo path above doesn't fit your setup, pick the row that matches your situation. Every path installs the same codewhale binary."}
+              ? "如果上面的 Cargo 路径不适合你，从下面找到匹配你情况的一条。每条都安装同一个 deepseek 二进制。"
+              : "If the Cargo path above doesn't fit your setup, pick the row that matches your situation. Every path installs the same deepseek binary."}
           </p>
 
           <div className="space-y-10">
@@ -280,13 +280,13 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                 {isZh ? (
                   <>
                     npm 包装器会从 GitHub Releases 下载对应平台的预编译二进制。需要 Node 18+。
-                    安装后会同时提供 <code className="inline">codewhale</code> 和{" "}
+                    安装后会同时提供 <code className="inline">deepseek</code> 和{" "}
                     <code className="inline">deepseek-tui</code> 两个命令。
                   </>
                 ) : (
                   <>
                     The npm wrapper downloads the prebuilt binary from GitHub Releases for your
-                    platform. Requires Node 18+. Installs both <code className="inline">codewhale</code>{" "}
+                    platform. Requires Node 18+. Installs both <code className="inline">deepseek</code>{" "}
                     and <code className="inline">deepseek-tui</code> on PATH.
                   </>
                 )}

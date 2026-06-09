@@ -1,6 +1,6 @@
 #  (deprecated)
 
-This package has been renamed to **codewhale**. Install that instead:
+This package has been renamed to **deepseek**. Install that instead:
 
 ```bash
 npm install -g @coohu/
@@ -8,7 +8,7 @@ npm install -g @coohu/
 pnpm add -g @coohu/
 ```
 
-`codewhale` ships the same `codewhale` and `deepseek-tui` binaries plus
+`deepseek` ships the same `deepseek` and `deepseek-tui` binaries plus
 deprecation shims under the old `deepseek` / `` names so existing
 scripts keep working through the v0.8.x transition.
 

@@ -691,7 +691,7 @@ pub(super) async fn execute_code_execution_tool(
         ToolError::execution_failed(format!(
             "code_execution: no Python interpreter found on PATH (tried {:?}). \
              Install Python 3 and ensure one of these is on PATH, then restart \
-             codewhale.",
+             deepseek.",
             crate::dependencies::PYTHON_CANDIDATES,
         ))
     })?;

@@ -33,7 +33,7 @@ function requestStatus(url, method = "HEAD", redirects = 0) {
       {
         method,
         headers: {
-          "User-Agent": "codewhale-npm-release-check",
+          "User-Agent": "deepseek-npm-release-check",
         },
       },
       (res) => {
@@ -71,7 +71,7 @@ async function downloadText(url) {
         url,
         {
           headers: {
-            "User-Agent": "codewhale-npm-release-check",
+            "User-Agent": "deepseek-npm-release-check",
           },
         },
         (res) => {

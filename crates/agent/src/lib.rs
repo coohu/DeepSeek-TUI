@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use codewhale_config::ProviderKind;
+use deepseek_config::ProviderKind;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

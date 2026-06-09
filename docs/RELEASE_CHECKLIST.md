@@ -29,7 +29,7 @@ publish-crates), see [`RELEASE_RUNBOOK.md`](RELEASE_RUNBOOK.md).
 - [ ] `Cargo.toml` workspace `version` is bumped.
 - [ ] All per-crate `crates/*/Cargo.toml` path-dependency `version = "..."`
       pins match the new workspace version.
-- [ ] `npm/codewhale/package.json` `version` AND `codewhaleBinaryVersion`
+- [ ] `npm/deepseek/package.json` `version` AND `codewhaleBinaryVersion`
       are both bumped.
 - [ ] `npm//package.json` `version` is bumped for the one-release
       deprecation shim.
@@ -53,7 +53,7 @@ Run, in order, from the repo root:
 
 ## 4. npm wrapper smoke
 
-- [ ] `cargo build --release --locked -p codewhale-cli -p deepseek-tui`
+- [ ] `cargo build --release --locked -p deepseek-cli -p deepseek-tui`
 - [ ] `node scripts/release/npm-wrapper-smoke.js`
       (Set `DEEPSEEK_TUI_KEEP_SMOKE_DIR=1` if you need to inspect the temp
       install afterwards.)
@@ -84,11 +84,11 @@ Run, in order, from the repo root:
 - [ ] `git push origin vX.Y.Z`
 - [ ] The `release.yml` workflow has built and uploaded artifacts to the
       GitHub release for this tag.
-- [ ] `npm view codewhale@X.Y.Z version codewhaleBinaryVersion --json`
+- [ ] `npm view deepseek@X.Y.Z version codewhaleBinaryVersion --json`
       reports the new version on the npm registry.
 - [ ] `crates.io` has the new version (or the `publish-crates.sh` job has
       pushed it).
-- [ ] `ghcr.io/hmbown/codewhale:vX.Y.Z` and `:latest` are updated.
+- [ ] `ghcr.io/hmbown/deepseek:vX.Y.Z` and `:latest` are updated.
 
 ## 8. Post-tag
 

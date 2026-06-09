@@ -259,8 +259,8 @@ fn write_panic_dump(
     let home = dirs::home_dir().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found")
     })?;
-    // Prefer .codewhale, fall back to .deepseek
-    let crash_dir = home.join(".codewhale").join("crashes");
+    // Prefer .deepseek, fall back to .deepseek
+    let crash_dir = home.join(".deepseek").join("crashes");
     if !crash_dir.exists() {
         // Try legacy path for reading, but prefer new for writing
         let _ = std::fs::create_dir_all(&crash_dir);

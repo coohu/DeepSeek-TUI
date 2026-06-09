@@ -1,19 +1,19 @@
 const path = require("path");
 const os = require("os");
 
-const CHECKSUM_MANIFEST = "codewhale-artifacts-sha256.txt";
+const CHECKSUM_MANIFEST = "deepseek-artifacts-sha256.txt";
 
 const ASSET_MATRIX = {
   linux: {
-    x64: ["codewhale-linux-x64", "deepseek-tui-linux-x64"],
-    arm64: ["codewhale-linux-arm64", "deepseek-tui-linux-arm64"],
+    x64: ["deepseek-linux-x64", "deepseek-tui-linux-x64"],
+    arm64: ["deepseek-linux-arm64", "deepseek-tui-linux-arm64"],
   },
   darwin: {
-    x64: ["codewhale-macos-x64", "deepseek-tui-macos-x64"],
-    arm64: ["codewhale-macos-arm64", "deepseek-tui-macos-arm64"],
+    x64: ["deepseek-macos-x64", "deepseek-tui-macos-x64"],
+    arm64: ["deepseek-macos-arm64", "deepseek-tui-macos-arm64"],
   },
   win32: {
-    x64: ["codewhale-windows-x64.exe", "deepseek-tui-windows-x64.exe"],
+    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe"],
   },
 };
 
@@ -47,7 +47,7 @@ function detectBinaryNames() {
   return {
     platform,
     arch,
-    codewhale: pair[0],
+    deepseek: pair[0],
     tui: pair[1],
   };
 }
@@ -55,10 +55,10 @@ function detectBinaryNames() {
 function unsupportedBuildHint() {
   return [
     "No prebuilt binary is available for this platform/architecture combo.",
-    "You can still run codewhale by building from source with Cargo:",
+    "You can still run deepseek by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install codewhale-cli --locked   # provides `codewhale`",
+    "  cargo install deepseek-cli --locked   # provides `deepseek`",
     "  cargo install deepseek-tui --locked   # provides `deepseek-tui`",
     "",
     "Or build from a checkout:",

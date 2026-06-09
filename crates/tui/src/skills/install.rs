@@ -51,8 +51,8 @@ use crate::network_policy::{Decision, NetworkPolicy, host_from_url};
 /// skills and can be blown away without losing anything irreplaceable.
 pub fn default_cache_skills_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
-        || PathBuf::from("/tmp/codewhale/cache/skills"),
-        |p| p.join(".codewhale").join("cache").join("skills"),
+        || PathBuf::from("/tmp/deepseek/cache/skills"),
+        |p| p.join(".deepseek").join("cache").join("skills"),
     )
 }
 

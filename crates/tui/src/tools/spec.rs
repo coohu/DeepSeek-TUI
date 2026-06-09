@@ -22,7 +22,7 @@ use crate::sandbox::backend::SandboxBackend;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
-pub use codewhale_tools::{
+pub use deepseek_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
     optional_u64, required_str, required_u64,
 };
@@ -183,9 +183,9 @@ impl ToolContext {
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
-        // Prefer .codewhale, fall back to .deepseek for project-local state
-        let notes_path = codewhale_config::resolve_project_state_dir(&workspace, "notes.md").1;
-        let mcp_config_path = codewhale_config::resolve_project_state_dir(&workspace, "mcp.json").1;
+        // Prefer .deepseek, fall back to .deepseek for project-local state
+        let notes_path = deepseek_config::resolve_project_state_dir(&workspace, "notes.md").1;
+        let mcp_config_path = deepseek_config::resolve_project_state_dir(&workspace, "mcp.json").1;
         Self {
             workspace,
             shell_manager,

@@ -1,6 +1,6 @@
-# Contributing to codewhale
+# Contributing to deepseek
 
-Thank you for your interest in contributing to codewhale! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to deepseek! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 
@@ -30,7 +30,7 @@ Thank you for your interest in contributing to codewhale! This document provides
 
 4. Run with development settings:
    ```bash
-   cargo run --bin codewhale
+   cargo run --bin deepseek
    ```
 
 ## Development Workflow
@@ -138,14 +138,14 @@ branding, or global prompts without prior maintainer sign-off.
 
 ## Project Structure
 
-codewhale is a Cargo workspace. The live runtime and the majority of TUI,
+deepseek is a Cargo workspace. The live runtime and the majority of TUI,
 engine, and tool code currently live in `crates/tui/src/`. Smaller workspace
 crates provide shared abstractions that are being extracted incrementally.
 
 ```
 crates/
 ├── tui/           deepseek-tui binary (interactive TUI + runtime API)
-├── cli/           codewhale binary (dispatcher facade)
+├── cli/           deepseek binary (dispatcher facade)
 ├── app-server/    HTTP/SSE + JSON-RPC transport
 ├── core/          Agent loop / session / turn management
 ├── protocol/      Request/response framing
@@ -231,7 +231,7 @@ Issue reports should include:
 
 - Operating system and version
 - Rust version (`rustc --version`)
-- codewhale version (`codewhale --version`)
+- deepseek version (`deepseek --version`)
 - Steps to reproduce the issue
 - Expected vs actual behavior
 - Relevant error messages or logs
@@ -250,7 +250,7 @@ code of conduct.
 
 ## License
 
-By contributing to codewhale, you agree that your contributions will be licensed under the MIT License.
+By contributing to deepseek, you agree that your contributions will be licensed under the MIT License.
 
 ## Questions?
 

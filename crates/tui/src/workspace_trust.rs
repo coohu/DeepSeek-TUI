@@ -158,7 +158,7 @@ fn canonicalize_or_keep(path: &Path) -> PathBuf {
 }
 
 fn trust_file_path() -> Option<PathBuf> {
-    codewhale_config::ensure_state_dir(".")
+    deepseek_config::ensure_state_dir(".")
         .ok()
         .map(|dir| dir.join(TRUST_FILE_NAME))
 }

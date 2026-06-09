@@ -93,7 +93,7 @@ jobs:
           cache-bin: false
       - name: Build wrapper binaries
         if: runner.os != 'Linux'
-        run: cargo build --release --locked -p codewhale-cli -p deepseek-tui
+        run: cargo build --release --locked -p deepseek-cli -p deepseek-tui
       - name: Smoke wrapper install and delegated entrypoints
         if: runner.os != 'Linux'
         run: node scripts/release/npm-wrapper-smoke.js

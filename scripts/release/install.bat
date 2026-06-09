@@ -1,18 +1,18 @@
 @echo off
 setlocal enabledelayedexpansion
 :: CodeWhale Windows installer
-:: Copies codewhale.exe and deepseek-tui.exe to %USERPROFILE%\bin
+:: Copies deepseek.exe and deepseek-tui.exe to %USERPROFILE%\bin
 
 set "BIN_DIR=%USERPROFILE%\bin"
 set "SCRIPT_DIR=%~dp0"
 
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
 
-echo Installing codewhale to %BIN_DIR%...
+echo Installing deepseek to %BIN_DIR%...
 
-copy /Y "%SCRIPT_DIR%codewhale.exe" "%BIN_DIR%\codewhale.exe" >nul
+copy /Y "%SCRIPT_DIR%deepseek.exe" "%BIN_DIR%\deepseek.exe" >nul
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: Failed to copy codewhale.exe
+    echo ERROR: Failed to copy deepseek.exe
     exit /b 1
 )
 
@@ -35,4 +35,4 @@ echo.
 echo Or run this in an admin PowerShell:
 echo   [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ';%BIN_DIR%', 'User')
 echo.
-echo Then run: codewhale
+echo Then run: deepseek

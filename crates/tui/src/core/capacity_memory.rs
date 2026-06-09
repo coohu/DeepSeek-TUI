@@ -56,8 +56,8 @@ fn capacity_memory_dirs() -> Vec<PathBuf> {
 
     let mut dirs = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        // Prefer .codewhale, fall back to .deepseek
-        let primary = home.join(".codewhale").join("memory");
+        // Prefer .deepseek, fall back to .deepseek
+        let primary = home.join(".deepseek").join("memory");
         if primary.exists() {
             dirs.push(primary);
         }
@@ -65,7 +65,7 @@ fn capacity_memory_dirs() -> Vec<PathBuf> {
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let primary_cwd = cwd.join(".codewhale").join("memory");
+    let primary_cwd = cwd.join(".deepseek").join("memory");
     if primary_cwd.exists() {
         dirs.push(primary_cwd);
     }

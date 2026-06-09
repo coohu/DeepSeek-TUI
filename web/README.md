@@ -1,4 +1,4 @@
-# codewhale-web
+# deepseek-web
 
 Community site for [](https://github.com/coohu/) — lives at **.com**.
 
@@ -26,7 +26,7 @@ The site renders fine without any of them — `Today's Dispatch` falls back to a
 
 ## Deploy to Cloudflare
 
-You already own `codewhale.net` on Cloudflare and have a Workers Paid plan. The deploy is two steps:
+You already own `deepseek.net` on Cloudflare and have a Workers Paid plan. The deploy is two steps:
 
 1. **Provision KV namespaces once:**
 
@@ -48,12 +48,12 @@ You already own `codewhale.net` on Cloudflare and have a Workers Paid plan. The 
    npm run deploy                           # builds with OpenNext + uploads
    ```
 
-3. **Point the domain:** in the Cloudflare dashboard, add a Worker route for `codewhale.net/*` → the deployed Worker (currently named `-web` unless the Worker is renamed during deploy).
+3. **Point the domain:** in the Cloudflare dashboard, add a Worker route for `deepseek.net/*` → the deployed Worker (currently named `-web` unless the Worker is renamed during deploy).
 
 The first cron run happens within 6 hours; you can also kick it manually:
 
 ```bash
-curl -H "x-cron-secret: $CRON_SECRET" "https://codewhale.net/api/cron?task=curate"
+curl -H "x-cron-secret: $CRON_SECRET" "https://deepseek.net/api/cron?task=curate"
 ```
 
 ## What's where

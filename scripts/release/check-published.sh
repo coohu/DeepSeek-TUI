@@ -57,10 +57,10 @@ fail=0
 echo "Checking published release ${version}..."
 
 # Canonical post-rebrand npm package.
-if npm_version="$(npm view "codewhale@${version}" version 2>/dev/null)"; then
-  echo "npm codewhale@${npm_version} is published."
+if npm_version="$(npm view "deepseek@${version}" version 2>/dev/null)"; then
+  echo "npm deepseek@${npm_version} is published."
 else
-  echo "npm codewhale@${version} is not published." >&2
+  echo "npm deepseek@${version} is not published." >&2
   fail=1
 fi
 
@@ -68,10 +68,10 @@ fi
 # to the legacy `deepseekBinaryVersion` field for old/transition packages.
 binary_field=""
 npm_binary_version=""
-if value="$(npm view "codewhale@${version}" codewhaleBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
+if value="$(npm view "deepseek@${version}" codewhaleBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
   binary_field="codewhaleBinaryVersion"
   npm_binary_version="${value}"
-elif value="$(npm view "codewhale@${version}" deepseekBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
+elif value="$(npm view "deepseek@${version}" deepseekBinaryVersion 2>/dev/null)" && [[ -n "${value}" ]]; then
   binary_field="deepseekBinaryVersion"
   npm_binary_version="${value}"
 fi
@@ -88,7 +88,7 @@ if [[ -n "${binary_field}" ]]; then
 elif [[ "${allow_npm_binary_mismatch}" == "1" ]]; then
   echo "npm codewhaleBinaryVersion is absent (allowed packaging-only mismatch)."
 else
-  echo "npm codewhaleBinaryVersion is absent for codewhale@${version}." >&2
+  echo "npm codewhaleBinaryVersion is absent for deepseek@${version}." >&2
   fail=1
 fi
 
@@ -108,7 +108,7 @@ for crate in "${release_crates[@]}"; do
 done
 
 if [[ "${fail}" == "0" ]]; then
-  echo "Published release OK: npm codewhale@${version} and ${#release_crates[@]} crates are visible."
+  echo "Published release OK: npm deepseek@${version} and ${#release_crates[@]} crates are visible."
 fi
 
 exit "${fail}"

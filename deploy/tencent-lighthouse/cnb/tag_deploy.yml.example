@@ -8,7 +8,7 @@ environments:
       name: lighthouse-hk
     button:
       - name: Deploy Lighthouse
-        description: Update /opt/whalebro/codewhale, restart services, and run the Lighthouse doctor.
+        description: Update /opt/whalebro/deepseek, restart services, and run the Lighthouse doctor.
         event: web_trigger_lighthouse
         isDefault: true
         permissions:

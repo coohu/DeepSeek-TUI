@@ -1,4 +1,4 @@
-# codewhale
+# deepseek
 
 Install and run CodeWhale, the agentic terminal for open-source and open-weight coding
 models, from GitHub release artifacts.
@@ -10,35 +10,35 @@ models, from GitHub release artifacts.
 ## Install
 
 ```bash
-npm install -g codewhale
+npm install -g deepseek
 # or
-pnpm add -g codewhale
+pnpm add -g deepseek
 ```
 
 For project-local usage:
 
 ```bash
-npm install codewhale
-npx codewhale --help
+npm install deepseek
+npx deepseek --help
 ```
 
 `postinstall` tries to download platform binaries into `bin/downloads/` and
-exposes `codewhale` and `deepseek-tui` commands. If GitHub release assets are
+exposes `deepseek` and `deepseek-tui` commands. If GitHub release assets are
 temporarily unreachable, install continues and the wrapper retries the download
 on first run.
 
 ## First run
 
 ```bash
-codewhale login --api-key "YOUR_DEEPSEEK_API_KEY"
-codewhale doctor
-codewhale
+deepseek login --api-key "YOUR_DEEPSEEK_API_KEY"
+deepseek doctor
+deepseek
 ```
 
-The `codewhale` facade and `deepseek-tui` binary share `~/.deepseek/config.toml`
+The `deepseek` facade and `deepseek-tui` binary share `~/.deepseek/config.toml`
 for DeepSeek auth and default model settings. Common TUI commands are available
-directly through the facade, including `codewhale doctor`, `codewhale models`,
-`codewhale sessions`, and `codewhale resume --last`.
+directly through the facade, including `deepseek doctor`, `deepseek models`,
+`deepseek sessions`, and `deepseek resume --last`.
 
 The app talks to DeepSeek's documented OpenAI-compatible Chat Completions API.
 Set `DEEPSEEK_BASE_URL` only if you need the China endpoint or DeepSeek beta
@@ -47,8 +47,8 @@ features such as strict tool mode, chat prefix completion, or FIM completion.
 NVIDIA NIM-hosted DeepSeek V4 Pro is also supported:
 
 ```bash
-codewhale auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
-codewhale --provider nvidia-nim
+deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+deepseek --provider nvidia-nim
 ```
 
 For a single process, set `DEEPSEEK_PROVIDER=nvidia-nim` and `NVIDIA_API_KEY`
@@ -69,7 +69,7 @@ Prebuilt binaries for the GitHub release are downloaded automatically:
 Other platform/architecture combinations (musl, riscv64, FreeBSD, …) aren't
 shipped as prebuilts. Unsupported platforms, checksum failures, and glibc
 compatibility problems still fail with a clear error pointing you at
-`cargo install codewhale-cli deepseek-tui --locked` and the full
+`cargo install deepseek-cli deepseek-tui --locked` and the full
 [docs/INSTALL.md](https://github.com/Hmbown/CodeWhale/blob/main/docs/INSTALL.md)
 build-from-source guide.
 
@@ -81,7 +81,7 @@ build-from-source guide.
 - Set `DEEPSEEK_TUI_GITHUB_REPO` or `DEEPSEEK_GITHUB_REPO` to override the source repo (defaults to `Hmbown/CodeWhale`).
 - Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to use an internal or mirrored
   release-asset directory when GitHub Releases is unavailable. The directory
-  must contain `codewhale-artifacts-sha256.txt` and the platform binaries.
+  must contain `deepseek-artifacts-sha256.txt` and the platform binaries.
 - Set `DEEPSEEK_TUI_FORCE_DOWNLOAD=1` to force download even when the cached binary is already present.
 - Set `DEEPSEEK_TUI_DISABLE_INSTALL=1` to skip install-time download.
 - Set `DEEPSEEK_TUI_OPTIONAL_INSTALL=1` to make install-time retryable download

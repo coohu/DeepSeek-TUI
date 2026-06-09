@@ -37,7 +37,7 @@ export function Nav({ locale = "en" }: { locale?: Locale }) {
             <span className="hidden sm:inline">· {isZh ? new Date().toLocaleDateString("zh-CN", { weekday: "long", month: "long", day: "numeric" }) : new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</span>
           </div>
           <div className="flex items-center gap-4">
-            <span className="hidden md:inline">codewhale.net</span>
+            <span className="hidden md:inline">deepseek.net</span>
             <span className="inline-flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 bg-jade rounded-full inline-block animate-pulse" />
               <span>{isZh ? "API · 在线" : "API · 在线"}</span>

@@ -5,9 +5,7 @@ use std::time::Duration;
 
 use super::CommandResult;
 use crate::client::DeepSeekClient;
-use crate::config::{
-    COMMON_DEEPSEEK_MODELS, Config, clear_api_key, expand_path, normalize_model_name_for_provider,
-};
+use crate::config::{Config, clear_api_key, expand_path, normalize_model_name_for_provider};
 use crate::config_ui::{ConfigUiMode, parse_mode};
 use crate::llm_client::LlmClient;
 use crate::localization::resolve_locale;
@@ -379,7 +377,7 @@ pub(super) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
         }
     }
     let home = dirs::home_dir().context("failed to resolve home directory for config.toml path")?;
-    let primary = home.join(".codewhale").join("config.toml");
+    let primary = home.join(".deepseek").join("config.toml");
     if primary.exists() {
         return Ok(primary);
     }
@@ -406,7 +404,8 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
                 );
             }
             // Clear auto mode when a specific model is set
-            let model = normalize_model_name_for_provider(app.api_provider, value).unwrap_or_else(|| value.trim().to_string());
+            let model = normalize_model_name_for_provider(app.api_provider, value)
+                .unwrap_or_else(|| value.trim().to_string());
             app.set_model_selection(model.clone());
             app.update_model_compaction_budget();
             app.session.last_prompt_tokens = None;
@@ -1015,7 +1014,7 @@ pub struct AutoRouteSelection {
 }
 
 pub const AUTO_MODEL_ROUTER_SYSTEM_PROMPT: &str = "\
-You are the codewhale auto-routing classifier. Return only compact JSON: \
+You are the deepseek auto-routing classifier. Return only compact JSON: \
 {\"model\":\"deepseek-v4-flash|deepseek-v4-pro\",\"thinking\":\"off|high|max\"}. \
 Use deepseek-v4-flash for trivial, conversational, status, or single-step work. \
 Use deepseek-v4-pro for coding, debugging, release work, multi-step tasks, high-risk decisions, \
@@ -1797,11 +1796,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_root = env::temp_dir().join(format!(
-            "-base-url-test-{}-{}",
-            std::process::id(),
-            nanos
-        ));
+        let temp_root =
+            env::temp_dir().join(format!("-base-url-test-{}-{}", std::process::id(), nanos));
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
 
@@ -2102,7 +2098,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-statusline-persist-{}-{}",
+            "deepseek-statusline-persist-{}-{}",
             std::process::id(),
             nanos
         ));
@@ -2133,7 +2129,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temp_root = env::temp_dir().join(format!(
-            "codewhale-statusline-preserve-{}-{}",
+            "deepseek-statusline-preserve-{}-{}",
             std::process::id(),
             nanos
         ));

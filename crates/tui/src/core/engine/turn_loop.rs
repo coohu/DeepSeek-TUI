@@ -913,7 +913,7 @@ impl Engine {
                 // streaming with no tool calls — but if it has direct children
                 // still running (or completions queued from children that
                 // finished while we were inferring), surface their
-                // `<codewhale:subagent.done>` sentinels into the transcript and
+                // `<deepseek:subagent.done>` sentinels into the transcript and
                 // resume instead of ending the turn. This fulfils the contract
                 // already documented in `prompts/base.md`: the parent is
                 // promised it'll see the sentinel when a child finishes.
@@ -2095,13 +2095,13 @@ fn subagent_completion_runtime_message(payload: &str) -> Message {
         role: "user".to_string(),
         content: vec![ContentBlock::Text {
             text: format!(
-                "<codewhale:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
+                "<deepseek:runtime_event kind=\"subagent_completion\" visibility=\"internal\">\n\
 This is an internal runtime event, not user input. Use the sub-agent completion \
 data below to continue coordinating the current task. Do not tell the user they \
 pasted sentinels, do not explain the sentinel protocol, and do not quote the raw \
 XML unless the user explicitly asks to debug sub-agent internals.\n\n\
 {payload}\n\
-</codewhale:runtime_event>"
+</deepseek:runtime_event>"
             ),
             cache_control: None,
         }],
@@ -2194,7 +2194,7 @@ mod tests {
     #[test]
     fn subagent_completion_handoff_is_internal_user_message() {
         let message = subagent_completion_runtime_message(
-            "Build passed\n<codewhale:subagent.done>{\"agent_id\":\"agent_a\"}</codewhale:subagent.done>",
+            "Build passed\n<deepseek:subagent.done>{\"agent_id\":\"agent_a\"}</deepseek:subagent.done>",
         );
 
         // Must be "user", not "system": a system message appended mid-stream
@@ -2208,7 +2208,7 @@ mod tests {
         };
         assert!(text.contains("internal runtime event, not user input"));
         assert!(text.contains("Do not tell the user they pasted sentinels"));
-        assert!(text.contains("<codewhale:subagent.done>"));
+        assert!(text.contains("<deepseek:subagent.done>"));
         assert!(text.contains("Build passed"));
     }
 

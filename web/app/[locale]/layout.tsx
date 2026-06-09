@@ -21,7 +21,7 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
       description: isZh
         ? "DeepSeek V4 的最强智能体运行框架。宪政层级、结构化信任、验证与恢复。"
         : "The most agentic harness for DeepSeek V4. Constitutional hierarchy, structured trust, verification, and recovery.",
-      url: "https://codewhale.net",
+      url: "https://deepseek.net",
       siteName: "CodeWhale",
       type: "website",
     },

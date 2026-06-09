@@ -584,7 +584,7 @@ fn should_show_resume_hint(session_id: Option<&str>) -> bool {
 }
 
 fn resume_hint_text() -> &'static str {
-    "To continue this session, execute codewhale run --continue"
+    "To continue this session, execute deepseek run --continue"
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
@@ -906,7 +906,7 @@ async fn run_event_loop(
         let current = env!("CARGO_PKG_VERSION").to_string();
         tokio::spawn(async move {
             let client = match reqwest::Client::builder()
-                .user_agent("codewhale-version-check")
+                .user_agent("deepseek-version-check")
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
             {
@@ -931,7 +931,7 @@ async fn run_event_loop(
             };
             if newer {
                 Some(format!(
-                    "v{latest} available — run `codewhale update` and restart"
+                    "v{latest} available — run `deepseek update` and restart"
                 ))
             } else {
                 None

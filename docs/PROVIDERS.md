@@ -18,7 +18,7 @@ Sources to keep in sync:
 - `crates/tui/src/config.rs` - TUI provider IDs, provider capability metadata,
   and provider-specific env handling.
 - `crates/agent/src/lib.rs` - static `ModelRegistry` used by
-  `codewhale model list` and `codewhale model resolve`.
+  `deepseek model list` and `deepseek model resolve`.
 - `config.example.toml` and `docs/CONFIGURATION.md` - user-facing config
   examples and environment variable reference.
 
@@ -31,7 +31,7 @@ The canonical provider IDs are:
 
 Use any of these surfaces to select a provider:
 
-- CLI: `codewhale --provider <id>`
+- CLI: `deepseek --provider <id>`
 - TUI: `/provider <id>` or the provider picker
 - Env: `CODEWHALE_PROVIDER=<id>`; `DEEPSEEK_PROVIDER=<id>` is the legacy alias
 - Config: `provider = "<id>"`
@@ -40,12 +40,12 @@ Use any of these surfaces to select a provider:
 as legacy aliases for `deepseek`. They do not select a different official host;
 DeepSeek uses the same official API host worldwide.
 
-Fresh shared config writes to `~/.codewhale/config.toml`. Existing
+Fresh shared config writes to `~/.deepseek/config.toml`. Existing
 `~/.deepseek/config.toml` files are still read for compatibility.
 
 ## Auth And Env Rules
 
-For hosted providers, `codewhale auth set --provider <id>` saves an API key for
+For hosted providers, `deepseek auth set --provider <id>` saves an API key for
 that provider. API-key environment variables are fallback inputs after saved
 config and keyring credentials; an explicit process-level `--api-key` still
 wins for that launch.
@@ -80,9 +80,9 @@ self-hosted runtimes.
 
 ## Static Model Registry
 
-`codewhale model list` and `codewhale model resolve` use the static registry in
+`deepseek model list` and `deepseek model resolve` use the static registry in
 `crates/agent/src/lib.rs`. This is not the same as live `/models` discovery.
-Use `/models` or `codewhale models` to fetch model IDs from the active API
+Use `/models` or `deepseek models` to fetch model IDs from the active API
 endpoint when the endpoint supports model listing.
 
 | Provider | Static registry entries | Tool calls | Registry reasoning flag |
@@ -138,7 +138,7 @@ DeepSeek compatibility aliases `deepseek-chat` and `deepseek-reasoner` map to
 These items belong to the v0.8.47 provider-abstraction milestone or related
 provider docs work, but they are not native shipped behavior in this checkout:
 
-- A unified `Provider` trait in `codewhale-agent` that owns env precedence,
+- A unified `Provider` trait in `deepseek-agent` that owns env precedence,
   secret resolution, base URL normalization, auth-header construction, and
   provider metadata. Those responsibilities are still split across
   `crates/config`, `crates/secrets`, and `crates/tui/src/client.rs`.

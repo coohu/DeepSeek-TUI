@@ -1,6 +1,6 @@
 # Rebrand: DeepSeek TUI → CodeWhale
 
-Starting with **v0.8.41**, this project ships under a new name: `codewhale`.
+Starting with **v0.8.41**, this project ships under a new name: `deepseek`.
 
 This document explains what changed, what didn't, and how to migrate. None of the
 DeepSeek provider integration changed — only the local CLI / TUI brand.
@@ -13,14 +13,14 @@ npm uninstall -g       # or cargo uninstall -cli
                                     # or brew uninstall 
 
 # 2. Install under the new name.
-npm install -g codewhale            # or cargo install codewhale-cli deepseek-tui --locked
+npm install -g deepseek            # or cargo install deepseek-cli deepseek-tui --locked
                                     # or brew install  (Homebrew tap still
                                     #     uses the legacy name during the transition;
                                     #     it installs the new binaries underneath.)
 
 # 3. Run with the new command.
-codewhale doctor
-codewhale
+deepseek doctor
+deepseek
 ```
 
 Your `~/.deepseek/config.toml`, `~/.deepseek/sessions/`, `~/.deepseek/skills/`,
@@ -31,12 +31,12 @@ Your `~/.deepseek/config.toml`, `~/.deepseek/sessions/`, `~/.deepseek/skills/`,
 
 | Surface | Before | After |
 |---|---|---|
-| CLI dispatcher binary | `deepseek` | `codewhale` |
+| CLI dispatcher binary | `deepseek` | `deepseek` |
 | TUI runtime binary | `` | `deepseek-tui` |
-| npm wrapper package | `` | `codewhale` |
-| Crates.io crates | `-cli` / `` / `deepseek-*` | `codewhale-cli` / `deepseek-tui` / `codewhale-*` |
-| Release assets | `deepseek-<platform>` / `-<platform>` | `codewhale-<platform>` / `deepseek-tui-<platform>` |
-| Checksum manifest | `deepseek-artifacts-sha256.txt` | `codewhale-artifacts-sha256.txt` |
+| npm wrapper package | `` | `deepseek` |
+| Crates.io crates | `-cli` / `` / `deepseek-*` | `deepseek-cli` / `deepseek-tui` / `deepseek-*` |
+| Release assets | `deepseek-<platform>` / `-<platform>` | `deepseek-<platform>` / `deepseek-tui-<platform>` |
+| Checksum manifest | `deepseek-artifacts-sha256.txt` | `deepseek-artifacts-sha256.txt` |
 
 ## What did NOT change
 
@@ -60,7 +60,7 @@ Anything that targets the DeepSeek provider API stays exactly as it was:
 - **Homebrew tap and formula** (`Hmbown/homebrew-`): still
   installs by the legacy name during the transition. The tap's formula
   will be flipped to the new names in a follow-up.
-- **Docker image**: `ghcr.io/hmbown/codewhale`.
+- **Docker image**: `ghcr.io/hmbown/deepseek`.
 
 ## Deprecation shims (through v0.8.x)
 
@@ -68,7 +68,7 @@ To keep existing shell aliases, scripts, and CI working through the rename,
 v0.8.41 and later v0.8.x releases ship **deprecation shims**:
 
 - A `deepseek` binary that prints a one-line warning to stderr and forwards
-  argv to `codewhale`.
+  argv to `deepseek`.
 - A `` binary that does the same for `deepseek-tui`.
 - An `npm` package at `@0.8.x` with no `bin` and a postinstall
   that prints a clear rename notice.
@@ -81,14 +81,14 @@ These shims will be removed in **v0.9.0**. Please migrate before then.
 
 ```bash
 npm uninstall -g 
-npm install -g codewhale
+npm install -g deepseek
 ```
 
 ### Cargo
 
 ```bash
 cargo uninstall -cli  2>/dev/null || true
-cargo install codewhale-cli deepseek-tui --locked
+cargo install deepseek-cli deepseek-tui --locked
 ```
 
 Or in a checkout:
@@ -107,14 +107,14 @@ repo will follow up with their own rename.
 
 ### Manual / GitHub Releases
 
-`v0.8.41` Releases attach **both** the canonical `codewhale-*` /
+`v0.8.41` Releases attach **both** the canonical `deepseek-*` /
 `deepseek-tui-*` assets and the legacy `deepseek-*` / `-*`
 shim assets. Existing `deepseek update` invocations on v0.8.40 keep working;
 they land you on the deprecation shim, which then prompts the install of
-`codewhale`.
+`deepseek`.
 
 A second checksum manifest, `deepseek-artifacts-sha256.txt`, is attached as
-an alias of `codewhale-artifacts-sha256.txt` so v0.8.40's hardcoded lookup
+an alias of `deepseek-artifacts-sha256.txt` so v0.8.40's hardcoded lookup
 still verifies.
 
 ## Why the name change
@@ -131,7 +131,7 @@ to CodeWhale; the official DeepSeek provider, model IDs, env vars, and
 If your install broke during the migration, please open an issue at
 <https://github.com/Hmbown/CodeWhale/issues> and include:
 
-- The output of `codewhale --version` (or `deepseek --version` if you're
+- The output of `deepseek --version` (or `deepseek --version` if you're
   still on the shim).
 - Which install path you used (npm, cargo, brew, manual).
 - The exact command you ran and the full error output.

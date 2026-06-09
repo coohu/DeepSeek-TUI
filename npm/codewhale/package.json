@@ -1,5 +1,5 @@
 {
-  "name": "codewhale",
+  "name": "deepseek",
   "version": "0.8.46",
   "codewhaleBinaryVersion": "0.8.46",
   "description": "Install and run CodeWhale, the agentic terminal for open-source and open-weight coding models, from GitHub release artifacts.",
@@ -24,7 +24,7 @@
     "url": "https://github.com/Hmbown/CodeWhale/issues"
   },
   "keywords": [
-    "codewhale",
+    "deepseek",
     "deepseek",
     "cli",
     "tui",
@@ -34,7 +34,7 @@
   ],
   "type": "commonjs",
   "bin": {
-    "codewhale": "bin/codewhale.js",
+    "deepseek": "bin/deepseek.js",
     "codew": "bin/codew.js",
     "deepseek-tui": "bin/deepseek-tui.js"
   },

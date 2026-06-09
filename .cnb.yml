@@ -46,10 +46,10 @@
     - name: linux npm wrapper smoke
       script: |
         set -eu
-        cargo build --release --locked -p codewhale-cli -p deepseek-tui
+        cargo build --release --locked -p deepseek-cli -p deepseek-tui
         export PATH="$PWD/target/release:$PATH"
         node scripts/release/npm-wrapper-smoke.js
-        ./target/release/codewhale --version
+        ./target/release/deepseek --version
         ./target/release/deepseek-tui --version
         ./target/release/deepseek --version
         ./target/release/ --version
@@ -88,10 +88,10 @@
     - name: release binary smoke
       script: |
         set -eu
-        cargo build --release --locked -p codewhale-cli -p deepseek-tui
+        cargo build --release --locked -p deepseek-cli -p deepseek-tui
         export PATH="$PWD/target/release:$PATH"
         node scripts/release/npm-wrapper-smoke.js
-        ./target/release/codewhale --version
+        ./target/release/deepseek --version
         ./target/release/deepseek-tui --version
         ./target/release/deepseek --version
         ./target/release/ --version
@@ -123,15 +123,15 @@ $:
             apt-get install -y git libdbus-1-dev nodejs pkg-config
 
             ./scripts/release/check-versions.sh
-            cargo build --release --locked -p codewhale-cli -p deepseek-tui
+            cargo build --release --locked -p deepseek-cli -p deepseek-tui
 
             mkdir -p target/cnb-release
-            cp target/release/codewhale target/cnb-release/codewhale-linux-x64
+            cp target/release/deepseek target/cnb-release/deepseek-linux-x64
             cp target/release/deepseek-tui target/cnb-release/deepseek-tui-linux-x64
             cp target/release/deepseek target/cnb-release/deepseek-linux-x64
             cp target/release/ target/cnb-release/-linux-x64
             strip \
-              target/cnb-release/codewhale-linux-x64 \
+              target/cnb-release/deepseek-linux-x64 \
               target/cnb-release/deepseek-tui-linux-x64 \
               target/cnb-release/deepseek-linux-x64 \
               target/cnb-release/-linux-x64 \
@@ -140,12 +140,12 @@ $:
             (
               cd target/cnb-release
               sha256sum \
-                codewhale-linux-x64 \
+                deepseek-linux-x64 \
                 deepseek-tui-linux-x64 \
                 deepseek-linux-x64 \
                 -linux-x64 \
-                > codewhale-artifacts-sha256.txt
-              cp codewhale-artifacts-sha256.txt deepseek-artifacts-sha256.txt
+                > deepseek-artifacts-sha256.txt
+              cp deepseek-artifacts-sha256.txt deepseek-artifacts-sha256.txt
             )
 
             tag_name="${CNB_BRANCH:-}"
@@ -166,9 +166,9 @@ $:
               echo "Built by CNB from ${commit_sha}."
               echo
               echo "Assets:"
-              echo "- codewhale-linux-x64"
+              echo "- deepseek-linux-x64"
               echo "- deepseek-tui-linux-x64"
-              echo "- codewhale-artifacts-sha256.txt"
+              echo "- deepseek-artifacts-sha256.txt"
               echo "- deepseek-linux-x64"
               echo "- -linux-x64"
               echo "- deepseek-artifacts-sha256.txt"
@@ -184,9 +184,9 @@ $:
           image: cnbcool/attachments:latest
           settings:
             attachments:
-              - target/cnb-release/codewhale-linux-x64
+              - target/cnb-release/deepseek-linux-x64
               - target/cnb-release/deepseek-tui-linux-x64
-              - target/cnb-release/codewhale-artifacts-sha256.txt
+              - target/cnb-release/deepseek-artifacts-sha256.txt
               - target/cnb-release/deepseek-linux-x64
               - target/cnb-release/-linux-x64
               - target/cnb-release/deepseek-artifacts-sha256.txt

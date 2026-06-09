@@ -982,7 +982,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::CmdNoteDescription => "Add, list, edit, or remove workspace notes",
         MessageId::CmdThemeDescription => "Switch theme or open the theme picker",
         MessageId::CmdProviderDescription => {
-            "Switch or view the active LLM backend (codewhale | nvidia-nim | ollama)"
+            "Switch or view the active LLM backend (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "View or edit queued messages",
         MessageId::CmdRecallDescription => "Search prior cycle archives (BM25 over message text)",
@@ -1162,7 +1162,7 @@ fn english(id: MessageId) -> &'static str {
         MessageId::LinksTip => "Tip: API keys are available in the dashboard console.",
         MessageId::SubagentsFetching => "Fetching sub-agent status...",
         MessageId::HelpUnknownCommand => "Unknown command: {topic}",
-        MessageId::HomeDashboardTitle => "codewhale Home Dashboard",
+        MessageId::HomeDashboardTitle => "deepseek Home Dashboard",
         MessageId::HomeModel => "Model:",
         MessageId::HomeMode => "Mode:",
         MessageId::HomeWorkspace => "Workspace:",
@@ -1373,7 +1373,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
             "テーマを切り替え（ダーク/ライト/グレースケール/システム）"
         }
         MessageId::CmdProviderDescription => {
-            "現在の LLM バックエンドを切り替え・確認（codewhale | nvidia-nim | ollama）"
+            "現在の LLM バックエンドを切り替え・確認（deepseek | nvidia-nim | ollama）"
         }
         MessageId::CmdQueueDescription => "キューされたメッセージを確認・編集",
         MessageId::CmdRecallDescription => {
@@ -1554,7 +1554,7 @@ fn japanese(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "ヒント: API キーはダッシュボードコンソールで取得できます。",
         MessageId::SubagentsFetching => "サブエージェントの状態を取得中...",
         MessageId::HelpUnknownCommand => "不明なコマンド: {topic}",
-        MessageId::HomeDashboardTitle => "codewhale ホームダッシュボード",
+        MessageId::HomeDashboardTitle => "deepseek ホームダッシュボード",
         MessageId::HomeModel => "モデル：",
         MessageId::HomeMode => "モード：",
         MessageId::HomeWorkspace => "ワークスペース：",
@@ -1723,7 +1723,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNoteDescription => "添加、列出、编辑或删除工作区笔记",
         MessageId::CmdThemeDescription => "切换主题：深色、浅色、灰度或系统",
         MessageId::CmdProviderDescription => {
-            "切换或查看当前 LLM 后端（codewhale | nvidia-nim | ollama）"
+            "切换或查看当前 LLM 后端（deepseek | nvidia-nim | ollama）"
         }
         MessageId::CmdQueueDescription => "查看或编辑已排队的消息",
         MessageId::CmdRecallDescription => "搜索此前的循环归档（基于消息文本的 BM25 检索）",
@@ -1878,7 +1878,7 @@ fn chinese_simplified(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "提示：API 密钥可在控制台中获取。",
         MessageId::SubagentsFetching => "正在获取子代理状态...",
         MessageId::HelpUnknownCommand => "未知命令：{topic}",
-        MessageId::HomeDashboardTitle => "codewhale 主面板",
+        MessageId::HomeDashboardTitle => "deepseek 主面板",
         MessageId::HomeModel => "模型：",
         MessageId::HomeMode => "模式：",
         MessageId::HomeWorkspace => "工作区：",
@@ -2057,7 +2057,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNoteDescription => "Adicionar, listar, editar ou remover notas do workspace",
         MessageId::CmdThemeDescription => "Alternar tema: escuro, claro, tons de cinza ou sistema",
         MessageId::CmdProviderDescription => {
-            "Trocar ou exibir o backend LLM ativo (codewhale | nvidia-nim | ollama)"
+            "Trocar ou exibir o backend LLM ativo (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "Ver ou editar mensagens enfileiradas",
         MessageId::CmdRecallDescription => {
@@ -2250,7 +2250,7 @@ fn portuguese_brazil(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "Dica: chaves de API estão disponíveis no console do painel.",
         MessageId::SubagentsFetching => "Buscando status dos sub-agentes...",
         MessageId::HelpUnknownCommand => "Comando desconhecido: {topic}",
-        MessageId::HomeDashboardTitle => "Painel Inicial do codewhale",
+        MessageId::HomeDashboardTitle => "Painel Inicial do deepseek",
         MessageId::HomeModel => "Modelo:",
         MessageId::HomeMode => "Modo:",
         MessageId::HomeWorkspace => "Workspace:",
@@ -2455,7 +2455,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::CmdNoteDescription => "Agregar nota al archivo persistente (.deepseek/notes.md)",
         MessageId::CmdThemeDescription => "Alternar entre tema claro y oscuro",
         MessageId::CmdProviderDescription => {
-            "Cambiar o mostrar el backend LLM activo (codewhale | nvidia-nim | ollama)"
+            "Cambiar o mostrar el backend LLM activo (deepseek | nvidia-nim | ollama)"
         }
         MessageId::CmdQueueDescription => "Ver o editar mensajes en cola",
         MessageId::CmdRecallDescription => {
@@ -2654,7 +2654,7 @@ fn spanish_latin_america(id: MessageId) -> Option<&'static str> {
         MessageId::LinksTip => "Tip: las claves de API están disponibles en la consola del panel.",
         MessageId::SubagentsFetching => "Obteniendo estado de los sub-agentes...",
         MessageId::HelpUnknownCommand => "Comando desconocido: {topic}",
-        MessageId::HomeDashboardTitle => "Panel Inicial de codewhale",
+        MessageId::HomeDashboardTitle => "Panel Inicial de deepseek",
         MessageId::HomeModel => "Modelo:",
         MessageId::HomeMode => "Modo:",
         MessageId::HomeWorkspace => "Workspace:",

@@ -49,7 +49,7 @@ sha256sum -c deepseek-artifacts-sha256.txt --ignore-missing`,
   "linux-arm64": `curl -fsSL -O https://github.com/coohu//releases/latest/download/deepseek-artifacts-sha256.txt
 sha256sum -c deepseek-artifacts-sha256.txt --ignore-missing`,
   "windows-x64": `# PowerShell
-Get-FileHash "$Env:USERPROFILE\\bin\\codewhale.exe" -Algorithm SHA256
+Get-FileHash "$Env:USERPROFILE\\bin\\deepseek.exe" -Algorithm SHA256
 Get-FileHash "$Env:USERPROFILE\\bin\\deepseek-tui.exe" -Algorithm SHA256`,
 };
 

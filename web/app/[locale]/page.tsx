@@ -152,8 +152,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 {isZh ? (
                   <>
                     <span className="comment"># npm（推荐，无需 Rust 工具链）</span>{"\n"}
-                    <span className="prompt">$</span> npm install -g codewhale{"\n"}
-                    <span className="prompt">$</span> codewhale{"\n"}
+                    <span className="prompt">$</span> npm install -g deepseek{"\n"}
+                    <span className="prompt">$</span> deepseek{"\n"}
                     <br />
                     <span className="comment"># Cargo / Homebrew / 直接下载请见</span>{"\n"}
                     <span className="comment"># <span className="key">/install</span></span>
@@ -161,8 +161,8 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 ) : (
                   <>
                     <span className="comment"># npm — no Rust toolchain required</span>{"\n"}
-                    <span className="prompt">$</span> npm install -g codewhale{"\n"}
-                    <span className="prompt">$</span> codewhale{"\n"}
+                    <span className="prompt">$</span> npm install -g deepseek{"\n"}
+                    <span className="prompt">$</span> deepseek{"\n"}
                     <br />
                     <span className="comment"># Cargo / Homebrew / direct download:</span>{"\n"}
                     <span className="comment"># <span className="key">/install</span></span>

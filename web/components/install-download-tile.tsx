@@ -9,24 +9,24 @@ const BASE =
 
 const ASSETS: Record<Arch, { zip: string; sha: string }> = {
   "macos-arm64": {
-    zip: `${BASE}/codewhale-macos-arm64.zip`,
-    sha: `${BASE}/codewhale-artifacts-sha256.txt`,
+    zip: `${BASE}/deepseek-macos-arm64.zip`,
+    sha: `${BASE}/deepseek-artifacts-sha256.txt`,
   },
   "macos-x64": {
-    zip: `${BASE}/codewhale-macos-x64.zip`,
-    sha: `${BASE}/codewhale-artifacts-sha256.txt`,
+    zip: `${BASE}/deepseek-macos-x64.zip`,
+    sha: `${BASE}/deepseek-artifacts-sha256.txt`,
   },
   "linux-x64": {
-    zip: `${BASE}/codewhale-linux-x64.zip`,
-    sha: `${BASE}/codewhale-artifacts-sha256.txt`,
+    zip: `${BASE}/deepseek-linux-x64.zip`,
+    sha: `${BASE}/deepseek-artifacts-sha256.txt`,
   },
   "linux-arm64": {
-    zip: `${BASE}/codewhale-linux-arm64.zip`,
-    sha: `${BASE}/codewhale-artifacts-sha256.txt`,
+    zip: `${BASE}/deepseek-linux-arm64.zip`,
+    sha: `${BASE}/deepseek-artifacts-sha256.txt`,
   },
   "windows-x64": {
-    zip: `${BASE}/codewhale-windows-x64.zip`,
-    sha: `${BASE}/codewhale-artifacts-sha256.txt`,
+    zip: `${BASE}/deepseek-windows-x64.zip`,
+    sha: `${BASE}/deepseek-artifacts-sha256.txt`,
   },
 };
 

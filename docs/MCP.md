@@ -1,6 +1,6 @@
 # MCP (External Tool Servers)
 
-codewhale can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
+deepseek can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
 
 Browsing note:
 - `web.run` is the canonical built-in browsing tool.
@@ -9,7 +9,7 @@ Browsing note:
 Server mode note:
 - `deepseek-tui serve --mcp` runs the MCP stdio server.
 - `deepseek-tui serve --http` runs the runtime HTTP/SSE API (separate mode).
-- The `codewhale` dispatcher exposes `codewhale mcp-server` as an equivalent stdio
+- The `deepseek` dispatcher exposes `deepseek mcp-server` as an equivalent stdio
   entrypoint used by the split CLI.
 
 ## Bootstrap MCP Config
@@ -133,11 +133,11 @@ You can register your local DeepSeek binary as an MCP server so other DeepSeek s
 deepseek-tui mcp add-self
 ```
 
-This resolves the current binary path, generates a config entry that runs `deepseek-tui serve --mcp`, and writes it to your MCP config file. The default server name is `codewhale`.
+This resolves the current binary path, generates a config entry that runs `deepseek-tui serve --mcp`, and writes it to your MCP config file. The default server name is `deepseek`.
 
 Options:
 
-- `--name <NAME>` — custom server name (default: `codewhale`)
+- `--name <NAME>` — custom server name (default: `deepseek`)
 - `--workspace <PATH>` — workspace directory for the server
 
 ### Manual Config
@@ -147,8 +147,8 @@ Equivalent manual entry in `~/.deepseek/mcp.json`:
 ```json
 {
   "servers": {
-    "codewhale": {
-      "command": "/path/to/codewhale",
+    "deepseek": {
+      "command": "/path/to/deepseek",
       "args": ["serve", "--mcp"],
       "env": {}
     }
@@ -156,9 +156,9 @@ Equivalent manual entry in `~/.deepseek/mcp.json`:
 }
 ```
 
-The `deepseek-tui` binary supports `serve --mcp` directly. The `codewhale`
-dispatcher offers the equivalent `codewhale mcp-server` stdio entrypoint. Use
-whichever is on your `PATH` (run `which codewhale` or `which deepseek-tui` to
+The `deepseek-tui` binary supports `serve --mcp` directly. The `deepseek`
+dispatcher offers the equivalent `deepseek mcp-server` stdio entrypoint. Use
+whichever is on your `PATH` (run `which deepseek` or `which deepseek-tui` to
 find the full path). The `mcp add-self` command automatically resolves the
 correct binary.
 
@@ -172,7 +172,7 @@ correct binary.
 
 Tools from a self-hosted DeepSeek server follow the standard naming convention:
 
-- `mcp_deepseek_<tool>` (if the server is named `codewhale`)
+- `mcp_deepseek_<tool>` (if the server is named `deepseek`)
 
 For example, the `shell` tool becomes `mcp_deepseek_shell`.
 
@@ -195,7 +195,7 @@ After adding, test the connection:
 
 ```bash
 deepseek-tui mcp validate
-deepseek-tui mcp tools codewhale
+deepseek-tui mcp tools deepseek
 ```
 
 ## Server Fields

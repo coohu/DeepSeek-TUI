@@ -10,7 +10,7 @@
  *   - <repo>/crates/tui/src/sandbox/*.rs        → sandbox backends
  *   - <repo>/crates/tui/src/main.rs             → provider list (--provider arms)
  *   - <repo>/crates/tui/src/config.rs           → DEFAULT_TEXT_MODEL
- *   - <repo>/npm/codewhale/package.json         → node engines
+ *   - <repo>/npm/deepseek/package.json         → node engines
  */
 import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -89,7 +89,7 @@ function deriveDefaultModel() {
 }
 
 function deriveNodeEngines() {
-  const pkg = read("npm/codewhale/package.json");
+  const pkg = read("npm/deepseek/package.json");
   if (!pkg) return null;
   try {
     return JSON.parse(pkg).engines?.node ?? null;

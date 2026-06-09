@@ -1,14 +1,14 @@
 # CodeWhale
 
-> Terminal coding agent for DeepSeek V4. It runs from the `codewhale` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
+> Terminal coding agent for DeepSeek V4. It runs from the `deepseek` command, streams reasoning blocks, edits local workspaces with approval gates, and includes an auto mode that chooses both model and thinking level per turn.
 
 [简体中文 README](README.zh-CN.md)
 [日本語 README](README.ja-JP.md)
 
 ## Install
 
-`codewhale` installs as a matched pair of self-contained Rust release binaries:
-the `codewhale` dispatcher command and the sibling `deepseek-tui` runtime it
+`deepseek` installs as a matched pair of self-contained Rust release binaries:
+the `deepseek` dispatcher command and the sibling `deepseek-tui` runtime it
 launches for interactive sessions. npm, Homebrew, and Docker install both for
 you; Cargo and manual installs must put both binaries in the same directory
 (normally a directory on your `PATH`). The npm package is only an
@@ -34,13 +34,13 @@ brew install
 #    Prebuilt for Linux x64/ARM64, macOS x64/ARM64, Windows x64.
 
 # 5. Docker — prebuilt release image.
-docker volume create codewhale-home
+docker volume create deepseek-home
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v deepseek-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/deepseek:latest
 ```
 
 > In mainland China, speed up the npm path with
@@ -67,7 +67,7 @@ cargo install -g @coohu/     --locked --force
 [![crates.io](https://img.shields.io/crates/v/-cli?label=crates.io)](https://crates.io/crates/-cli)
 [DeepWiki project index](https://deepwiki.com/coohu/DeepSeek-TUI)
 
-![codewhale screenshot](assets/screenshot.png)
+![deepseek screenshot](assets/screenshot.png)
 
 ---
 
@@ -85,7 +85,7 @@ CodeWhale is that harness, built around DeepSeek V4 and guided by three ideas:
 | **Clear jurisdiction** | A written Constitution with nine tiers of authority. User intent outranks stale instructions. Verification outranks confidence. |
 | **Recursive improvement** | V4 helped write the harness. As the harness improves, V4 becomes more effective — and helps improve the harness further. Each turn starts stronger. |
 
-It's open source, terminal-native, and packaged as a matched `codewhale` /
+It's open source, terminal-native, and packaged as a matched `deepseek` /
 `deepseek-tui` Rust binary pair.
 
 ## How the Harness Works
@@ -147,7 +147,7 @@ cache hit/miss breakdowns.
 
 ## The Harness
 
-`codewhale` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
+`deepseek` (dispatcher CLI) → `deepseek-tui` (companion binary) → ratatui interface ↔ async engine ↔ OpenAI-compatible streaming client. Tool calls route through a typed registry (shell, file ops, git, web, sub-agents, MCP, RLM) and results stream back into the transcript. The engine manages session state, turn tracking, the durable task queue, and an LSP subsystem that feeds post-edit diagnostics into the model's context before the next reasoning step.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full walkthrough.
 
@@ -157,7 +157,7 @@ CodeWhale can dispatch multiple sub-agents that run in parallel — like a concu
 
 - **Non-blocking launch.** `agent_open` returns immediately. The child gets its own fresh context and tool registry and runs independently. The parent keeps working.
 - **Background execution.** Sub-agents execute concurrently (default cap: 10, configurable to 20). The engine manages the pool — no polling loop needed.
-- **Completion notification.** When a sub-agent finishes, the runtime injects a `<codewhale:subagent.done>` sentinel into the parent's transcript. The human-readable summary — including the child's findings, changed files, and any risks — sits on the line immediately before the sentinel. The parent model reads that summary and integrates findings without an extra tool call.
+- **Completion notification.** When a sub-agent finishes, the runtime injects a `<deepseek:subagent.done>` sentinel into the parent's transcript. The human-readable summary — including the child's findings, changed files, and any risks — sits on the line immediately before the sentinel. The parent model reads that summary and integrates findings without an extra tool call.
 - **Bounded result retrieval.** The full child transcript lives behind a `transcript_handle` accessible through `agent_eval`. When the summary isn't enough, the parent calls `handle_read` for slices, line ranges, or JSONPath projections — keeping the parent context lean without losing access to the details.
 
 See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
@@ -167,34 +167,34 @@ See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for the full sub-agent reference.
 ## Quickstart
 
 ```bash
-npm install -g codewhale
-codewhale --version
-codewhale --model auto
+npm install -g deepseek
+deepseek --version
+deepseek --model auto
 ```
 
 Prebuilt binary pairs and platform archives are published for **Linux x64**, **Linux ARM64** (v0.8.8+), **macOS x64**, **macOS ARM64**, and **Windows x64**. For other targets (musl, riscv64, FreeBSD, etc.), see [Install from source](#install-from-source) or [docs/INSTALL.md](docs/INSTALL.md).
 
-On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.codewhale/config.toml` (legacy `~/.deepseek/config.toml` also supported) so it works from any directory without OS credential prompts.
+On first launch you'll be prompted for your [DeepSeek API key](https://platform.deepseek.com/api_keys). The key is saved to `~/.deepseek/config.toml` (legacy `~/.deepseek/config.toml` also supported) so it works from any directory without OS credential prompts.
 
 You can also set it ahead of time:
 
 ```bash
-codewhale auth set --provider deepseek   # saves to ~/.codewhale/config.toml
-codewhale auth status                    # shows the active credential source
+deepseek auth set --provider deepseek   # saves to ~/.deepseek/config.toml
+deepseek auth status                    # shows the active credential source
 
 export DEEPSEEK_API_KEY="YOUR_KEY"      # env var alternative; use ~/.zshenv for non-interactive shells
-codewhale
+deepseek
 
-codewhale doctor                         # verify setup
+deepseek doctor                         # verify setup
 ```
 
-If `codewhale doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
+If `deepseek doctor` says the rejected key came from `DEEPSEEK_API_KEY`, remove
 the stale export from your shell startup file, open a fresh shell, or run
-`codewhale auth set --provider deepseek`. Use `codewhale auth status` to see the
+`deepseek auth set --provider deepseek`. Use `deepseek auth status` to see the
 config, keyring, and env-var source state without printing the key. Saved config
 keys take precedence over the keyring and environment and are easier to rotate.
 
-> To rotate or remove a saved key: `codewhale auth clear --provider deepseek`.
+> To rotate or remove a saved key: `deepseek auth clear --provider deepseek`.
 
 ### Tencent Cloud / CNB Remote-First Path
 
@@ -209,7 +209,7 @@ server runbook.
 
 ### Auto Mode
 
-Use `codewhale --model auto` or `/model auto` when you want codewhale to decide how much model and reasoning power a turn needs.
+Use `deepseek --model auto` or `/model auto` when you want deepseek to decide how much model and reasoning power a turn needs.
 
 Auto mode controls two settings together:
 
@@ -218,7 +218,7 @@ Auto mode controls two settings together:
 
 Before the real turn is sent, the app makes a small `deepseek-v4-flash` routing call with thinking off. That router looks at the latest request and recent context, then selects a concrete model and thinking level for the real request. Short/simple turns can stay on Flash with thinking off; coding, debugging, release work, architecture, security review, or ambiguous multi-step tasks can move up to Pro and/or higher thinking.
 
-`auto` is local to codewhale. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
+`auto` is local to deepseek. The upstream API never receives `model: "auto"`; it receives the concrete model and thinking setting chosen for that turn. The TUI shows the selected route, and cost tracking is charged against the model that actually ran. If the router call fails or returns an invalid answer, the app falls back to a local heuristic. Sub-agents inherit auto mode unless you assign them an explicit model.
 
 Use a fixed model or fixed thinking level when you want repeatable benchmarking, a strict cost ceiling, or a specific provider/model mapping.
 
@@ -242,24 +242,24 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 Then install both binaries (the dispatcher delegates to the TUI at runtime):
 
 ```bash
-cargo install codewhale-cli --locked   # provides `codewhale`
+cargo install deepseek-cli --locked   # provides `deepseek`
 cargo install deepseek-tui     --locked   # provides `deepseek-tui`
-codewhale --version
+deepseek --version
 ```
 
 Prebuilt binaries can also be downloaded from [GitHub Releases](https://github.com/coohu/DeepSeek-TUI/releases). Use `DEEPSEEK_TUI_RELEASE_BASE_URL` for mirrored release assets.
 
 ### Windows (Scoop)
 
-[Scoop](https://scoop.sh) is a Windows package manager. The `codewhale` package is listed
+[Scoop](https://scoop.sh) is a Windows package manager. The `deepseek` package is listed
 in Scoop's main bucket, but that manifest updates independently and can lag the
 GitHub/npm/Cargo release. Run `scoop update` first, then verify the installed
-version with `codewhale --version`:
+version with `deepseek --version`:
 
 ```bash
 scoop update
-scoop install codewhale
-codewhale --version
+scoop install deepseek
+deepseek --version
 ```
 
 Use npm or direct GitHub release downloads when you need the newest release
@@ -279,7 +279,7 @@ Works on any Tier-1 Rust target — including musl, riscv64, FreeBSD, and older 
 git clone https://github.com/coohu/DeepSeek-TUI.git
 cd DeepSeek-TUI
 
-cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `codewhale`
+cargo install --path crates/cli --locked   # requires Rust 1.88+; provides `deepseek`
 cargo install --path crates/tui --locked   # provides `deepseek-tui`
 ```
 
@@ -294,44 +294,44 @@ base URLs, and capability boundaries, see [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
 ```bash
 # NVIDIA NIM
-codewhale auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
-codewhale --provider nvidia-nim
+deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"
+deepseek --provider nvidia-nim
 
 # AtlasCloud
-codewhale auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
-codewhale --provider atlascloud
+deepseek auth set --provider atlascloud --api-key "YOUR_ATLASCLOUD_API_KEY"
+deepseek --provider atlascloud
 
 # Wanjie Ark
-codewhale auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
-codewhale --provider wanjie-ark --model deepseek-reasoner
+deepseek auth set --provider wanjie-ark --api-key "YOUR_WANJIE_API_KEY"
+deepseek --provider wanjie-ark --model deepseek-reasoner
 
 # OpenRouter
-codewhale auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
-codewhale --provider openrouter --model deepseek/deepseek-v4-pro
+deepseek auth set --provider openrouter --api-key "YOUR_OPENROUTER_API_KEY"
+deepseek --provider openrouter --model deepseek/deepseek-v4-pro
 
 # Novita
-codewhale auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
-codewhale --provider novita --model deepseek/deepseek-v4-pro
+deepseek auth set --provider novita --api-key "YOUR_NOVITA_API_KEY"
+deepseek --provider novita --model deepseek/deepseek-v4-pro
 
 # Fireworks
-codewhale auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
-codewhale --provider fireworks --model deepseek-v4-pro
+deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"
+deepseek --provider fireworks --model deepseek-v4-pro
 
 # Generic OpenAI-compatible endpoint
-codewhale auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
-OPENAI_BASE_URL="https://openai-compatible.example/v4" codewhale --provider openai --model glm-5
+deepseek auth set --provider openai --api-key "YOUR_OPENAI_COMPATIBLE_API_KEY"
+OPENAI_BASE_URL="https://openai-compatible.example/v4" deepseek --provider openai --model glm-5
 
 # Self-hosted SGLang
-SGLANG_BASE_URL="http://localhost:30000/v1" codewhale --provider sglang --model deepseek-v4-flash
+SGLANG_BASE_URL="http://localhost:30000/v1" deepseek --provider sglang --model deepseek-v4-flash
 
 # Self-hosted vLLM
-VLLM_BASE_URL="http://localhost:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+VLLM_BASE_URL="http://localhost:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
 # Trusted LAN vLLM over HTTP
-DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" codewhale --provider vllm --model deepseek-v4-flash
+DEEPSEEK_ALLOW_INSECURE_HTTP=1 VLLM_BASE_URL="http://192.168.0.110:8000/v1" deepseek --provider vllm --model deepseek-v4-flash
 
 # Self-hosted Ollama
-ollama pull codewhale-coder:1.3b
-codewhale --provider ollama --model codewhale-coder:1.3b
+ollama pull deepseek-coder:1.3b
+deepseek --provider ollama --model deepseek-coder:1.3b
 ```
 
 Inside the TUI, `/provider` opens the provider picker and `/model` opens the
@@ -352,38 +352,38 @@ interfaces, and extension points.
 ## Usage
 
 ```bash
-codewhale                                         # interactive TUI
-codewhale "explain this function"                 # one-shot prompt
-codewhale exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
-codewhale exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
-codewhale --model deepseek-v4-flash "summarize"   # model override
-codewhale --model auto "fix this bug"             # auto-select model + thinking
-codewhale --yolo                                  # auto-approve tools
-codewhale auth set --provider deepseek            # save API key
-codewhale doctor                                  # check setup & connectivity
-codewhale doctor --json                           # machine-readable diagnostics
-codewhale setup --status                          # read-only setup status
-codewhale setup --tools --plugins                 # scaffold tool/plugin dirs
-codewhale models                                  # list live API models
-codewhale sessions                                # list saved sessions
-codewhale resume --last                           # resume the most recent session in this workspace
-codewhale resume <SESSION_ID>                     # resume a specific session by UUID
-codewhale fork <SESSION_ID>                       # fork a saved session into a sibling path
-codewhale serve --http                            # HTTP/SSE API server
-codewhale serve --acp                             # ACP stdio adapter for Zed/custom agents
-codewhale run pr <N>                              # fetch PR and pre-seed review prompt
-codewhale mcp list                                # list configured MCP servers
-codewhale mcp validate                            # validate MCP config/connectivity
-codewhale mcp-server                              # run dispatcher MCP stdio server
-codewhale update                                  # check for and apply binary updates
+deepseek                                         # interactive TUI
+deepseek "explain this function"                 # one-shot prompt
+deepseek exec --auto --output-format stream-json "fix this bug"  # NDJSON backend stream
+deepseek exec --resume <SESSION_ID> "follow up"  # continue a non-interactive session
+deepseek --model deepseek-v4-flash "summarize"   # model override
+deepseek --model auto "fix this bug"             # auto-select model + thinking
+deepseek --yolo                                  # auto-approve tools
+deepseek auth set --provider deepseek            # save API key
+deepseek doctor                                  # check setup & connectivity
+deepseek doctor --json                           # machine-readable diagnostics
+deepseek setup --status                          # read-only setup status
+deepseek setup --tools --plugins                 # scaffold tool/plugin dirs
+deepseek models                                  # list live API models
+deepseek sessions                                # list saved sessions
+deepseek resume --last                           # resume the most recent session in this workspace
+deepseek resume <SESSION_ID>                     # resume a specific session by UUID
+deepseek fork <SESSION_ID>                       # fork a saved session into a sibling path
+deepseek serve --http                            # HTTP/SSE API server
+deepseek serve --acp                             # ACP stdio adapter for Zed/custom agents
+deepseek run pr <N>                              # fetch PR and pre-seed review prompt
+deepseek mcp list                                # list configured MCP servers
+deepseek mcp validate                            # validate MCP config/connectivity
+deepseek mcp-server                              # run dispatcher MCP stdio server
+deepseek update                                  # check for and apply binary updates
 ```
 
 ### Branching Conversations
 
-Saved sessions are intentionally branchable. `codewhale fork <SESSION_ID>` copies
+Saved sessions are intentionally branchable. `deepseek fork <SESSION_ID>` copies
 an existing saved session into a new sibling session, records the parent session
 id in metadata, and opens that fork so you can explore an alternate direction
-without polluting the original path. The session picker and `codewhale sessions`
+without polluting the original path. The session picker and `deepseek sessions`
 mark forked sessions with their parent id.
 
 Inside the TUI, Esc-Esc backtrack can rewind the active transcript to a prior
@@ -394,14 +394,14 @@ from side-git snapshots but do not rewrite conversation history.
 Docker images are published to GHCR for release builds:
 
 ```bash
-docker volume create codewhale-home
+docker volume create deepseek-home
 
 docker run --rm -it \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-  -v codewhale-home:/home/codewhale/.codewhale \
+  -v deepseek-home:/home/deepseek/.deepseek \
   -v "$PWD:/workspace" \
   -w /workspace \
-  ghcr.io/hmbown/codewhale:latest
+  ghcr.io/hmbown/deepseek:latest
 ```
 
 See [docs/DOCKER.md](docs/DOCKER.md) for pinned tags, local image builds,
@@ -417,7 +417,7 @@ spawn local ACP agents over stdio. In Zed, add a custom agent server:
   "agent_servers": {
     "DeepSeek": {
       "type": "custom",
-      "command": "codewhale",
+      "command": "deepseek",
       "args": ["serve", "--acp"],
       "env": {}
     }
@@ -429,8 +429,8 @@ The first ACP slice supports new sessions and prompt responses through your
 existing DeepSeek config/API key. Tool-backed editing and checkpoint replay are
 not exposed through ACP yet.
 
-Community-maintained adapter: [acp-codewhale-adapter](https://github.com/rockeverm3m/acp-codewhale-adapter)
-bridges `codewhale exec --auto` to `cc-connect` for users who need tool-backed
+Community-maintained adapter: [acp-deepseek-adapter](https://github.com/rockeverm3m/acp-deepseek-adapter)
+bridges `deepseek exec --auto` to `cc-connect` for users who need tool-backed
 ACP workflows outside the built-in Zed slice.
 
 ### Keyboard Shortcuts
@@ -464,7 +464,7 @@ Full shortcut catalog: [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md).
 
 ## Configuration
 
-User config: `~/.codewhale/config.toml` (legacy `~/.deepseek/config.toml` fallback). Project overlay: `<workspace>/.codewhale/config.toml` (legacy `<workspace>/.deepseek/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
+User config: `~/.deepseek/config.toml` (legacy `~/.deepseek/config.toml` fallback). Project overlay: `<workspace>/.deepseek/config.toml` (legacy `<workspace>/.deepseek/config.toml`) (denied: `api_key`, `base_url`, `provider`, `mcp_config_path`). [config.example.toml](config.example.toml) has every option.
 
 Key environment variables:
 
@@ -517,7 +517,7 @@ Legacy aliases `deepseek-chat` / `deepseek-reasoner` map to `deepseek-v4-flash` 
 
 ## Publishing Your Own Skill
 
-codewhale discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.codewhale/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
+deepseek discovers skills from workspace directories (`.agents/skills` → `skills` → `.opencode/skills` → `.claude/skills` → `.cursor/skills`) and global directories (`~/.agents/skills` → `~/.claude/skills` → `~/.deepseek/skills` → `~/.deepseek/skills`). Each skill is a directory with a `SKILL.md` file:
 
 ```text
 ~/.agents/skills/my-skill/
@@ -542,7 +542,7 @@ First launch also installs bundled system skills for common workflows:
 `skill-creator`, `delegate`, `v4-best-practices`, `plugin-creator`,
 `skill-installer`, `mcp-builder`, `documents`, `presentations`,
 `spreadsheets`, `pdf`, and `feishu`. These live under
-`~/.codewhale/skills` (or legacy `~/.deepseek/skills`) and are versioned so new bundles are added on upgrade
+`~/.deepseek/skills` (or legacy `~/.deepseek/skills`) and are versioned so new bundles are added on upgrade
 without recreating skills the user deliberately deleted.
 
 ---
@@ -576,7 +576,7 @@ Full Changelog: [CHANGELOG.md](CHANGELOG.md).
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — thank you for the models and support that power every turn. 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
 - **[DataWhale](https://github.com/datawhalechina)** 🐋 — thank you for your support and for welcoming us into the Whale Brother family. 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
-- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing codewhale support and for collaborating on a better terminal-agent experience.
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — thank you for prioritizing deepseek support and for collaborating on a better terminal-agent experience.
 - **[Open Design](https://github.com/nexu-io/open-design)** — thank you for support and collaboration around design-forward agent workflows.
 
 This project ships with help from a growing community of contributors:
@@ -602,7 +602,7 @@ This project ships with help from a growing community of contributors:
 - **[xieshutao](https://github.com/xieshutao)** — plain Markdown skill fallback (#869)
 - **[GK012](https://github.com/GK012)** — npm wrapper `--version` fallback (#885)
 - **[y0sif](https://github.com/y0sif)** — parent turn-loop wakeup after direct child sub-agent completion (#901)
-- **[mac119](https://github.com/mac119)** and **[leo119](https://github.com/leo119)** — `codewhale update` command documentation (#838, #917)
+- **[mac119](https://github.com/mac119)** and **[leo119](https://github.com/leo119)** — `deepseek update` command documentation (#838, #917)
 - **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — command-safety null-byte hardening (#706, #918)
 - **macworkers** — fork confirmation with the new session id (#600, #919)
 - **zero** and **[zerx-lab](https://github.com/zerx-lab)** — notification condition config and richer OSC 9 notification body (#820, #920)
@@ -640,7 +640,7 @@ This project ships with help from a growing community of contributors:
 - **[sximelon](https://github.com/sximelon)** — paste Enter suppression, key handler extraction (#2174, #2042)
 - **[nanookclaw](https://github.com/nanookclaw)** — search provider in doctor output (#2135)
 - **[Sskift](https://github.com/Sskift)** — CLI default env override prevention (#2119)
-- **[xin1104](https://github.com/xin1104)** — Homebrew codewhale binary install (#2105)
+- **[xin1104](https://github.com/xin1104)** — Homebrew deepseek binary install (#2105)
 - **[mrluanma](https://github.com/mrluanma)** — Metaso search provider (#2059)
 - **[Lellansin](https://github.com/Lellansin)** — skip config merge at home dir (#2055)
 - **[zhuangbiaowei](https://github.com/zhuangbiaowei)** — update release channels (#2145)

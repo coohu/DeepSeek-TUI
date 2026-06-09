@@ -158,7 +158,7 @@ pub fn init() -> Result<TuiLogGuard> {
 
 fn log_directory() -> Option<PathBuf> {
     let resolve = |base: PathBuf| -> Option<PathBuf> {
-        let primary = base.join(".codewhale").join("logs");
+        let primary = base.join(".deepseek").join("logs");
         if primary.exists() {
             return Some(primary);
         }

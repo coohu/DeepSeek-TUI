@@ -7,7 +7,7 @@
 //! - `AGENTS.md` - Generic agent instructions (compatible with other agents)
 //! - `.claude/instructions.md` - Claude-style hidden instructions
 //! - `CLAUDE.md` - Claude-style instructions
-//! - `.codewhale/instructions.md` - Hidden instructions file (new)
+//! - `.deepseek/instructions.md` - Hidden instructions file (new)
 //! - `.deepseek/instructions.md` - Hidden instructions file (legacy)
 //!
 //! The loaded content is injected into the system prompt to give the agent
@@ -22,23 +22,23 @@ use thiserror::Error;
 
 /// Names of project context files to look for, in priority order.
 /// WHALE.md is the CodeWhale-native convention; AGENTS.md and CLAUDE.md
-/// provide compatibility with other coding agents. `.codewhale/` is the
+/// provide compatibility with other coding agents. `.deepseek/` is the
 /// new config directory; `.deepseek/` is the legacy fallback.
 const PROJECT_CONTEXT_FILES: &[&str] = &[
     "WHALE.md",
     "AGENTS.md",
     ".claude/instructions.md",
     "CLAUDE.md",
-    ".codewhale/instructions.md",
+    ".deepseek/instructions.md",
     ".deepseek/instructions.md",
 ];
 
 /// User-level project instructions loaded as a fallback when the workspace and
-/// its parents do not define project context. `.codewhale/` takes priority
+/// its parents do not define project context. `.deepseek/` takes priority
 /// over `.deepseek/` for both WHALE.md and AGENTS.md.
-const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".codewhale", "AGENTS.md"];
+const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
 const GLOBAL_AGENTS_LEGACY_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
-const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".codewhale", "WHALE.md"];
+const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".deepseek", "WHALE.md"];
 const GLOBAL_WHALE_LEGACY_PATH: &[&str] = &[".deepseek", "WHALE.md"];
 
 /// Maximum size for project context files (to prevent loading huge files)
@@ -511,8 +511,8 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
     let home = home_dir?;
 
     // Priority order:
-    // 1. ~/.codewhale/WHALE.md      (CodeWhale-native)
-    // 2. ~/.codewhale/AGENTS.md     (new config directory)
+    // 1. ~/.deepseek/WHALE.md      (CodeWhale-native)
+    // 2. ~/.deepseek/AGENTS.md     (new config directory)
     // 3. ~/.deepseek/WHALE.md       (legacy fallback)
     // 4. ~/.deepseek/AGENTS.md      (legacy fallback)
     let candidates: &[&[&str]] = &[
@@ -554,11 +554,11 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
 }
 
 /// Generate a context file from project tree + summary and write it to
-/// `.codewhale/instructions.md` (or `.deepseek/instructions.md` as legacy
+/// `.deepseek/instructions.md` (or `.deepseek/instructions.md` as legacy
 /// fallback). Returns the generated content on success.
 fn auto_generate_context(workspace: &Path) -> Option<String> {
-    let codewhale_dir = workspace.join(".codewhale");
-    let instructions_path = codewhale_dir.join("instructions.md");
+    let deepseek_dir = workspace.join(".deepseek");
+    let instructions_path = deepseek_dir.join("instructions.md");
     let legacy_instructions_path = workspace.join(".deepseek/instructions.md");
 
     // Don't overwrite an existing file (check both locations)
@@ -577,9 +577,9 @@ fn auto_generate_context(workspace: &Path) -> Option<String> {
          **Tree:**\n```\n{tree}\n```"
     );
 
-    // Create .codewhale/ directory
-    if let Err(e) = std::fs::create_dir_all(&codewhale_dir) {
-        tracing::warn!("Failed to create .codewhale/ directory: {e}");
+    // Create .deepseek/ directory
+    if let Err(e) = std::fs::create_dir_all(&deepseek_dir) {
+        tracing::warn!("Failed to create .deepseek/ directory: {e}");
         return None;
     }
 

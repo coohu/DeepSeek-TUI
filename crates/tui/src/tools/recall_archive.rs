@@ -162,8 +162,8 @@ fn archive_root(session_id: &str) -> Result<PathBuf, std::io::Error> {
             "Could not resolve home directory for cycle archive root",
         )
     })?;
-    // Use resolved sessions dir (prefers ~/.codewhale/sessions)
-    let sessions = codewhale_config::resolve_state_dir("sessions")
+    // Use resolved sessions dir (prefers ~/.deepseek/sessions)
+    let sessions = deepseek_config::resolve_state_dir("sessions")
         .unwrap_or_else(|_| home.join(".deepseek").join("sessions"));
     Ok(sessions.join(session_id).join("cycles"))
 }

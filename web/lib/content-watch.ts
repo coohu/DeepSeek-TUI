@@ -54,7 +54,7 @@ const LINK_TARGETS: { url: string; label: string }[] = [
   { url: "https://github.com/coohu//blob/main/.github/PULL_REQUEST_TEMPLATE.md", label: "PR template" },
   { url: "https://github.com/coohu/homebrew-", label: "Homebrew tap" },
   { url: "https://buymeacoffee.com/hmbown", label: "Support link (BMC)" },
-  { url: "https://registry.npmjs.org/codewhale", label: "npm package (registry API)" },
+  { url: "https://registry.npmjs.org/deepseek", label: "npm package (registry API)" },
   // crates.io intentionally not in this list — both their HTML and JSON API return 403 to
   // Cloudflare Workers, so the check produces false positives. The crate links on the site
   // still work for human users.
@@ -108,8 +108,8 @@ export async function runLinkCheck(env: WatchEnv): Promise<{ ok: boolean; checke
       id,
       type: "triage", // reuse existing draft type so /admin renders it
       targetUrl: b.url,
-      bodyEn: `**Broken link** (auto-detected by daily watch cron)\n\n- Label: **${b.label}**\n- URL: ${b.url}\n- HTTP status: ${b.status}\n- Latency: ${b.ms}ms\n\nThis URL is referenced in codewhale.net copy. Update the source page or fix the destination.\n\n— drafted by community assistant, pending maintainer review`,
-      bodyZh: `**链接失效**（每日巡检自动发现）\n\n- 名称：**${b.label}**\n- 地址：${b.url}\n- HTTP 状态：${b.status}\n- 延迟：${b.ms}ms\n\n该地址被 codewhale.net 文案引用，请更新源页面或修复目标。\n\n— 由社区助理草拟，待维护者审阅`,
+      bodyEn: `**Broken link** (auto-detected by daily watch cron)\n\n- Label: **${b.label}**\n- URL: ${b.url}\n- HTTP status: ${b.status}\n- Latency: ${b.ms}ms\n\nThis URL is referenced in deepseek.net copy. Update the source page or fix the destination.\n\n— drafted by community assistant, pending maintainer review`,
+      bodyZh: `**链接失效**（每日巡检自动发现）\n\n- 名称：**${b.label}**\n- 地址：${b.url}\n- HTTP 状态：${b.status}\n- 延迟：${b.ms}ms\n\n该地址被 deepseek.net 文案引用，请更新源页面或修复目标。\n\n— 由社区助理草拟，待维护者审阅`,
       generatedAt: new Date().toISOString(),
       posted: false,
     };
@@ -121,7 +121,7 @@ export async function runLinkCheck(env: WatchEnv): Promise<{ ok: boolean; checke
 
 // --- Semantic drift ---
 
-const SEMANTIC_DRIFT_PROMPT = `You are reviewing copy on a community website (codewhale.net) for the open-source CodeWhale project.
+const SEMANTIC_DRIFT_PROMPT = `You are reviewing copy on a community website (deepseek.net) for the open-source CodeWhale project.
 
 Given:
 1. The CHANGELOG entries below (most recent first)
@@ -222,7 +222,7 @@ export async function runSemanticDrift(env: WatchEnv): Promise<{ ok: boolean; dr
 
   const ghHeaders: Record<string, string> = {
     Accept: "application/vnd.github+json",
-    "User-Agent": "codewhale-web-semantic-drift",
+    "User-Agent": "deepseek-web-semantic-drift",
   };
   if (env.GITHUB_TOKEN) ghHeaders["Authorization"] = `Bearer ${env.GITHUB_TOKEN}`;
 
@@ -291,7 +291,7 @@ ${docsText}`;
     const draft: AgentDraft = {
       id,
       type: "triage",
-      targetUrl: `https://codewhale.net/en/${d.page === "homepage" ? "" : d.page}`,
+      targetUrl: `https://deepseek.net/en/${d.page === "homepage" ? "" : d.page}`,
       bodyEn: body,
       bodyZh: body,
       generatedAt: new Date().toISOString(),

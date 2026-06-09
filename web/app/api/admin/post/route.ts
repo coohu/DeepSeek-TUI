@@ -25,7 +25,7 @@ async function checkAuth(req: Request, env: CommunityAgentEnv): Promise<{ ok: bo
 }
 
 const ALLOWED_ACTIONS = new Set(["post", "discard"]);
-const ALLOWED_ORIGINS = new Set(["https://codewhale.net", "https://www.codewhale.net"]);
+const ALLOWED_ORIGINS = new Set(["https://deepseek.net", "https://www.deepseek.net"]);
 const MAX_BODY_BYTES = 65_536;
 
 export async function POST(req: Request) {
