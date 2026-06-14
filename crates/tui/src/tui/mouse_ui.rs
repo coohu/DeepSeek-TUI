@@ -516,6 +516,15 @@ fn sidebar_click_action(app: &App, mouse: MouseEvent) -> Option<String> {
                     .saturating_add(section.content_area.height)
             && let Some(row) = section.rows.iter().find(|row| row.row_y == mouse.row)
         {
+            if let (Some(action), Some(start), Some(end)) = (
+                row.stop_action.as_ref(),
+                row.stop_zone_start_col,
+                row.stop_zone_end_col,
+            ) && mouse.column >= start
+                && mouse.column < end
+            {
+                return Some(action.clone());
+            }
             return row.click_action.clone();
         }
     }
@@ -1141,6 +1150,23 @@ mod tests {
             detail: None,
             is_truncated: false,
             click_action: action.map(str::to_string),
+            stop_action: None,
+            stop_zone_start_col: None,
+            stop_zone_end_col: None,
+        }
+    }
+
+    fn hover_row_with_stop(row_y: u16, action: &str, stop_action: &str) -> SidebarHoverRow {
+        SidebarHoverRow {
+            row_y,
+            display_text: "job row [x]".to_string(),
+            full_text: "job row [x]".to_string(),
+            detail: None,
+            is_truncated: false,
+            click_action: Some(action.to_string()),
+            stop_action: Some(stop_action.to_string()),
+            stop_zone_start_col: Some(68),
+            stop_zone_end_col: Some(71),
         }
     }
 
@@ -1264,6 +1290,32 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_click_routes_inline_stop_zone_before_row_action() {
+        let mut app = create_test_app();
+        app.viewport.last_sidebar_area = Some(Rect::new(60, 4, 20, 4));
+        app.sidebar_hover.sections.push(SidebarHoverSection {
+            content_area: Rect::new(60, 4, 20, 4),
+            lines: vec!["job row [x]".to_string()],
+            rows: vec![hover_row_with_stop(
+                4,
+                "/jobs show shell_x",
+                "/jobs cancel shell_x",
+            )],
+        });
+
+        assert_eq!(
+            sidebar_click_action(&app, left_click(62, 4)).as_deref(),
+            Some("/jobs show shell_x"),
+            "clicking the label opens the job"
+        );
+        assert_eq!(
+            sidebar_click_action(&app, left_click(69, 4)).as_deref(),
+            Some("/jobs cancel shell_x"),
+            "clicking [x] cancels the job"
+        );
+    }
+
+    #[test]
     fn sidebar_context_menu_offers_copy_of_hovered_row() {
         let mut app = create_test_app();
         app.viewport.last_sidebar_area = Some(Rect::new(60, 4, 20, 6));
@@ -1277,6 +1329,9 @@ mod tests {
                 detail: Some("id: agent_123 · 2 step(s)".to_string()),
                 is_truncated: true,
                 click_action: None,
+                stop_action: None,
+                stop_zone_start_col: None,
+                stop_zone_end_col: None,
             }],
         });
 

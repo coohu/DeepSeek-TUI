@@ -804,6 +804,9 @@ fn loading_mouse_filter_allows_sidebar_hover_popovers() {
             detail: Some("Detailed context".to_string()),
             is_truncated: true,
             click_action: None,
+            stop_action: None,
+            stop_zone_start_col: None,
+            stop_zone_end_col: None,
         }],
     });
     let moved = MouseEvent {
@@ -3876,6 +3879,72 @@ fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
     reconcile_subagent_activity_state(&mut app);
     assert!(app.agent_progress.is_empty());
     assert!(app.agent_activity_started_at.is_none());
+}
+
+#[test]
+fn completed_subagent_cards_expire_after_ttl() {
+    let mut app = create_test_app();
+    app.subagent_cache = vec![
+        make_subagent(
+            "agent_done",
+            crate::tools::subagent::SubAgentStatus::Completed,
+        ),
+        make_subagent(
+            "agent_live",
+            crate::tools::subagent::SubAgentStatus::Running,
+        ),
+    ];
+    let now = Instant::now();
+
+    assert!(
+        !expire_completed_subagent_cards(&mut app, now),
+        "first completed observation records the deadline without removing the row"
+    );
+    assert_eq!(app.subagent_cache.len(), 2);
+    assert!(app.subagent_completed_card_at.contains_key("agent_done"));
+
+    let expired_at =
+        now + crate::tui::subagent_routing::COMPLETED_SUBAGENT_CARD_TTL + Duration::from_millis(1);
+    assert!(
+        expire_completed_subagent_cards(&mut app, expired_at),
+        "completed row should expire after the TTL"
+    );
+
+    assert_eq!(app.subagent_cache.len(), 1);
+    assert_eq!(app.subagent_cache[0].agent_id, "agent_live");
+    assert!(!app.subagent_completed_card_at.contains_key("agent_done"));
+}
+
+#[test]
+fn completed_subagent_ttl_keeps_failed_and_interrupted_cards() {
+    let mut app = create_test_app();
+    app.subagent_cache = vec![
+        make_subagent(
+            "agent_failed",
+            crate::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
+        ),
+        make_subagent(
+            "agent_interrupted",
+            crate::tools::subagent::SubAgentStatus::Interrupted("timeout".to_string()),
+        ),
+    ];
+    app.subagent_completed_card_at
+        .insert("agent_failed".to_string(), Instant::now());
+
+    assert!(!expire_completed_subagent_cards(
+        &mut app,
+        Instant::now()
+            + crate::tui::subagent_routing::COMPLETED_SUBAGENT_CARD_TTL
+            + Duration::from_secs(10)
+    ));
+
+    let ids: Vec<_> = app
+        .subagent_cache
+        .iter()
+        .map(|agent| agent.agent_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["agent_failed", "agent_interrupted"]);
+    assert!(app.subagent_completed_card_at.is_empty());
 }
 
 #[test]

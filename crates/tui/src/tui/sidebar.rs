@@ -40,6 +40,8 @@ const COST_EQ_TOLERANCE: f64 = 1e-6;
 const RECENT_TOOL_SCAN_LIMIT: usize = 24;
 const ACTIVE_TOOL_COMPLETED_ROW_TTL: Duration = Duration::from_secs(8);
 const ACTIVE_TOOL_STALE_RUNNING_ROW_TTL: Duration = Duration::from_secs(600);
+const TASK_STOP_TARGET_LABEL: &str = "[x]";
+const TASK_STOP_TARGET_SUFFIX: &str = " [x]";
 
 pub fn render_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     // Clear hover state at the start of each render
@@ -824,6 +826,22 @@ fn background_task_click_actions(task: &TaskPanelEntry) -> (String, String) {
     (show, detail)
 }
 
+fn background_task_has_stop_target(task: &TaskPanelEntry) -> bool {
+    matches!(task.status.as_str(), "running" | "queued")
+}
+
+fn label_with_stop_target(label: &str, content_width: usize) -> String {
+    if content_width == 0 {
+        return String::new();
+    }
+    let suffix_width = unicode_width::UnicodeWidthStr::width(TASK_STOP_TARGET_SUFFIX);
+    if content_width <= suffix_width {
+        return truncate_line_to_width(TASK_STOP_TARGET_LABEL, content_width);
+    }
+    let base = truncate_line_to_width(label, content_width.saturating_sub(suffix_width));
+    format!("{base}{TASK_STOP_TARGET_SUFFIX}")
+}
+
 fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &mut App) {
     if area.height < 3 {
         return;
@@ -933,10 +951,12 @@ fn task_panel_rows(
                 .unwrap_or_else(|| "-".to_string());
             let (label, detail) = background_task_labels(task, &duration);
             let (show_action, detail_action) = background_task_click_actions(task);
-            lines.push(Line::from(Span::styled(
-                truncate_line_to_width(&label, content_width.max(1)),
-                Style::default().fg(color),
-            )));
+            let label = if background_task_has_stop_target(task) {
+                label_with_stop_target(&label, content_width.max(1))
+            } else {
+                truncate_line_to_width(&label, content_width.max(1))
+            };
+            lines.push(Line::from(Span::styled(label, Style::default().fg(color))));
             actions.push(Some(show_action));
             lines.push(Line::from(Span::styled(
                 format!(
@@ -2618,6 +2638,25 @@ fn sidebar_hover_rows(
             let display_width = unicode_width::UnicodeWidthStr::width(display_text.as_str());
             let full_width = unicode_width::UnicodeWidthStr::width(full_text.as_str());
             let click_action = row_actions.get(idx).and_then(|a| a.clone());
+            let stop_action = display_text
+                .ends_with(TASK_STOP_TARGET_LABEL)
+                .then(|| row_actions.get(idx + 1).and_then(|a| a.clone()))
+                .flatten()
+                .filter(|action| action.contains(" cancel "));
+            let stop_target_width = unicode_width::UnicodeWidthStr::width(TASK_STOP_TARGET_LABEL);
+            let (stop_zone_start_col, stop_zone_end_col) =
+                if stop_action.is_some() && display_width >= stop_target_width {
+                    let visible_width = display_width.min(content_area.width as usize);
+                    let start = content_area.x.saturating_add(
+                        visible_width
+                            .saturating_sub(stop_target_width)
+                            .min(u16::MAX as usize) as u16,
+                    );
+                    let end = start.saturating_add(stop_target_width as u16);
+                    (Some(start), Some(end))
+                } else {
+                    (None, None)
+                };
             SidebarHoverRow {
                 row_y,
                 display_text: display_text.clone(),
@@ -2627,6 +2666,9 @@ fn sidebar_hover_rows(
                     || full_width > content_area.width as usize
                     || display_text != full_text,
                 click_action,
+                stop_action,
+                stop_zone_start_col,
+                stop_zone_end_col,
             }
         })
         .collect()
@@ -3444,6 +3486,10 @@ mod tests {
             .iter()
             .position(|line| line.contains("cargo build"))
             .expect("background job label row");
+        assert!(
+            text[label_idx].ends_with("[x]"),
+            "running job label row exposes a compact stop target: {text:?}"
+        );
         assert_eq!(
             actions[label_idx].as_deref(),
             Some("/jobs show shell_only"),
@@ -3503,6 +3549,10 @@ mod tests {
             .iter()
             .position(|line| line.contains("task_bbb"))
             .expect("task job label row");
+        assert!(
+            text[shell_idx].ends_with("[x]") && text[task_idx].ends_with("[x]"),
+            "running background jobs show inline stop affordances: {text:?}"
+        );
         assert_eq!(
             actions[task_idx].as_deref(),
             Some("/task show task_bbb"),
@@ -4185,8 +4235,31 @@ mod tests {
             detail: None,
             is_truncated: true,
             click_action: None,
+            stop_action: None,
+            stop_zone_start_col: None,
+            stop_zone_end_col: None,
         };
         assert_eq!(rows, vec![expected]);
+    }
+
+    #[test]
+    fn sidebar_hover_rows_assign_stop_zone_to_running_task_labels() {
+        use ratatui::layout::Rect;
+
+        let display = vec!["cargo test [x]".to_string(), "  running 1.00s".to_string()];
+        let full = display.clone();
+        let actions = vec![
+            Some("/jobs show shell_x".to_string()),
+            Some("/jobs cancel shell_x".to_string()),
+        ];
+
+        let rows = sidebar_hover_rows(Rect::new(60, 5, 20, 4), &display, &full, &actions);
+
+        assert_eq!(rows[0].click_action.as_deref(), Some("/jobs show shell_x"));
+        assert_eq!(rows[0].stop_action.as_deref(), Some("/jobs cancel shell_x"));
+        assert_eq!(rows[0].stop_zone_start_col, Some(71));
+        assert_eq!(rows[0].stop_zone_end_col, Some(74));
+        assert!(rows[1].stop_action.is_none());
     }
 
     #[test]

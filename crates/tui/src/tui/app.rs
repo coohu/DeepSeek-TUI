@@ -1252,6 +1252,10 @@ pub struct SidebarHoverRow {
     /// shell_abc123`); task-manager ids route through `/task` (e.g.
     /// `/task show task_abc123`).
     pub click_action: Option<String>,
+    /// Optional narrower stop target for rows that show an inline `[x]`.
+    pub stop_action: Option<String>,
+    pub stop_zone_start_col: Option<u16>,
+    pub stop_zone_end_col: Option<u16>,
 }
 
 /// Per-section metadata for sidebar hover detection.
@@ -1541,6 +1545,8 @@ pub struct App {
     pub stream_chunk_timeout_secs: u64,
     /// Cached sub-agent snapshots for UI views.
     pub subagent_cache: Vec<SubAgentResult>,
+    /// First local observation time for completed sub-agent snapshots.
+    pub subagent_completed_card_at: HashMap<String, Instant>,
     /// Last known per-agent progress text for running sub-agents.
     pub agent_progress: HashMap<String, String>,
     /// In-transcript sub-agent card index by `agent_id` (issue #128).
@@ -2316,6 +2322,7 @@ impl App {
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             subagent_cache: Vec::new(),
+            subagent_completed_card_at: HashMap::new(),
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
@@ -3044,6 +3051,7 @@ impl App {
         self.context_references_by_cell.clear();
         self.session_context_references.clear();
         self.session_artifacts.clear();
+        self.subagent_completed_card_at.clear();
         self.collapsed_cells.clear();
         self.expanded_tool_runs.clear();
         self.collapsed_cell_map.clear();

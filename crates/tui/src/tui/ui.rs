@@ -98,9 +98,9 @@ use crate::tui::shell_job_routing::{
 };
 use crate::tui::streaming_thinking;
 use crate::tui::subagent_routing::{
-    format_task_list, handle_subagent_mailbox, open_task_pager, reconcile_subagent_activity_state,
-    running_agent_count, sort_subagents_in_place, subagent_message_refreshes_workspace_context,
-    task_mode_label, task_summary_to_panel_entry,
+    expire_completed_subagent_cards, format_task_list, handle_subagent_mailbox, open_task_pager,
+    reconcile_subagent_activity_state, running_agent_count, sort_subagents_in_place,
+    subagent_message_refreshes_workspace_context, task_mode_label, task_summary_to_panel_entry,
 };
 #[cfg(test)]
 use crate::tui::tool_routing::exploring_label;
@@ -2433,7 +2433,7 @@ async fn run_event_loop(
                         sorted.retain(|a| !a.from_prior_session);
                         app.subagent_cache = sorted.clone();
                         reconcile_subagent_activity_state(app);
-                        let view_agents = subagent_view_agents(app, &sorted);
+                        let view_agents = subagent_view_agents(app, &app.subagent_cache);
                         if app.view_stack.update_subagents(&view_agents) {
                             app.status_message =
                                 Some(format!("Sub-agents: {} total", view_agents.len()));
@@ -2713,6 +2713,12 @@ async fn run_event_loop(
             {
                 return Ok(());
             }
+        }
+
+        if expire_completed_subagent_cards(app, Instant::now()) {
+            let view_agents = subagent_view_agents(app, &app.subagent_cache);
+            app.view_stack.update_subagents(&view_agents);
+            app.needs_redraw = true;
         }
 
         let has_running_agents = running_agent_count(app) > 0;

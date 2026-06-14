@@ -1,6 +1,6 @@
 //! Sub-agent and background-task routing helpers for the TUI loop.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
@@ -12,6 +12,8 @@ use crate::tui::widgets::agent_card::{
     AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
 };
 use crate::tui::workspace_context;
+
+pub(super) const COMPLETED_SUBAGENT_CARD_TTL: Duration = Duration::from_secs(30);
 
 pub(super) fn running_agent_count(app: &App) -> usize {
     let mut ids: std::collections::HashSet<&str> =
@@ -71,6 +73,35 @@ pub(super) fn reconcile_subagent_activity_state(app: &mut App) {
     }
 
     reconcile_cards_with_snapshots(app);
+    expire_completed_subagent_cards(app, Instant::now());
+}
+
+pub(super) fn expire_completed_subagent_cards(app: &mut App, now: Instant) -> bool {
+    let mut removed = false;
+    let completed_card_at = &mut app.subagent_completed_card_at;
+    app.subagent_cache.retain(|agent| match agent.status {
+        SubAgentStatus::Completed => {
+            let completed_at = completed_card_at
+                .entry(agent.agent_id.clone())
+                .or_insert(now);
+            let keep = now.duration_since(*completed_at) <= COMPLETED_SUBAGENT_CARD_TTL;
+            removed |= !keep;
+            keep
+        }
+        _ => {
+            completed_card_at.remove(&agent.agent_id);
+            true
+        }
+    });
+
+    let visible_completed: std::collections::HashSet<&str> = app
+        .subagent_cache
+        .iter()
+        .filter(|agent| matches!(agent.status, SubAgentStatus::Completed))
+        .map(|agent| agent.agent_id.as_str())
+        .collect();
+    completed_card_at.retain(|id, _| visible_completed.contains(id.as_str()));
+    removed
 }
 
 /// Sync in-transcript card slots that still render as running against the
