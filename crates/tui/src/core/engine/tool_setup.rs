@@ -41,7 +41,12 @@ pub(crate) fn shell_policy_for_mode(mode: AppMode, allow_shell: bool) -> ShellPo
         return ShellPolicy::None;
     }
     match mode {
-        AppMode::Plan => ShellPolicy::ReadOnly,
+        // Plan is read-only planning with no shell execution. The runtime
+        // prompt already reports `shell_access="none"` for Plan, so mapping it
+        // to `ReadOnly` here created a prompt/registry inconsistency (the
+        // registry would expose `exec_shell` while the prompt said there was
+        // no shell). Keep Plan shell-free; switch to Agent to run commands.
+        AppMode::Plan => ShellPolicy::None,
         AppMode::Agent | AppMode::Yolo => ShellPolicy::Full,
     }
 }

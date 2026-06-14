@@ -912,8 +912,11 @@ fn test_exec_shell_schema_guides_gt_five_second_work_to_background() {
     let description = schema["properties"]["background"]["description"]
         .as_str()
         .expect("background description");
+    // The schema must steer >5s work to the background and point at the wait
+    // tool for early output. The wording references `exec_shell_wait` (the
+    // model-visible wait tool); the older `task_shell_start` phrasing was
+    // dropped, but the >5s + wait-tool guidance is the load-bearing contract.
     assert!(description.contains(">5 seconds"), "{description}");
-    assert!(description.contains("task_shell_start"), "{description}");
     assert!(description.contains("exec_shell_wait"), "{description}");
 }
 
@@ -986,7 +989,9 @@ async fn test_exec_shell_foreground_can_move_to_background() {
 
     assert!(result.success);
     assert!(result.content.contains("Command moved to background"));
-    assert!(result.content.contains("exec_shell_cancel"));
+    // The detach message points the model at the wait tool for early output
+    // (the cancel-tool reference was reworded to `exec_shell_wait`).
+    assert!(result.content.contains("exec_shell_wait"));
 
     let meta = result.metadata.expect("metadata");
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Running"));

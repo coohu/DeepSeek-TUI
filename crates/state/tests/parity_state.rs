@@ -16,7 +16,10 @@ fn assert_workflow_trace_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 3);
+    // v4 (goal-progress migration) adds `thread_goals.continuation_count` on top
+    // of the v3 workflow-trace + thread_goals tables. The table set asserted
+    // below is unchanged; only the schema version advanced.
+    assert_eq!(user_version, 4);
 
     for table in [
         "workflow_runs",

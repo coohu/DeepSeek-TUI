@@ -1778,9 +1778,12 @@ fn build_tool_context_uses_typed_shell_policy_per_mode() {
     };
     let (engine, _handle) = Engine::new(config.clone(), &Config::default());
 
+    // Plan mode is shell-free: the runtime prompt reports
+    // `shell_access="none"`, so the typed policy must agree and expose no
+    // shell tools (switch to Agent to run commands). See `shell_policy_for_mode`.
     assert_eq!(
         engine.build_tool_context(AppMode::Plan, false).shell_policy,
-        crate::worker_profile::ShellPolicy::ReadOnly
+        crate::worker_profile::ShellPolicy::None
     );
     assert_eq!(
         engine

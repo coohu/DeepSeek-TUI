@@ -3042,10 +3042,18 @@ async fn subagent_session_projection(
         .as_ref()
         .map(|record| record.verification.clone())
         .unwrap_or_else(default_agent_run_verification);
+    // Status must stay coherent with the continuation flags below. An
+    // Interrupted snapshot that carries a continuable checkpoint
+    // (`continuable`/`needs_continuation` true, `terminal` true) means the
+    // worker is parked waiting for the parent to act, so it must project as
+    // `waiting_for_user` rather than a bare `interrupted`. When a worker
+    // record exists its status was already derived via
+    // `worker_status_from_subagent_result`; mirror that derivation when there
+    // is no record so both paths agree on the "needs parent action" signal.
     let status = worker_record
         .as_ref()
         .map(|record| agent_worker_status_name(record.status))
-        .unwrap_or_else(|| subagent_status_name(&snapshot.status))
+        .unwrap_or_else(|| agent_worker_status_name(worker_status_from_subagent_result(&snapshot)))
         .to_string();
 
     SubAgentSessionProjection {
