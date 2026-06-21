@@ -345,7 +345,7 @@ where
         .context("building fleet alert HTTP client")?;
     match adapter {
         FleetAlertAdapterConfig::Slack { webhook_env, .. } => {
-            let url = required_secret(resolver, webhook_env)?;
+            let url = required_https_url(resolver, webhook_env)?;
             client
                 .post(url)
                 .json(redacted_body)
@@ -358,7 +358,7 @@ where
             url_env,
             secret_env,
         } => {
-            let url = required_secret(resolver, url_env)?;
+            let url = required_https_url(resolver, url_env)?;
             let mut request = client.post(url).json(redacted_body);
             if let Some(secret_env) = secret_env {
                 request = request.header(
@@ -491,6 +491,24 @@ where
     resolver
         .resolve(name)
         .ok_or_else(|| anyhow!("fleet alert secret {name} is not configured"))
+}
+
+fn required_https_url<R>(resolver: &R, name: &str) -> Result<String>
+where
+    R: FleetAlertSecretResolver,
+{
+    let url = required_secret(resolver, name)?;
+    validate_https_alert_url(name, &url)?;
+    Ok(url)
+}
+
+fn validate_https_alert_url(name: &str, url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .with_context(|| format!("fleet alert URL from {name} is not a valid URL"))?;
+    if parsed.scheme() != "https" {
+        return Err(anyhow!("fleet alert URL from {name} must use https"));
+    }
+    Ok(())
 }
 
 fn short_reason(reason: &str) -> String {
@@ -628,6 +646,29 @@ mod tests {
         assert!(payload.contains("<redacted:env:FLEET_PD_ROUTING_KEY>"));
         assert!(!payload.contains("real-routing-key-secret"));
         assert!(payload.contains("codewhale fleet inspect worker-1"));
+    }
+
+    #[test]
+    fn fleet_alert_url_validation_requires_https() {
+        validate_https_alert_url("FLEET_WEBHOOK_URL", "https://hooks.example.invalid/fleet")
+            .expect("https alert URL should be accepted");
+
+        let err =
+            validate_https_alert_url("FLEET_WEBHOOK_URL", "http://hooks.example.invalid/fleet")
+                .expect_err("cleartext alert URL should fail");
+        assert!(format!("{err:#}").contains("must use https"));
+    }
+
+    #[test]
+    fn required_https_url_uses_secret_resolver() {
+        let mut resolver = MapResolver::default();
+        resolver.values.insert(
+            "FLEET_WEBHOOK_URL".to_string(),
+            "https://hooks.example.invalid/fleet".to_string(),
+        );
+
+        let url = required_https_url(&resolver, "FLEET_WEBHOOK_URL").expect("resolve URL");
+        assert_eq!(url, "https://hooks.example.invalid/fleet");
     }
 
     #[test]
