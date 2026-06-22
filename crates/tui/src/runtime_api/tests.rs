@@ -2245,13 +2245,34 @@ async fn session_create_from_completed_thread_saves_messages() -> Result<()> {
     assert_eq!(saved["thread_id"], thread_id);
     assert_eq!(saved["message_count"], 2);
     assert_eq!(saved["title"], "Thread title fallback");
-    let session_id = saved["session_id"]
+    let saved_session_handle = saved["session_id"]
         .as_str()
         .context("missing session id")?
         .to_string();
 
+    let session_manager = crate::session_manager::SessionManager::new(root.join("sessions"))?;
+    let created_session = session_manager.load_session_by_prefix(&saved_session_handle)?;
+    assert_eq!(created_session.metadata.title, "Thread title fallback");
+    assert_eq!(created_session.metadata.model, "deepseek-v4-pro");
+    assert_eq!(created_session.metadata.mode.as_deref(), Some("plan"));
+    assert_eq!(created_session.metadata.message_count, 2);
+    assert_eq!(created_session.messages[0].role, "user");
+    assert_eq!(created_session.messages[1].role, "assistant");
+
+    let mut endpoint_session = crate::session_manager::create_saved_session_with_id_and_mode(
+        "sess_endpoint_fetch".to_string(),
+        &created_session.messages,
+        "deepseek-v4-pro",
+        &root,
+        0,
+        None,
+        Some("plan"),
+    );
+    endpoint_session.metadata.title = "Thread title fallback".to_string();
+    session_manager.save_session(&endpoint_session)?;
+
     let detail: serde_json::Value = client
-        .get(format!("http://{addr}/v1/sessions/{session_id}"))
+        .get(format!("http://{addr}/v1/sessions/sess_endpoint_fetch"))
         .send()
         .await?
         .error_for_status()?
@@ -2280,7 +2301,7 @@ async fn session_create_from_completed_thread_saves_messages() -> Result<()> {
         .json()
         .await?;
     assert_eq!(manual_title["title"], "Manual saved title");
-    assert_ne!(manual_title["session_id"], session_id);
+    assert_ne!(manual_title["session_id"], saved_session_handle);
 
     handle.abort();
     Ok(())
