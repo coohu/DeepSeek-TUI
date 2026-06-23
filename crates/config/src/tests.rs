@@ -3019,6 +3019,26 @@ fn siliconflow_cn_config_falls_back_to_shared_table_when_unset() {
 }
 
 #[test]
+fn siliconflow_cn_first_class_config_preserves_provider_scoped_route() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let mut config = ConfigToml {
+        provider: ProviderKind::SiliconflowCN,
+        ..ConfigToml::default()
+    };
+    config.providers.siliconflow_cn.api_key = Some("sf-cn-file-key".to_string());
+    config.providers.siliconflow_cn.base_url = Some(DEFAULT_SILICONFLOW_CN_BASE_URL.to_string());
+    config.providers.siliconflow_cn.model = Some(DEFAULT_SILICONFLOW_MODEL.to_string());
+
+    let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+    assert_eq!(resolved.provider, ProviderKind::SiliconflowCN);
+    assert_eq!(resolved.api_key.as_deref(), Some("sf-cn-file-key"));
+    assert_eq!(resolved.base_url, DEFAULT_SILICONFLOW_CN_BASE_URL);
+    assert_eq!(resolved.model, DEFAULT_SILICONFLOW_MODEL);
+}
+
+#[test]
 fn moonshot_provider_defaults_to_kimi_k27_code() {
     let _lock = env_lock();
     let _env = EnvGuard::without_deepseek_runtime_overrides();
@@ -4068,6 +4088,26 @@ fn openrouter_custom_base_url_preserves_provider_model() {
     assert_eq!(resolved.provider, ProviderKind::Openrouter);
     assert_eq!(resolved.base_url, "https://gateway.example.com/v1");
     assert_eq!(resolved.model, "DeepSeek-V4-Pro");
+}
+
+#[test]
+fn openai_compatible_tokenhub_route_preserves_provider_scope() {
+    let _lock = env_lock();
+    let _env = EnvGuard::without_deepseek_runtime_overrides();
+    let mut config = ConfigToml {
+        provider: ProviderKind::Openai,
+        ..ConfigToml::default()
+    };
+    config.providers.openai.api_key = Some("tokenhub-file-key".to_string());
+    config.providers.openai.base_url = Some("https://tokenhub.tencentmaas.com/v1".to_string());
+    config.providers.openai.model = Some("deepseek-ai/DeepSeek-V4-Pro".to_string());
+
+    let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+    assert_eq!(resolved.provider, ProviderKind::Openai);
+    assert_eq!(resolved.api_key.as_deref(), Some("tokenhub-file-key"));
+    assert_eq!(resolved.base_url, "https://tokenhub.tencentmaas.com/v1");
+    assert_eq!(resolved.model, "deepseek-ai/DeepSeek-V4-Pro");
 }
 
 #[test]

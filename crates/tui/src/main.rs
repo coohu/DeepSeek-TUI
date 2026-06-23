@@ -3412,6 +3412,7 @@ fn run_doctor_json(
         },
         "base_url": crate::client::redact_url_for_display(&api_target.base_url),
         "default_text_model": api_target.model,
+        "route": doctor_route_report(config),
         "strict_tool_mode": {
             "enabled": strict_tool_mode.enabled,
             "status": strict_tool_mode.status,
@@ -3539,6 +3540,120 @@ fn provider_capability_report(config: &Config) -> serde_json::Value {
         "request_payload_mode": serde_json::to_value(cap.request_payload_mode).unwrap_or_default(),
         "alias_deprecation": cap.alias_deprecation,
     })
+}
+
+fn doctor_route_report(config: &Config) -> serde_json::Value {
+    use serde_json::json;
+
+    let target = doctor_api_target(config);
+    let provider = config.api_provider();
+    let redacted_base_url = crate::client::redact_url_for_display(&target.base_url);
+
+    json!({
+        "provider": target.provider,
+        "provider_source": doctor_provider_source(config),
+        "provider_config_table": provider_config_table_key(provider),
+        "model": target.model,
+        "wire_protocol": doctor_wire_protocol(provider),
+        "base_url": {
+            "redacted": redacted_base_url,
+            "class": doctor_base_url_class(provider, &target.base_url),
+            "fingerprint": crate::utils::redacted_identifier_for_log(&target.base_url),
+        },
+        "auth": {
+            "scheme": doctor_auth_scheme(config),
+            "source": doctor_api_key_source_label(resolve_api_key_source(config)),
+        },
+    })
+}
+
+fn doctor_provider_source(config: &Config) -> &'static str {
+    if config
+        .provider
+        .as_ref()
+        .is_some_and(|provider| !provider.trim().is_empty())
+    {
+        "config"
+    } else {
+        "default"
+    }
+}
+
+fn doctor_wire_protocol(provider: crate::config::ApiProvider) -> &'static str {
+    match provider
+        .metadata()
+        .map(|metadata| metadata.wire())
+        .unwrap_or(codewhale_config::provider::WireFormat::ChatCompletions)
+    {
+        codewhale_config::provider::WireFormat::ChatCompletions => "chat_completions",
+        codewhale_config::provider::WireFormat::Responses => "responses",
+        codewhale_config::provider::WireFormat::AnthropicMessages => "anthropic_messages",
+    }
+}
+
+fn doctor_base_url_class(provider: crate::config::ApiProvider, base_url: &str) -> &'static str {
+    let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
+    if normalized.starts_with("http://localhost")
+        || normalized.starts_with("http://127.0.0.1")
+        || normalized.starts_with("http://[::1]")
+    {
+        return "local";
+    }
+    if normalized
+        == provider
+            .default_base_url()
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+    {
+        "default"
+    } else {
+        "custom"
+    }
+}
+
+fn doctor_auth_scheme(config: &Config) -> &'static str {
+    let provider = config.api_provider();
+    if provider == crate::config::ApiProvider::Anthropic {
+        "x-api-key"
+    } else if provider == crate::config::ApiProvider::XiaomiMimo
+        && (doctor_xiaomi_mimo_base_url_uses_token_plan(&config.deepseek_base_url())
+            || config
+                .deepseek_api_key()
+                .ok()
+                .is_some_and(|key| key.trim_start().starts_with("tp-")))
+    {
+        "api-key"
+    } else if matches!(
+        provider,
+        crate::config::ApiProvider::Sglang
+            | crate::config::ApiProvider::Vllm
+            | crate::config::ApiProvider::Ollama
+    ) && config.deepseek_api_key().is_err()
+    {
+        "none"
+    } else {
+        "bearer"
+    }
+}
+
+fn doctor_xiaomi_mimo_base_url_uses_token_plan(base_url: &str) -> bool {
+    let normalized = base_url.trim_end_matches('/').to_ascii_lowercase();
+    [
+        crate::config::XIAOMI_MIMO_TOKEN_PLAN_CN_BASE_URL,
+        crate::config::XIAOMI_MIMO_TOKEN_PLAN_SGP_BASE_URL,
+        crate::config::XIAOMI_MIMO_TOKEN_PLAN_AMS_BASE_URL,
+    ]
+    .iter()
+    .any(|candidate| normalized == candidate.trim_end_matches('/').to_ascii_lowercase())
+}
+
+fn doctor_api_key_source_label(source: ApiKeySource) -> &'static str {
+    match source {
+        ApiKeySource::Env => "env",
+        ApiKeySource::Config => "config",
+        ApiKeySource::Keyring => "keyring",
+        ApiKeySource::Missing => "missing",
+    }
 }
 
 fn doctor_search_provider_line(config: &Config) -> String {
@@ -6861,6 +6976,70 @@ mod doctor_endpoint_tests {
 
         assert_eq!(report["resolved_model"], "deepseek-v4-flash");
         assert!(report["alias_deprecation"].is_null());
+    }
+
+    #[test]
+    fn doctor_route_report_exposes_tokenhub_openai_compatible_route_without_secret() {
+        let mut providers = crate::config::ProvidersConfig::default();
+        providers.openai.api_key = Some("tokenhub-secret-value".to_string());
+        providers.openai.base_url = Some("https://tokenhub.tencentmaas.com/v1".to_string());
+        providers.openai.model = Some("deepseek-ai/DeepSeek-V4-Pro".to_string());
+        let config = Config {
+            provider: Some("openai".to_string()),
+            providers: Some(providers),
+            ..Default::default()
+        };
+
+        let report = doctor_route_report(&config);
+        let serialized = report.to_string();
+
+        assert_eq!(report["provider"], "openai");
+        assert_eq!(report["provider_source"], "config");
+        assert_eq!(report["provider_config_table"], "openai");
+        assert_eq!(report["model"], "deepseek-ai/DeepSeek-V4-Pro");
+        assert_eq!(report["wire_protocol"], "chat_completions");
+        assert_eq!(
+            report["base_url"]["redacted"],
+            "https://tokenhub.tencentmaas.com/v1"
+        );
+        assert_eq!(report["base_url"]["class"], "custom");
+        assert_eq!(report["auth"]["scheme"], "bearer");
+        assert_eq!(report["auth"]["source"], "config");
+        assert!(
+            report["base_url"]["fingerprint"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("<redacted:"))
+        );
+        assert!(!serialized.contains("tokenhub-secret-value"));
+    }
+
+    #[test]
+    fn doctor_route_report_exposes_siliconflow_cn_provider_route() {
+        let mut providers = crate::config::ProvidersConfig::default();
+        providers.siliconflow_cn.api_key = Some("sf-cn-secret-value".to_string());
+        providers.siliconflow_cn.base_url =
+            Some(crate::config::DEFAULT_SILICONFLOW_CN_BASE_URL.to_string());
+        providers.siliconflow_cn.model = Some(crate::config::DEFAULT_SILICONFLOW_MODEL.to_string());
+        let config = Config {
+            provider: Some("siliconflow-CN".to_string()),
+            providers: Some(providers),
+            ..Default::default()
+        };
+
+        let report = doctor_route_report(&config);
+        let serialized = report.to_string();
+
+        assert_eq!(report["provider"], "siliconflow-CN");
+        assert_eq!(report["provider_config_table"], "siliconflow_cn");
+        assert_eq!(report["model"], crate::config::DEFAULT_SILICONFLOW_MODEL);
+        assert_eq!(
+            report["base_url"]["redacted"],
+            crate::config::DEFAULT_SILICONFLOW_CN_BASE_URL
+        );
+        assert_eq!(report["base_url"]["class"], "default");
+        assert_eq!(report["auth"]["scheme"], "bearer");
+        assert_eq!(report["auth"]["source"], "config");
+        assert!(!serialized.contains("sf-cn-secret-value"));
     }
 
     #[test]

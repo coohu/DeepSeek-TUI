@@ -2019,6 +2019,57 @@ mod tests {
     }
 
     #[test]
+    fn siliconflow_cn_uses_bearer_header_and_pins_content_type() {
+        let mut extra = HashMap::new();
+        extra.insert("Authorization".to_string(), "Bearer wrong".to_string());
+        extra.insert("Content-Type".to_string(), "text/plain".to_string());
+        let headers = DeepSeekClient::default_headers_for_provider(
+            "sf-cn-test",
+            &extra,
+            ApiProvider::SiliconflowCn,
+            crate::config::DEFAULT_SILICONFLOW_CN_BASE_URL,
+        )
+        .expect("headers");
+
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer sf-cn-test")
+        );
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert!(headers.get("api-key").is_none());
+    }
+
+    #[test]
+    fn tokenhub_openai_compatible_route_uses_bearer_header() {
+        let mut extra = HashMap::new();
+        extra.insert("api-key".to_string(), "wrong".to_string());
+        extra.insert("x-api-key".to_string(), "wrong".to_string());
+        let headers = DeepSeekClient::default_headers_for_provider(
+            "tokenhub-test",
+            &extra,
+            ApiProvider::Openai,
+            "https://tokenhub.tencentmaas.com/v1",
+        )
+        .expect("headers");
+
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer tokenhub-test")
+        );
+        assert!(headers.get("api-key").is_none());
+        assert!(headers.get("x-api-key").is_none());
+    }
+
+    #[test]
     fn custom_api_key_header_is_allowed_without_primary_provider_key() {
         let mut extra = HashMap::new();
         extra.insert("api-key".to_string(), "gateway-key".to_string());
