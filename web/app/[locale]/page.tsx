@@ -18,76 +18,7 @@ const FALLBACK_STATS: RepoStats = {
   fetchedAt: new Date().toISOString(),
 };
 
-const RELEASE_CONTRIBUTORS = [
-  "@1Git2Clone",
-  "@cy2311",
-  "@LING71671",
-  "@axobase001",
-  "@dzyuan",
-  "@mvanhorn",
-  "@malsony",
-  "@manaskarra",
-  "@gaord",
-  "@yuanchenglu",
-  "@idling11",
-  "@h3c-hexin",
-  "@AdityaVG13",
-  "@Sskift",
-  "@cyq1017",
-  "@HUQIANTAO",
-  "@New2Niu",
-  "@AiurArtanis",
-  "@Lee-take",
-  "@nightt5879",
-  "@AresNing",
-  "@AccMoment",
-  "@reidliu41",
-  "@aboimpinto",
-  "@zhuangbiaowei",
-  "@donglovejava",
-  "@hongqitai",
-  "@zlh124",
-  "@encyc",
-  "@Implementist",
-  "@lihuan215",
-  "@LeoAlex0",
-  "@jimmyzhuu",
-  "@rockyzhang",
-  "@mo-vic",
-  "@hufanexplore",
-  "@hoclaptrinh33",
-  "@quentin-lian",
-  "@BryonGo",
-];
-
-const RELEASE_HELPERS = [
-  "@buko",
-  "@yyyCode",
-  "@gaslebinh-glitch",
-  "@Dr3259",
-  "@lpeng1711694086-lang",
-  "@VerrPower",
-  "@yan-zay",
-  "@jretz",
-  "@Neo-millunnium",
-  "@caeserchen",
-  "@cmyyy",
-  "@djairjr",
-  "@F1LT3R",
-  "@Final527",
-  "@Geallier",
-  "@k0tran",
-  "@lordwedggie",
-  "@T-Phuong-Nguyen",
-  "@xfy6238",
-  "@zhyuzhyu",
-  "@0gl20shk0sbt36",
-  "@hatakes",
-  "@goodvecn-dev",
-  "@bevis-wong",
-  "@PurplePulse",
-  "@nbiish",
-];
+import { RELEASE_CONTRIBUTORS, RELEASE_HELPERS } from "@/lib/release-credits";
 
 const FALLBACK_DISPATCH_EN: CuratedDispatch = {
   generatedAt: new Date().toISOString(),
@@ -424,9 +355,20 @@ export default async function HomePage({ params }: { params: Promise<{ locale: s
                 ? "这一版合并和吸收了来自社区的大量工作。完整条目在 CHANGELOG 中；这里保留最新发布的公开致谢入口。"
                 : "This release merged and harvested a large community tranche. The full notes live in the changelog; this keeps the latest public credit surface easy to find."}
             </p>
-            <Link href="https://github.com/Hmbown/CodeWhale/blob/main/CHANGELOG.md" className="inline-block mt-4 font-mono text-xs uppercase tracking-wider text-indigo hover:underline">
-              {isZh ? "查看完整 changelog →" : "Full changelog →"}
-            </Link>
+            <div className="flex flex-wrap gap-x-5 gap-y-2 mt-4">
+              <Link href="https://github.com/Hmbown/CodeWhale/blob/main/docs/CONTRIBUTORS.md" className="font-mono text-xs uppercase tracking-wider text-indigo hover:underline">
+                {isZh ? "完整贡献者名单 →" : "Full contributor list →"}
+              </Link>
+              <Link href="https://github.com/Hmbown/CodeWhale/blob/main/CHANGELOG.md" className="font-mono text-xs uppercase tracking-wider text-indigo hover:underline">
+                {isZh ? "CHANGELOG →" : "CHANGELOG →"}
+              </Link>
+              <Link href={isZh ? "/zh/contribute" : "/contribute"} className="font-mono text-xs uppercase tracking-wider text-indigo hover:underline">
+                {isZh ? "参与贡献 →" : "Contribute →"}
+              </Link>
+              <Link href="https://github.com/Hmbown/CodeWhale/issues" className="font-mono text-xs uppercase tracking-wider text-indigo hover:underline">
+                {isZh ? "开放议题 →" : "Open issues →"}
+              </Link>
+            </div>
           </div>
           <div className="lg:col-span-7 grid gap-6">
             <div>
