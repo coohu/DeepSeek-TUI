@@ -6,9 +6,30 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use toml::Value;
 
-use super::CommandResult;
+use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::commands::CommandResult;
+use crate::localization::MessageId;
 use crate::network_policy::host_from_url;
 use crate::tui::app::App;
+
+pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+    name: "network",
+    aliases: &[],
+    usage: "/network [list|allow <host>|deny <host>|remove <host>|default <allow|deny|prompt>]",
+    description_id: MessageId::CmdNetworkDescription,
+};
+
+pub(in crate::commands) struct NetworkCmd;
+
+impl RegisterCommand for NetworkCmd {
+    fn info() -> &'static CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        network(app, arg)
+    }
+}
 
 pub fn network(_app: &mut App, arg: Option<&str>) -> CommandResult {
     match network_inner(arg) {

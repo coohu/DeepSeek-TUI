@@ -4,7 +4,7 @@ use crate::skills::{SkillRegistry, default_skills_dir};
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::HistoryCell;
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 
 fn warnings_suffix(registry: &SkillRegistry) -> String {
     if registry.warnings().is_empty() {
@@ -60,6 +60,26 @@ pub fn review(app: &mut App, args: Option<&str>) -> CommandResult {
     app.active_skill = Some(instruction);
 
     CommandResult::action(AppAction::SendMessage(target.to_string()))
+}
+
+pub(in crate::commands) const COMMAND_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "review",
+        aliases: &["shencha"],
+        usage: "/review <target>",
+        description_id: crate::localization::MessageId::CmdReviewDescription,
+    };
+
+pub(in crate::commands) struct ReviewCmd;
+
+impl crate::commands::traits::RegisterCommand for ReviewCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut crate::tui::app::App, arg: Option<&str>) -> crate::commands::CommandResult {
+        review(app, arg)
+    }
 }
 
 #[cfg(test)]

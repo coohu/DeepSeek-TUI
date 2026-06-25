@@ -11,7 +11,7 @@ use crate::skills::install::{
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 
 #[cfg(test)]
 thread_local! {
@@ -620,6 +620,46 @@ fn format_registry_error(prefix: &str, err: &anyhow::Error) -> String {
         out.push_str(hint);
     }
     out
+}
+
+pub(in crate::commands) const SKILLS_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "skills",
+        aliases: &["jinengliebiao"],
+        usage: "/skills [--remote|sync|<prefix>]",
+        description_id: crate::localization::MessageId::CmdSkillsDescription,
+    };
+
+pub(in crate::commands) struct SkillsCmd;
+
+impl crate::commands::traits::RegisterCommand for SkillsCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &SKILLS_INFO
+    }
+
+    fn execute(app: &mut crate::tui::app::App, arg: Option<&str>) -> crate::commands::CommandResult {
+        list_skills(app, arg)
+    }
+}
+
+pub(in crate::commands) const SKILL_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "skill",
+        aliases: &["jineng"],
+        usage: "/skill <name|install <spec>|update <name>|uninstall <name>|trust <name>>",
+        description_id: crate::localization::MessageId::CmdSkillDescription,
+    };
+
+pub(in crate::commands) struct SkillCmd;
+
+impl crate::commands::traits::RegisterCommand for SkillCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &SKILL_INFO
+    }
+
+    fn execute(app: &mut crate::tui::app::App, arg: Option<&str>) -> crate::commands::CommandResult {
+        run_skill(app, arg)
+    }
 }
 
 #[cfg(test)]

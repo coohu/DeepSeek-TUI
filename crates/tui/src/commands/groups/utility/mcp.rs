@@ -1,8 +1,29 @@
 //! In-TUI MCP manager command parser.
 
+use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::localization::MessageId;
 use crate::tui::app::{App, AppAction, McpUiAction};
 
-use super::CommandResult;
+use crate::commands::CommandResult;
+
+pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+    name: "mcp",
+    aliases: &[],
+    usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
+    description_id: MessageId::CmdMcpDescription,
+};
+
+pub(in crate::commands) struct McpCmd;
+
+impl RegisterCommand for McpCmd {
+    fn info() -> &'static CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        mcp(app, arg)
+    }
+}
 
 pub fn mcp(_app: &mut App, args: Option<&str>) -> CommandResult {
     let raw = args.unwrap_or("").trim();

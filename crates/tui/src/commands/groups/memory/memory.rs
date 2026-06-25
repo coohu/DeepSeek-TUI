@@ -20,7 +20,7 @@
 use std::fs;
 use std::path::Path;
 
-use super::CommandResult;
+use crate::commands::CommandResult;
 use crate::tui::app::App;
 
 const MEMORY_USAGE: &str = "/memory [show|path|clear|edit|help]";
@@ -82,6 +82,26 @@ pub fn memory(app: &mut App, arg: Option<&str>) -> CommandResult {
             "unknown subcommand `{sub}`. Try `/memory help`.\n\n{}",
             memory_help(&path)
         )),
+    }
+}
+
+pub(in crate::commands) const COMMAND_INFO: crate::commands::traits::CommandInfo =
+    crate::commands::traits::CommandInfo {
+        name: "memory",
+        aliases: &[],
+        usage: "/memory [show|path|clear|edit|help]",
+        description_id: crate::localization::MessageId::CmdMemoryDescription,
+    };
+
+pub(in crate::commands) struct MemoryCmd;
+
+impl crate::commands::traits::RegisterCommand for MemoryCmd {
+    fn info() -> &'static crate::commands::traits::CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut crate::tui::app::App, arg: Option<&str>) -> crate::commands::CommandResult {
+        memory(app, arg)
     }
 }
 

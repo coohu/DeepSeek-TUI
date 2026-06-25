@@ -11,8 +11,10 @@
 use std::io::Write;
 use std::path::Path;
 
-use super::CommandResult;
+use crate::commands::traits::{CommandInfo, RegisterCommand};
+use crate::commands::CommandResult;
 use crate::dependencies::ExternalTool;
+use crate::localization::MessageId;
 use crate::tui::app::{App, AppAction};
 
 /// Share the current session as a web URL.
@@ -187,6 +189,25 @@ async fn upload_gist(path: &Path) -> Result<String, String> {
     }
 
     Ok(stdout)
+}
+
+pub(in crate::commands) const COMMAND_INFO: CommandInfo = CommandInfo {
+    name: "share",
+    aliases: &[],
+    usage: "/share",
+    description_id: MessageId::CmdShareDescription,
+};
+
+pub(in crate::commands) struct ShareCmd;
+
+impl RegisterCommand for ShareCmd {
+    fn info() -> &'static CommandInfo {
+        &COMMAND_INFO
+    }
+
+    fn execute(app: &mut App, arg: Option<&str>) -> CommandResult {
+        share(app, arg)
+    }
 }
 
 #[cfg(test)]

@@ -7,56 +7,46 @@ mod mcp;
 mod network;
 mod task;
 
-use crate::commands::CommandResult;
-use crate::commands::traits::{Command, CommandGroup, CommandInfo, FunctionCommand};
+use crate::commands::traits::{Command, CommandGroup, CommandInfo, FunctionCommand, RegisterCommand};
 use crate::localization::MessageId;
 use crate::tui::app::App;
+
+use crate::commands::CommandResult;
 
 pub struct UtilityCommands;
 
 impl CommandGroup for UtilityCommands {
     fn commands(&self) -> Vec<Box<dyn Command>> {
         vec![
-            Box::new(FunctionCommand::new(&ATTACH_INFO, run_attach)),
-            Box::new(FunctionCommand::new(&TASK_INFO, run_task)),
-            Box::new(FunctionCommand::new(&JOBS_INFO, run_jobs)),
-            Box::new(FunctionCommand::new(&MCP_INFO, run_mcp)),
-            Box::new(FunctionCommand::new(&NETWORK_INFO, run_network)),
+            Box::new(FunctionCommand::new(
+                attachment::AttachCmd::info(),
+                attachment::AttachCmd::execute,
+            )),
+            Box::new(FunctionCommand::new(
+                task::TaskCmd::info(),
+                task::TaskCmd::execute,
+            )),
+            Box::new(FunctionCommand::new(
+                jobs::JobsCmd::info(),
+                jobs::JobsCmd::execute,
+            )),
+            Box::new(FunctionCommand::new(
+                mcp::McpCmd::info(),
+                mcp::McpCmd::execute,
+            )),
+            Box::new(FunctionCommand::new(
+                network::NetworkCmd::info(),
+                network::NetworkCmd::execute,
+            )),
+            // `/plugins` is registered here but remains discretionary for
+            // FEAT-007 extraction. The CommandInfo and dispatch function
+            // stay inline until scope is explicitly widened.
             Box::new(FunctionCommand::new(&PLUGINS_INFO, run_plugins)),
         ]
     }
 }
 
-static ATTACH_INFO: CommandInfo = CommandInfo {
-    name: "attach",
-    aliases: &["image", "media", "fujian"],
-    usage: "/attach <path>",
-    description_id: MessageId::CmdAttachDescription,
-};
-static TASK_INFO: CommandInfo = CommandInfo {
-    name: "task",
-    aliases: &["tasks"],
-    usage: "/task [add <prompt>|list|show <id>|cancel <id>]",
-    description_id: MessageId::CmdTaskDescription,
-};
-static JOBS_INFO: CommandInfo = CommandInfo {
-    name: "jobs",
-    aliases: &["job", "zuoye"],
-    usage: "/jobs [list|show <id>|poll <id>|wait <id>|stdin <id> <input>|cancel <id>]",
-    description_id: MessageId::CmdJobsDescription,
-};
-static MCP_INFO: CommandInfo = CommandInfo {
-    name: "mcp",
-    aliases: &[],
-    usage: "/mcp [init|add stdio <name> <command> [args...]|add http <name> <url>|enable <name>|disable <name>|remove <name>|validate|reload]",
-    description_id: MessageId::CmdMcpDescription,
-};
-static NETWORK_INFO: CommandInfo = CommandInfo {
-    name: "network",
-    aliases: &[],
-    usage: "/network [list|allow <host>|deny <host>|remove <host>|default <allow|deny|prompt>]",
-    description_id: MessageId::CmdNetworkDescription,
-};
+/// `/plugins` command metadata — discretionary, kept inline.
 static PLUGINS_INFO: CommandInfo = CommandInfo {
     name: "plugins",
     aliases: &["plugin"],
@@ -64,42 +54,6 @@ static PLUGINS_INFO: CommandInfo = CommandInfo {
     description_id: MessageId::CmdPluginDescription,
 };
 
-fn run_registered(app: &mut App, name: &str, arg: Option<&str>) -> CommandResult {
-    dispatch(app, name, arg).expect("registered utility command should dispatch")
-}
-
-fn run_attach(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "attach", arg)
-}
-fn run_task(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "task", arg)
-}
-fn run_jobs(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "jobs", arg)
-}
-fn run_mcp(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "mcp", arg)
-}
-fn run_network(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "network", arg)
-}
 fn run_plugins(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "plugins", arg)
-}
-
-pub(in crate::commands) fn dispatch(
-    app: &mut App,
-    command: &str,
-    arg: Option<&str>,
-) -> Option<CommandResult> {
-    let result = match command {
-        "attach" | "image" | "media" | "fujian" => attachment::attach(app, arg),
-        "task" | "tasks" => task::task(app, arg),
-        "jobs" | "job" | "zuoye" => jobs::jobs(app, arg),
-        "mcp" => mcp::mcp(app, arg),
-        "network" => network::network(app, arg),
-        "plugins" | "plugin" => crate::commands::plugins::plugins(app, arg),
-        _ => return None,
-    };
-    Some(result)
+    crate::commands::plugins::plugins(app, arg)
 }
