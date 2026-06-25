@@ -2473,6 +2473,7 @@ impl RuntimeThreadManager {
             ),
             prefer_bwrap: self.config.prefer_bwrap.unwrap_or(false),
             memory_enabled: self.config.memory_enabled(),
+            moraine_fallback: self.config.moraine_fallback(),
             memory_path: self.config.memory_path(),
             speech_output_dir: self.config.speech_output_dir(),
             vision_config: self.config.vision_model_config(),

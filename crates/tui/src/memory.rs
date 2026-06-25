@@ -1,6 +1,27 @@
-//! User-level memory file.
+//! User-level memory file (deprecated — see Moraine).
 //!
-//! v0.8.8 ships an MVP that lets the user keep a persistent personal
+//! ## Deprecation
+//!
+//! v0.8.66 adopts **Moraine** ([moraine](https://github.com/eric-tramel/moraine)) as
+//! CodeWhale's long-term agent-memory backend. Moraine ingests persisted sessions
+//! losslessly and exposes them as searchable MCP recall tools (`search`,
+//! `search_conversations`, `list_sessions`, `get_session`, `open`).
+//!
+//! This module (`memory.rs`) is the **legacy push/inject** path that prepends
+//! a `<user_memory>` block into the system prompt. It is **superseded** by
+//! Moraine's pull/recall via MCP. New deployments should use Moraine; existing
+//! users can keep using the legacy path with no changes.
+//!
+//! ### Migration
+//!
+//! 1. Install Moraine: `uv tool install moraine-cli && moraine setup && moraine up`
+//! 2. Enable `moraine-mcp` in `~/.codewhale/mcp.json` (set `disabled` to `false`)
+//! 3. Set `[memory] moraine_fallback = true` in `config.toml` to skip the legacy
+//!    `<user_memory>` block, `remember` tool, and `# foo` quick-add.
+//!
+//! ## Legacy docs (pre-Moraine)
+//!
+//! v0.8.8 shipped an MVP that let the user keep a persistent personal
 //! note file the model sees on every turn:
 //!
 //! - **Load** `~/.codewhale/memory.md` (path is configurable via
@@ -97,13 +118,15 @@ fn previous_char_boundary(value: &str, mut index: usize) -> usize {
 }
 
 /// Compose the `<user_memory>` block for the system prompt, honouring the
-/// opt-in toggle. Returns `None` when the feature is disabled or the file
-/// is missing / empty so the caller doesn't have to check both conditions.
+/// opt-in toggle. Returns `None` when the feature is disabled, when
+/// `moraine_fallback` is active, or when the file is missing / empty so
+/// the caller doesn't have to check both conditions.
 ///
-/// Callers that hold a `&Config` should pass `config.memory_enabled()` and
-/// `config.memory_path()` directly. The split keeps this module
-/// `Config`-free so it can be reused from sub-agent / engine boundaries
-/// where the high-level `Config` isn't available.
+/// Callers that hold a `&Config` should pass `config.memory_enabled() &&
+/// !config.moraine_fallback()` and `config.memory_path()` directly.
+/// The split keeps this module `Config`-free so it can be reused from
+/// sub-agent / engine boundaries where the high-level `Config` isn't
+/// available.
 #[must_use]
 pub fn compose_block(enabled: bool, path: &Path) -> Option<String> {
     if !enabled {

@@ -1646,8 +1646,9 @@ pub struct App {
     pub memory_path: PathBuf,
     /// Whether the user-memory feature is enabled (#489). Mirrors
     /// `Config::memory_enabled()` at app boot. Used by the `# foo`
-    /// composer interception, the `/memory` slash command, and tool
-    /// registration for `remember`.
+    /// composer interception (also gated by `moraine_fallback`),
+    /// the `/memory` slash command, and tool registration for
+    /// `remember`.
     pub use_memory: bool,
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,

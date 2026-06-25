@@ -334,6 +334,11 @@ pub struct EngineConfig {
     /// engine reads `memory_path` on each prompt assembly and prepends a
     /// `<user_memory>` block to the system prompt.
     pub memory_enabled: bool,
+    /// When `true`, the legacy `memory.rs` push/inject path is deprecated
+    /// in favour of Moraine MCP recall. `compose_block` returns `None`
+    /// regardless of `memory_enabled`, the `remember` tool is not
+    /// registered, and `# foo` quick-add falls through.
+    pub moraine_fallback: bool,
     /// Path to the user memory file (#489). Always populated; only
     /// consulted when `memory_enabled` is `true`.
     pub memory_path: PathBuf,
@@ -446,6 +451,7 @@ impl Default for EngineConfig {
             runtime_services: RuntimeToolServices::default(),
             subagent_model_overrides: HashMap::new(),
             memory_enabled: false,
+            moraine_fallback: false,
             memory_path: PathBuf::from("./memory.md"),
             speech_output_dir: None,
             vision_config: None,
@@ -845,8 +851,10 @@ impl Engine {
         // Set up stable system prompt with project context (default to agent mode).
         // Per-turn working-set metadata is injected into the latest user
         // message at request time so file churn does not rewrite this prefix.
-        let user_memory_block =
-            crate::memory::compose_block(config.memory_enabled, &config.memory_path);
+        let user_memory_block = crate::memory::compose_block(
+            config.memory_enabled && !config.moraine_fallback, // DEPRECATED(v0.8.66): use Moraine MCP recall
+            &config.memory_path,
+        );
         let prompt_goal_objective =
             goal_objective_for_prompt(config.goal_objective.as_deref(), &config.goal_state);
         let system_prompt =
@@ -3192,8 +3200,10 @@ impl Engine {
     }
     /// Refresh the stable system prompt based on current non-mode context.
     fn refresh_system_prompt(&mut self) {
-        let user_memory_block =
-            crate::memory::compose_block(self.config.memory_enabled, &self.config.memory_path);
+        let user_memory_block = crate::memory::compose_block(
+            self.config.memory_enabled && !self.config.moraine_fallback, // DEPRECATED(v0.8.66): use Moraine MCP recall
+            &self.config.memory_path,
+        );
         let prompt_goal_objective = goal_objective_for_prompt(
             self.config.goal_objective.as_deref(),
             &self.config.goal_state,

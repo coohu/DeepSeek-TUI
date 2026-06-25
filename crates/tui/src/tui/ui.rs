@@ -1188,6 +1188,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         ),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         memory_enabled: config.memory_enabled(),
+        moraine_fallback: config.moraine_fallback(),
         memory_path: config.memory_path(),
         speech_output_dir: config.speech_output_dir(),
         vision_config: config.vision_model_config(),
@@ -4619,7 +4620,7 @@ async fn run_event_loop(
                         // appended to the user memory file and the input
                         // is consumed without firing a turn. Disabled
                         // behaviour falls through to normal turn submit.
-                        if config.memory_enabled() && is_memory_quick_add(&input) {
+                        if config.memory_enabled() && !config.moraine_fallback() && is_memory_quick_add(&input) {
                             handle_memory_quick_add(app, &input, config);
                             continue;
                         }

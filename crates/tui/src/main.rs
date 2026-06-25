@@ -1923,6 +1923,31 @@ fn mcp_template_json() -> Result<String> {
             oauth_resource: None,
         },
     );
+    cfg.servers.insert(
+        "moraine-mcp".to_string(),
+        McpServerConfig {
+            command: Some("moraine".to_string()),
+            args: vec!["mcp".to_string()],
+            env: std::collections::HashMap::new(),
+            cwd: None,
+            url: None,
+            transport: None,
+            connect_timeout: None,
+            execute_timeout: None,
+            read_timeout: None,
+            disabled: true,
+            enabled: true,
+            required: false,
+            enabled_tools: Vec::new(),
+            disabled_tools: Vec::new(),
+            headers: std::collections::HashMap::new(),
+            env_headers: std::collections::HashMap::new(),
+            bearer_token_env_var: None,
+            scopes: Vec::new(),
+            oauth: None,
+            oauth_resource: None,
+        },
+    );
     serde_json::to_string_pretty(&cfg)
         .map_err(|e| anyhow!("Failed to render MCP template JSON: {e}"))
 }
@@ -6805,6 +6830,7 @@ async fn run_exec_agent(
         ),
         prefer_bwrap: execution_config.prefer_bwrap.unwrap_or(false),
         memory_enabled: execution_config.memory_enabled(),
+        moraine_fallback: execution_config.moraine_fallback(),
         memory_path: execution_config.memory_path(),
         speech_output_dir: execution_config.speech_output_dir(),
         vision_config: execution_config.vision_model_config(),

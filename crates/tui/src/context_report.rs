@@ -237,7 +237,7 @@ pub fn build_headless_context_report(config: &Config, workspace: &Path) -> Promp
     let mut builder = base_source_entries(&model, workspace, Some(&selected_skills_dir));
     let memory_path = config.memory_path();
 
-    if let Some(memory_block) = crate::memory::compose_block(config.memory_enabled(), &memory_path)
+    if let Some(memory_block) = crate::memory::compose_block(config.memory_enabled() && !config.moraine_fallback(), &memory_path)
     {
         builder.push(SourceEntry::text(
             SourceKind::UserMemory,
