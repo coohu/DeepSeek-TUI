@@ -184,13 +184,13 @@ impl LspManager {
             return None;
         }
 
-        // Custom extension fallback: check user-defined LSP servers before
-        // falling through to the built-in registry.
-        if let Some(custom) = self.config.custom_for_extension(file) {
-            return self.diagnostics_for_custom(file, custom).await;
-        }
         let lang = registry::detect_language(file);
         if lang == Language::Other {
+            // Custom extension fallback: check user-defined LSP servers
+            // for file extensions not covered by the built-in registry.
+            if let Some(custom) = self.config.custom_for_extension(file) {
+                return self.diagnostics_for_custom(file, custom).await;
+            }
             return None;
         }
 
@@ -660,5 +660,131 @@ pub(crate) mod tests {
         let cfg = LspConfig::default();
         let (cmd, _) = cfg.resolve_command(Language::Rust).unwrap();
         assert_eq!(cmd, "rust-analyzer");
+    }
+
+    // ── custom server extension tests ─────────────────────────────────────
+
+    #[test]
+    fn custom_for_extension_none_for_empty_config() {
+        let cfg = LspConfig::default();
+        assert!(cfg.custom_for_extension(&PathBuf::from("foo.rb")).is_none());
+    }
+
+    #[test]
+    fn custom_for_extension_finds_registered_extension() {
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "rb".to_string(),
+            CustomLspDef {
+                language_id: "ruby".to_string(),
+                command: "ruby-lsp".to_string(),
+                args: vec!["--stdio".to_string()],
+            },
+        );
+        let def = cfg
+            .custom_for_extension(&PathBuf::from("lib/hello.rb"))
+            .expect("should find rb");
+        assert_eq!(def.language_id, "ruby");
+        assert_eq!(def.command, "ruby-lsp");
+    }
+
+    #[test]
+    fn custom_for_extension_case_insensitive() {
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "cs".to_string(),
+            CustomLspDef {
+                language_id: "csharp".to_string(),
+                command: "csharp-ls".to_string(),
+                args: vec![],
+            },
+        );
+        assert!(cfg.custom_for_extension(&PathBuf::from("App.CS")).is_some());
+        assert!(cfg.custom_for_extension(&PathBuf::from("App.Cs")).is_some());
+    }
+
+    #[tokio::test]
+    async fn custom_fallback_only_for_other_language() {
+        // Even if [lsp.custom.go] is configured, .go files must still use
+        // the built-in gopls path — custom is a fallback, not an override.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "go".to_string(),
+            CustomLspDef {
+                language_id: "go".to_string(),
+                command: "custom-gopls".to_string(),
+                args: vec![],
+            },
+        );
+        let mgr = LspManager::new(cfg, dir.path().to_path_buf());
+        let path = dir.path().join("main.go");
+        tokio::fs::write(&path, b"package main\n").await.unwrap();
+
+        // Inject a fake transport for the built-in Go path; we do NOT
+        // inject one for the custom path — so if it accidentally takes
+        // the custom route it will return None.
+        let fake = Arc::new(FakeTransport::new(vec![Diagnostic {
+            line: 1,
+            column: 1,
+            severity: Severity::Error,
+            message: "builtin-go-diag".to_string(),
+        }]));
+        mgr.install_test_transport(Language::Go, fake).await;
+
+        // No custom transport injected — if it hits custom, it returns None.
+        // If it hits built-in, it returns the fake diagnostic.
+        let block = mgr.diagnostics_for(&path, 1).await.expect("has block");
+        let rendered = block.render();
+        assert!(
+            rendered.contains("builtin-go-diag"),
+            "should use built-in Go transport, not custom override: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_for_custom_returns_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "rb".to_string(),
+            CustomLspDef {
+                language_id: "ruby".to_string(),
+                command: "ruby-lsp".to_string(),
+                args: vec![],
+            },
+        );
+        let mgr = LspManager::new(cfg, dir.path().to_path_buf());
+        let path = dir.path().join("app.rb");
+        tokio::fs::write(&path, b"def foo; end\n").await.unwrap();
+
+        // Inject fake transport into the custom-transport map.
+        let fake = Arc::new(FakeTransport::new(vec![Diagnostic {
+            line: 1,
+            column: 5,
+            severity: Severity::Error,
+            message: "ruby type error".to_string(),
+        }]));
+        mgr.custom_transports
+            .lock()
+            .await
+            .insert("rb".to_string(), fake.clone());
+
+        let block = mgr.diagnostics_for(&path, 1).await.expect("has block");
+        let rendered = block.render();
+        assert!(rendered.contains("ruby type error"));
+        assert_eq!(fake.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn custom_unregistered_extension_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LspConfig::default();
+        let mgr = LspManager::new(cfg, dir.path().to_path_buf());
+        let path = dir.path().join("script.lua");
+        tokio::fs::write(&path, b"print('hi')\n").await.unwrap();
+
+        // No custom config for .lua and Lua is not built-in → should be None.
+        assert!(mgr.diagnostics_for(&path, 1).await.is_none());
     }
 }
