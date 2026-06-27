@@ -62,7 +62,7 @@ after the Phase 8 final gate.
 - `cargo test -p codewhale-tui slash_completion -- --test-threads=1` (18 passed)
 - `cargo test -p codewhale-tui user_registry -- --test-threads=1` (18 passed)
 - `cargo test -p codewhale-tui --test epic_acceptance_harness` (1 passed)
-- `cargo test -p codewhale-tui --test command_surfaces_acceptance -- --test-threads=1` (1 passed)
+- `cargo test -p codewhale-tui --test eval_smoke_acceptance -- --test-threads=1` (1 passed) — eval smoke, not AT-004 command-surface evidence
 - `cargo test -p codewhale-tui --test core_session_command_extraction -- --test-threads=1` (1 passed)
 - `cargo test -p codewhale-tui --test plugin_e2e_acceptance -- --test-threads=1` (4 passed)
 - `git diff --check`
