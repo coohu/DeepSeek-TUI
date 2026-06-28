@@ -110,7 +110,8 @@ pub struct ProviderRequestConcurrencySummary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderReadiness {
     Ready,
-    NeedsAuth,
+    NeedsKey,
+    NeedsLogin,
     LocalReady,
     Legacy,
     Invalid,
@@ -498,7 +499,7 @@ impl ProviderDashboardRow {
             .map(|label| format!(" | {label}"))
             .unwrap_or_default();
         format!(
-            "{} | auth:{} | {} | {} | base:{}{} | route:{}{} origin:{} | {} | {}{} | catalog:{}{}",
+            "{} | {} | {} | {} | base:{}{} | route:{}{} origin:{} | {} | {}{} | catalog:{}{}",
             self.readiness.label(),
             self.auth_status.label(),
             self.usage_meter,
@@ -640,11 +641,11 @@ impl ProviderReasoningStreamVisibility {
 impl ProviderAuthStatus {
     fn label(self) -> &'static str {
         match self {
-            Self::Configured => "configured",
-            Self::Missing => "missing",
-            Self::Optional => "optional",
-            Self::OAuthReady => "oauth-ready",
-            Self::OAuthMissing => "oauth-missing",
+            Self::Configured => "key:configured",
+            Self::Missing => "key:not-set",
+            Self::Optional => "key:optional",
+            Self::OAuthReady => "auth:oauth-ready",
+            Self::OAuthMissing => "auth:oauth-missing",
             Self::Local => "local",
             Self::Legacy => "legacy",
         }
@@ -655,7 +656,8 @@ impl ProviderReadiness {
     fn label(self) -> &'static str {
         match self {
             Self::Ready => "ready",
-            Self::NeedsAuth => "needs-auth",
+            Self::NeedsKey => "needs-key",
+            Self::NeedsLogin => "needs-login",
             Self::LocalReady => "local-ready",
             Self::Legacy => "legacy",
             Self::Invalid => "invalid",
@@ -977,9 +979,8 @@ fn readiness_for(
         ProviderAuthStatus::Local | ProviderAuthStatus::Optional => ProviderReadiness::LocalReady,
         ProviderAuthStatus::Configured | ProviderAuthStatus::OAuthReady => ProviderReadiness::Ready,
         ProviderAuthStatus::Legacy => ProviderReadiness::Legacy,
-        ProviderAuthStatus::Missing | ProviderAuthStatus::OAuthMissing => {
-            ProviderReadiness::NeedsAuth
-        }
+        ProviderAuthStatus::Missing => ProviderReadiness::NeedsKey,
+        ProviderAuthStatus::OAuthMissing => ProviderReadiness::NeedsLogin,
     }
 }
 
@@ -2051,7 +2052,7 @@ mod tests {
         assert_eq!(row.kind, "openai-compatible");
         assert!(row.is_active);
         assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
-        assert_eq!(row.readiness, ProviderReadiness::NeedsAuth);
+        assert_eq!(row.readiness, ProviderReadiness::NeedsKey);
         assert_eq!(row.base_url, "https://api.example.com/v1");
         assert_eq!(row.supported_protocols, vec!["chat".to_string()]);
         assert_eq!(row.default_route.logical_model, "vendor/custom-model-v1");
@@ -2143,7 +2144,7 @@ mod tests {
         assert_eq!(row.provider_id, "openmodel");
         assert_eq!(row.display_name, "OpenModel");
         assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
-        assert_eq!(row.readiness, ProviderReadiness::NeedsAuth);
+        assert_eq!(row.readiness, ProviderReadiness::NeedsKey);
         assert_eq!(row.supported_protocols, vec!["anthropic".to_string()]);
         assert_eq!(row.base_url, crate::config::DEFAULT_OPENMODEL_BASE_URL);
         assert_eq!(row.default_route.logical_model, "deepseek-v4-flash");
@@ -2156,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_dashboard_row_marks_missing_hosted_auth_as_needs_auth() {
+    fn provider_dashboard_row_marks_missing_api_key_as_needs_key() {
         let _lock = ENV_LOCK.lock().expect("env lock poisoned");
         let _openrouter_key = EnvVarGuard::remove("OPENROUTER_API_KEY");
         let config = Config::default();
@@ -2167,7 +2168,12 @@ mod tests {
         );
 
         assert_eq!(row.auth_status, ProviderAuthStatus::Missing);
-        assert_eq!(row.readiness, ProviderReadiness::NeedsAuth);
+        assert_eq!(row.readiness, ProviderReadiness::NeedsKey);
+        assert_eq!(row.readiness.label(), "needs-key");
+        let hint = row.compact_hint();
+        assert!(hint.contains("key:not-set"));
+        assert!(!hint.contains("needs-auth"));
+        assert!(!hint.contains("auth:missing"));
         assert!(
             row.messages
                 .iter()
@@ -2222,7 +2228,8 @@ mod tests {
 
         let rendered = render_text(&picker, 124, 18);
 
-        assert!(rendered.contains("auth:configured"));
+        assert!(rendered.contains("key:configured"));
+        assert!(!rendered.contains("auth:configured"));
         assert!(rendered.contains("route:custom-model"));
         assert!(rendered.contains("chat"));
         assert!(rendered.contains("cost: unknown"));
