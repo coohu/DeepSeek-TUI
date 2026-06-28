@@ -335,6 +335,8 @@ const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const TERMINAL_INPUT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 const TERMINAL_INPUT_STALL_TIMEOUT: Duration = Duration::from_secs(5);
 const TERMINAL_INPUT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
+const TERMINAL_INPUT_CHILD_PAUSE_TIMEOUT: Duration = Duration::from_millis(500);
+const TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_ENGINE_EVENTS_PER_DRAIN: usize = 128;
 
 enum TerminalInputMessage {
@@ -346,34 +348,52 @@ enum TerminalInputMessage {
 struct TerminalInputPump {
     rx: std::sync::mpsc::Receiver<TerminalInputMessage>,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    paused_ack: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     last_alive_at: Cell<Instant>,
 }
 
+struct TerminalInputPumpParts {
+    rx: std::sync::mpsc::Receiver<TerminalInputMessage>,
+    stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    paused_ack: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
 impl TerminalInputPump {
     fn spawn() -> io::Result<Self> {
-        let (rx, stop, handle) = Self::spawn_parts()?;
+        let parts = Self::spawn_parts()?;
         Ok(Self {
-            rx,
-            stop,
-            handle: Some(handle),
+            rx: parts.rx,
+            stop: parts.stop,
+            paused: parts.paused,
+            paused_ack: parts.paused_ack,
+            handle: Some(parts.handle),
             last_alive_at: Cell::new(Instant::now()),
         })
     }
 
-    fn spawn_parts() -> io::Result<(
-        std::sync::mpsc::Receiver<TerminalInputMessage>,
-        Arc<AtomicBool>,
-        JoinHandle<()>,
-    )> {
+    fn spawn_parts() -> io::Result<TerminalInputPumpParts> {
         let (tx, rx) = std::sync::mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
+        let paused_ack = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let thread_paused = Arc::clone(&paused);
+        let thread_paused_ack = Arc::clone(&paused_ack);
         let handle = thread::Builder::new()
             .name("codewhale-terminal-input".to_string())
             .spawn(move || {
                 let mut last_heartbeat = Instant::now();
                 while !thread_stop.load(Ordering::Acquire) {
+                    if thread_paused.load(Ordering::Acquire) {
+                        thread_paused_ack.store(true, Ordering::Release);
+                        thread::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL);
+                        continue;
+                    }
+                    thread_paused_ack.store(false, Ordering::Release);
                     match event::poll(TERMINAL_INPUT_POLL_INTERVAL) {
                         Ok(true) => match event::read() {
                             Ok(event) => {
@@ -405,7 +425,13 @@ impl TerminalInputPump {
                     }
                 }
             })?;
-        Ok((rx, stop, handle))
+        Ok(TerminalInputPumpParts {
+            rx,
+            stop,
+            paused,
+            paused_ack,
+            handle,
+        })
     }
 
     fn recv_timeout(&self, timeout: Duration) -> io::Result<Option<Event>> {
@@ -466,14 +492,46 @@ impl TerminalInputPump {
         now.saturating_duration_since(self.last_alive_at.get())
     }
 
+    fn pause_for_child_terminal(&self) -> io::Result<()> {
+        self.paused.store(true, Ordering::Release);
+        if self.handle.is_none() {
+            self.paused_ack.store(true, Ordering::Release);
+            self.mark_alive();
+            return Ok(());
+        }
+
+        let deadline = Instant::now() + TERMINAL_INPUT_CHILD_PAUSE_TIMEOUT;
+        while !self.paused_ack.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                self.paused_ack.store(false, Ordering::Release);
+                self.paused.store(false, Ordering::Release);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "terminal input pump did not pause before launching editor",
+                ));
+            }
+            thread::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL);
+        }
+        self.mark_alive();
+        Ok(())
+    }
+
+    fn resume_after_child_terminal(&self) {
+        self.paused_ack.store(false, Ordering::Release);
+        self.paused.store(false, Ordering::Release);
+        self.mark_alive();
+    }
+
     #[cfg(target_os = "windows")]
     fn restart_detached(&mut self) -> io::Result<()> {
         self.stop.store(true, Ordering::Release);
         let _ = self.handle.take();
-        let (rx, stop, handle) = Self::spawn_parts()?;
-        self.rx = rx;
-        self.stop = stop;
-        self.handle = Some(handle);
+        let parts = Self::spawn_parts()?;
+        self.rx = parts.rx;
+        self.stop = parts.stop;
+        self.paused = parts.paused;
+        self.paused_ack = parts.paused_ack;
+        self.handle = Some(parts.handle);
         self.last_alive_at.set(Instant::now());
         Ok(())
     }
@@ -512,6 +570,15 @@ fn try_next_terminal_event(
         return Ok(Some(event));
     }
     input.try_recv()
+}
+
+fn drain_terminal_input_queue(
+    input: &TerminalInputPump,
+    pending: &mut VecDeque<Event>,
+) -> io::Result<()> {
+    pending.clear();
+    while input.try_recv()?.is_some() {}
+    Ok(())
 }
 
 /// Run the interactive TUI event loop.
@@ -4835,13 +4902,25 @@ async fn run_event_loop(
                     // shortcut whether or not a model turn is streaming —
                     // editing the buffer never disturbs in-flight work.
                     let seed = app.input.clone();
-                    match super::external_editor::spawn_editor_for_input(
-                        terminal,
-                        app.use_alt_screen,
-                        app.use_mouse_capture,
-                        app.use_bracketed_paste,
-                        &seed,
-                    ) {
+                    let editor_result = terminal_input.pause_for_child_terminal().and_then(|()| {
+                        let result = drain_terminal_input_queue(
+                            &terminal_input,
+                            &mut pending_terminal_events,
+                        )
+                        .and_then(|()| {
+                            super::external_editor::spawn_editor_for_input(
+                                terminal,
+                                app.use_alt_screen,
+                                app.use_mouse_capture,
+                                app.use_bracketed_paste,
+                                &seed,
+                            )
+                        });
+                        terminal_input.resume_after_child_terminal();
+                        force_terminal_repaint = true;
+                        result
+                    });
+                    match editor_result {
                         Ok(super::external_editor::EditorOutcome::Edited(new)) => {
                             app.input = new;
                             app.move_cursor_end();

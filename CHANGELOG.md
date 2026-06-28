@@ -51,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed Ctrl+O external-editor freezes where CodeWhale's terminal input pump
+  could keep reading keys while Vim/editor owned the terminal, especially in
+  Windows mintty/cygwin shells. Thanks @buko for the precise repro (#3657).
 - Hardened the OHOS dependency drift check against transient Cargo registry EOFs
   by retrying the dependency graph probe before failing CI.
 - Updated the `/links` provider fallback to the current CodeWhale docs URL and

@@ -11524,6 +11524,8 @@ fn six_worker_progress_storm_keeps_input_render_and_cancel_live() {
     let input = TerminalInputPump {
         rx,
         stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         handle: None,
         last_alive_at: std::cell::Cell::new(Instant::now()),
     };
@@ -11550,4 +11552,53 @@ fn six_worker_progress_storm_keeps_input_render_and_cancel_live() {
     app.runtime_turn_status = Some("in_progress".to_string());
     assert_eq!(next_escape_action(&app, false), EscapeAction::CancelRequest);
     assert_eq!(ctrl_c_disposition(&app), CtrlCDisposition::CancelTurn);
+}
+
+#[test]
+fn terminal_input_child_pause_drains_codewhale_events_before_editor_handoff() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(TerminalInputMessage::Event(Event::Key(KeyEvent::new(
+        KeyCode::Char('x'),
+        KeyModifiers::NONE,
+    ))))
+    .expect("send buffered key event");
+    tx.send(TerminalInputMessage::Heartbeat)
+        .expect("send buffered heartbeat");
+    tx.send(TerminalInputMessage::Event(Event::Key(KeyEvent::new(
+        KeyCode::Char('y'),
+        KeyModifiers::NONE,
+    ))))
+    .expect("send second buffered key event");
+
+    let input = TerminalInputPump {
+        rx,
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        paused_ack: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: None,
+        last_alive_at: std::cell::Cell::new(Instant::now()),
+    };
+    let mut pending_terminal_events = VecDeque::from([Event::Key(KeyEvent::new(
+        KeyCode::Char('z'),
+        KeyModifiers::NONE,
+    ))]);
+
+    input
+        .pause_for_child_terminal()
+        .expect("synthetic pump can pause");
+    drain_terminal_input_queue(&input, &mut pending_terminal_events)
+        .expect("queued terminal events drain before launching child editor");
+
+    assert!(
+        pending_terminal_events.is_empty(),
+        "pending CodeWhale terminal events must not leak into the editor handoff"
+    );
+    assert!(
+        input.try_recv().expect("drained channel").is_none(),
+        "input pump channel should be empty after the editor handoff drain"
+    );
+
+    input.resume_after_child_terminal();
+    assert!(!input.paused.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!input.paused_ack.load(std::sync::atomic::Ordering::Acquire));
 }
