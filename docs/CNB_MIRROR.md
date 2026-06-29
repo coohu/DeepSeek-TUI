@@ -4,8 +4,25 @@
 GitHub repository for users on networks where GitHub is slow or blocked
 (primarily mainland China). The mirror receives every push to `main`, every
 `fix/*`, `rebrand/*`, and `work/v*` branch used for first-party release work,
-every `v*` release tag, and Tencent release-candidate branches used by the
-Lighthouse/Feishu setup.
+and every `v*` release tag.
+
+## Provenance
+
+**GitHub is the sole canonical source.** All releases, tags, and source code
+originate at `github.com/coohu/deepseek-tui`. The CNB mirror is a read-only
+replica maintained by the `Sync to CNB` workflow — it exists solely to serve
+users behind GFW-blocked or slow GitHub connections.
+
+Every CNB release includes `deepseek-artifacts-sha256.txt` — a SHA256 manifest
+of the CNB-built Linux x64 binaries, generated from the same source commit that
+is tagged on GitHub. (CNB builds from source, so these checksums cover the
+CNB-built artifacts, not GitHub's release assets.) Verify a downloaded binary
+against it:
+
+```bash
+# Verify a downloaded CNB binary against the CNB manifest
+sha256sum -c deepseek-artifacts-sha256.txt
+```
 
 ## How it works
 
@@ -14,16 +31,14 @@ GitHub Actions workflow:
 
 - **Trigger:** `push` to `main`, `push` of any `v*` tag,
   release work branches matching `work/v*`, first-party fix and rebrand
-  branches matching `fix/*` and `rebrand/*`,
-  Tencent setup branches matching `work/v*-feishu-*` or
-  `work/v*-lighthouse*`, or `workflow_dispatch` for manual recovery.
+  branches matching `fix/*` and `rebrand/*`, or `workflow_dispatch` for manual
+  recovery.
 - **Auth:** HTTPS basic auth as user `cnb` with the `CNB_GIT_TOKEN`
   repository secret as the password.
 - **Scope:** only the ref that triggered the run is pushed. Tag pushes
   push exactly that tag. Branch pushes mirror `main`, first-party
-  `fix/*`/`rebrand/*` branches, or explicitly matched release/Tencent setup
-  branches. Other feature branches and dependabot refs are intentionally
-  *not* mirrored.
+  `fix/*`/`rebrand/*` branches, or explicitly matched release branches. Other
+  feature branches and dependabot refs are intentionally *not* mirrored.
 - **Concurrency:** runs are serialized via a `cnb-sync` concurrency
   group so the back-to-back `main` push and tag push from
   `auto-tag.yml` cannot race each other.
@@ -62,7 +77,7 @@ Linux Rust gates run on Tencent-hosted runners instead of GitHub Actions:
 - `cargo build --release --locked -p deepseek-cli -p deepseek-tui`
 - `node scripts/release/npm-wrapper-smoke.js`
 
-Release branches matching `work/v*` also run the Feishu bridge checks and
+Release branches matching `work/v*` also run
 `./scripts/release/publish-crates.sh dry-run`. GitHub Actions keeps the cheap
 drift/fmt statuses plus the macOS and Windows jobs that CNB cannot replace.
 
@@ -89,41 +104,14 @@ gh run list --workflow=sync-cnb.yml --repo coohu/DeepSeek-TUI --limit 5
 ```
 
 If the most recent run for the release tag is `success`, the mirror
-caught it. If it's `failure`, follow the manual fallback below.
+caught it. If it's `failure`, fix or re-run the mirror workflow before
+directing users to the mirrored tag.
 
 ## Manual fallback
 
-If the workflow fails for any reason (CNB rate-limit, token expired,
-GitHub outage, etc.), the maintainer can push to CNB by hand from
-their local checkout. This works because the CNB token is a personal
-PAT — the same token used by the workflow lives in the maintainer's
-password manager.
-
-### One-time setup
-
-```bash
-# Add the CNB remote alongside origin.
-git remote add cnb https://cnb:${CNB_TOKEN}@cnb.cool/deepseek.net/deepseek.git
-
-# Or, if you don't want the token in your shell history:
-git remote add cnb https://cnb.cool/deepseek.net/deepseek.git
-# (you'll be prompted for username `cnb` and password ${CNB_TOKEN}
-#  on the first push; subsequent pushes use the credential helper.)
-```
-
-### Sync a release manually
-
-```bash
-# Make sure main is current.
-git fetch origin
-git checkout main
-git reset --hard origin/main
-
-# Push main first, then the tag. Order matters: CNB should see the
-# commit before the tag that points at it.
-git push cnb main --force-with-lease
-git push cnb vX.Y.Z
-```
+Manual mirror repair is maintainer-only. Do not put PATs in remote URLs or
+publish force-push recipes in contributor-facing docs. Use the configured
+GitHub Actions secret and the workflow dispatch path whenever possible.
 
 ### Re-trigger the workflow manually
 
@@ -169,6 +157,9 @@ behind GitHub-blocking networks should use one of these paths:
   ```
   (Both binaries are required — the dispatcher and the TUI ship
   separately; see `AGENTS.md` for the two-binary install rationale.)
+  Linux build-time dependencies (`build-essential`, `pkg-config`,
+  `libdbus-1-dev` on Debian/Ubuntu) are required — see
+  [INSTALL.md](INSTALL.md#4-install-via-cargo-any-tier-1-rust-target).
 
 - **CNB release assets** for Linux x64, when the matching CNB tag pipeline has
   completed successfully. Download `deepseek-linux-x64`,
@@ -184,19 +175,16 @@ behind GitHub-blocking networks should use one of these paths:
   `deepseek-artifacts-sha256.txt` and the platform binaries; format matches
   a GitHub Release asset directory.
 
-## Tencent Cloud remote-first path
+## Clone from CNB
 
-The Lighthouse + Feishu/Lark tutorial uses CNB as the Tencent-side source and
-automation lane. For a stable install, clone `main` or a release tag from:
+For a stable install, clone `main` or a release tag from:
 
 ```bash
 https://cnb.cool/deepseek.net/deepseek.git
 ```
 
-The mirror receives `main`, release tags, and the Tencent setup branch patterns
-used by the Lighthouse/Feishu tutorial. Those CNB refs are the default source
-for Tencent-side bootstrap; GitHub is the fallback when the CNB workflow or
-credentials are unhealthy.
+The mirror receives `main`, release tags, and matched release branches. GitHub
+is the fallback when the CNB workflow or credentials are unhealthy.
 
 CNB deploy-button examples live in `deploy/tencent-lighthouse/cnb/`. They are
 not active until copied into `.cnb.yml` and `.cnb/tag_deploy.yml`, because live

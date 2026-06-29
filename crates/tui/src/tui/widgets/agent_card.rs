@@ -3,7 +3,7 @@
 //! Two cards consume the #130 mailbox stream and render live in the chat
 //! transcript:
 //!
-//! - [`DelegateCard`] — single `agent_spawn` invocation. Live tree of the
+//! - [`DelegateCard`] — single `agent` invocation. Live tree of the
 //!   last 3 actions plus a header with status / glyph / role.
 //! - [`FanoutCard`] — `rlm` fanout (or any future multi-child dispatch).
 //!   Dot-grid of worker slots (`●` filled, `○` pending) plus an aggregate
@@ -20,7 +20,9 @@ use ratatui::text::{Line, Span};
 use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tools::subagent::MailboxMessage;
+use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::{ToolFamily, family_glyph, family_label};
+use unicode_width::UnicodeWidthStr;
 
 /// Maximum number of recent actions kept on a `DelegateCard`. Older entries
 /// are dropped from the head; an ellipsis row signals truncation.
@@ -34,11 +36,17 @@ pub enum AgentLifecycle {
     Completed,
     Failed,
     Cancelled,
+    /// Interrupted with a continuable checkpoint (e.g. API timeout); not
+    /// running, but recoverable from its checkpoint.
+    Interrupted,
 }
 
 impl AgentLifecycle {
     fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
     }
 
     fn label(self) -> &'static str {
@@ -48,6 +56,7 @@ impl AgentLifecycle {
             Self::Completed => "done",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
         }
     }
 
@@ -58,11 +67,12 @@ impl AgentLifecycle {
             Self::Completed => palette::STATUS_SUCCESS,
             Self::Failed => palette::STATUS_ERROR,
             Self::Cancelled => palette::TEXT_MUTED,
+            Self::Interrupted => palette::STATUS_WARNING,
         }
     }
 }
 
-/// Card for a single delegated `agent_spawn` invocation.
+/// Card for a single delegated `agent` invocation.
 ///
 /// Stores the last [`DELEGATE_MAX_ACTIONS`] action lines; older entries are
 /// truncated and a single ellipsis row is rendered above the visible tail.
@@ -100,8 +110,9 @@ impl DelegateCard {
     }
 
     #[must_use]
-    pub fn render_lines(&self, _width: u16) -> Vec<Line<'static>> {
+    pub fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::with_capacity(self.actions.len() + 3);
+        let content_width = usize::from(width);
         let role = readable_agent_role(&self.agent_type);
         let short_id = crate::session_manager::truncate_id(&self.agent_id).to_string();
         let detail = if let Some(ref summary) = self.summary {
@@ -114,6 +125,7 @@ impl DelegateCard {
             self.status,
             &role,
             &detail,
+            content_width,
         ));
         if self.truncated {
             lines.push(Line::from(Span::styled(
@@ -122,10 +134,11 @@ impl DelegateCard {
             )));
         }
         for action in &self.actions {
+            let prefix = "  \u{2502} ";
             lines.push(Line::from(vec![
-                Span::styled("  \u{2502} ", Style::default().fg(palette::TEXT_DIM)),
+                Span::styled(prefix, Style::default().fg(palette::TEXT_DIM)),
                 Span::styled(
-                    truncate_action(action, 200),
+                    truncate_action(action, line_detail_width(content_width, prefix).min(200)),
                     Style::default().fg(palette::TEXT_TOOL_OUTPUT),
                 ),
             ]));
@@ -133,10 +146,11 @@ impl DelegateCard {
         if self.status.is_terminal()
             && let Some(summary) = self.summary.as_ref()
         {
+            let prefix = "  \u{2570} ";
             lines.push(Line::from(vec![
-                Span::styled("  \u{2570} ", Style::default().fg(palette::TEXT_DIM)),
+                Span::styled(prefix, Style::default().fg(palette::TEXT_DIM)),
                 Span::styled(
-                    truncate_action(summary, 200),
+                    truncate_action(summary, line_detail_width(content_width, prefix).min(200)),
                     Style::default().fg(self.status.color()),
                 ),
             ]));
@@ -221,17 +235,23 @@ impl FanoutCard {
         self
     }
 
-    /// Update or insert a worker by id.
-    pub fn upsert_worker(&mut self, agent_id: &str, status: AgentLifecycle) {
+    /// Update or insert a worker by id. Returns whether the visible state
+    /// changed and the card should be redrawn.
+    pub fn upsert_worker(&mut self, agent_id: &str, status: AgentLifecycle) -> bool {
         if let Some(slot) = self
             .workers
             .iter_mut()
             .find(|s| s.agent_id == agent_id || s.worker_id == agent_id)
         {
+            if slot.agent_id == agent_id && slot.status == status {
+                return false;
+            }
             slot.agent_id = agent_id.to_string();
             slot.status = status;
+            true
         } else {
             self.workers.push(WorkerSlot::new(agent_id, status));
+            true
         }
     }
 
@@ -239,10 +259,13 @@ impl FanoutCard {
     /// cards are seeded from task ids before child agents exist; when a child
     /// starts, this keeps the dot count stable instead of appending a second
     /// circle for the same unit of work.
-    pub fn claim_pending_worker(&mut self, agent_id: &str, status: AgentLifecycle) {
+    pub fn claim_pending_worker(&mut self, agent_id: &str, status: AgentLifecycle) -> bool {
         if let Some(slot) = self.workers.iter_mut().find(|s| s.agent_id == agent_id) {
+            if slot.status == status {
+                return false;
+            }
             slot.status = status;
-            return;
+            return true;
         }
         if let Some(slot) = self
             .workers
@@ -251,9 +274,9 @@ impl FanoutCard {
         {
             slot.agent_id = agent_id.to_string();
             slot.status = status;
-            return;
+            return true;
         }
-        self.upsert_worker(agent_id, status);
+        self.upsert_worker(agent_id, status)
     }
 
     fn counts(&self) -> (usize, usize, usize, usize) {
@@ -265,7 +288,9 @@ impl FanoutCard {
             match slot.status {
                 AgentLifecycle::Completed => done += 1,
                 AgentLifecycle::Running => running += 1,
-                AgentLifecycle::Failed | AgentLifecycle::Cancelled => failed += 1,
+                AgentLifecycle::Failed
+                | AgentLifecycle::Cancelled
+                | AgentLifecycle::Interrupted => failed += 1,
                 AgentLifecycle::Pending => pending += 1,
             }
         }
@@ -277,11 +302,12 @@ impl FanoutCard {
         let mut s = String::with_capacity(self.workers.len());
         for slot in &self.workers {
             let glyph = match slot.status {
-                AgentLifecycle::Completed => '\u{25CF}', // ●
-                AgentLifecycle::Running => '\u{25D0}',   // ◐
-                AgentLifecycle::Failed => '\u{00D7}',    // ×
-                AgentLifecycle::Cancelled => '\u{2298}', // ⊘
-                AgentLifecycle::Pending => '\u{25CB}',   // ○
+                AgentLifecycle::Completed => '\u{25CF}',   // ●
+                AgentLifecycle::Running => '\u{25D0}',     // ◐
+                AgentLifecycle::Failed => '\u{00D7}',      // ×
+                AgentLifecycle::Cancelled => '\u{2298}',   // ⊘
+                AgentLifecycle::Pending => '\u{25CB}',     // ○
+                AgentLifecycle::Interrupted => '\u{25CC}', // ◌
             };
             s.push(glyph);
         }
@@ -289,8 +315,9 @@ impl FanoutCard {
     }
 
     #[must_use]
-    pub fn render_lines(&self, _width: u16) -> Vec<Line<'static>> {
+    pub fn render_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::with_capacity(3);
+        let content_width = usize::from(width);
         let header_status = self.aggregate_status();
         let title = format!("{} ({} workers)", self.kind, self.workers.len());
         let family = if matches!(self.kind.as_str(), "rlm_open" | "rlm_eval" | "rlm") {
@@ -298,7 +325,13 @@ impl FanoutCard {
         } else {
             ToolFamily::Fanout
         };
-        lines.push(card_header(family, header_status, &self.kind, &title));
+        lines.push(card_header(
+            family,
+            header_status,
+            &self.kind,
+            &title,
+            content_width,
+        ));
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(
@@ -327,6 +360,12 @@ impl FanoutCard {
         let (done, running, failed, pending) = self.counts();
         if running > 0 || pending > 0 {
             AgentLifecycle::Running
+        } else if self
+            .workers
+            .iter()
+            .any(|slot| matches!(slot.status, AgentLifecycle::Interrupted))
+        {
+            AgentLifecycle::Interrupted
         } else if failed > 0 && done == 0 {
             AgentLifecycle::Failed
         } else if done > 0 {
@@ -348,13 +387,29 @@ fn card_header(
     status: AgentLifecycle,
     role: &str,
     detail: &str,
+    width: usize,
 ) -> Line<'static> {
     let glyph = family_glyph(family);
     let verb = family_label(family);
     let header_color = status.color();
+    let glyph_text = format!("{glyph} ");
+    let status_text = format!("[{}]", status.label());
+    let fixed_width = [
+        glyph_text.as_str(),
+        verb,
+        " ",
+        role,
+        " ",
+        status_text.as_str(),
+        " ",
+    ]
+    .iter()
+    .map(|text| UnicodeWidthStr::width(*text))
+    .sum::<usize>();
+    let detail = truncate_action(detail, width.saturating_sub(fixed_width));
     Line::from(vec![
         Span::styled(
-            format!("{glyph} "),
+            glyph_text,
             Style::default()
                 .fg(header_color)
                 .add_modifier(Modifier::BOLD),
@@ -368,12 +423,9 @@ fn card_header(
         Span::raw(" "),
         Span::styled(role.to_string(), Style::default().fg(palette::TEXT_PRIMARY)),
         Span::raw(" "),
-        Span::styled(
-            format!("[{}]", status.label()),
-            Style::default().fg(header_color),
-        ),
+        Span::styled(status_text, Style::default().fg(header_color)),
         Span::raw(" "),
-        Span::styled(detail.to_string(), Style::default().fg(palette::TEXT_MUTED)),
+        Span::styled(detail, Style::default().fg(palette::TEXT_MUTED)),
     ])
 }
 
@@ -386,21 +438,17 @@ fn readable_agent_role(agent_type: &str) -> String {
         "review" => "reviewer".to_string(),
         "implementer" => "builder".to_string(),
         "verifier" => "verifier".to_string(),
-        "tool_agent" | "tool-agent" | "fin" => "executor".to_string(),
         "custom" => "specialist".to_string(),
         other => other.to_string(),
     }
 }
 
 fn truncate_action(text: &str, max: usize) -> String {
-    let trimmed = text.trim();
-    if trimmed.chars().count() <= max {
-        trimmed.to_string()
-    } else {
-        let mut out: String = trimmed.chars().take(max.saturating_sub(1)).collect();
-        out.push('\u{2026}');
-        out
-    }
+    truncate_line_to_width(text.trim(), max)
+}
+
+fn line_detail_width(line_width: usize, prefix: &str) -> usize {
+    line_width.saturating_sub(UnicodeWidthStr::width(prefix))
 }
 
 /// Apply a mailbox envelope to a `DelegateCard`. Returns `true` if the
@@ -412,11 +460,18 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
     }
     match msg {
         MailboxMessage::Started { .. } => {
+            if card.status == AgentLifecycle::Running {
+                return false;
+            }
             card.status = AgentLifecycle::Running;
         }
         MailboxMessage::Progress { status, .. } => {
+            let low_signal = is_low_signal_progress(status);
+            if low_signal && card.status == AgentLifecycle::Running {
+                return false;
+            }
             card.status = AgentLifecycle::Running;
-            if !is_low_signal_progress(status) {
+            if !low_signal {
                 card.push_action(status);
             }
         }
@@ -433,6 +488,10 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
         MailboxMessage::Failed { error, .. } => {
             card.status = AgentLifecycle::Failed;
             card.summary = Some(error.clone());
+        }
+        MailboxMessage::Interrupted { reason, .. } => {
+            card.status = AgentLifecycle::Interrupted;
+            card.summary = Some(reason.clone());
         }
         MailboxMessage::Cancelled { .. } => {
             card.status = AgentLifecycle::Cancelled;
@@ -464,30 +523,18 @@ fn is_low_signal_progress(status: &str) -> bool {
 pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
     let id = msg.agent_id();
     match msg {
-        MailboxMessage::Started { .. } => {
-            card.claim_pending_worker(id, AgentLifecycle::Running);
-            true
-        }
-        MailboxMessage::Progress { .. } | MailboxMessage::ToolCallStarted { .. } => {
-            card.claim_pending_worker(id, AgentLifecycle::Running);
-            true
+        MailboxMessage::Started { .. } => card.claim_pending_worker(id, AgentLifecycle::Running),
+        MailboxMessage::Progress { .. } => card.claim_pending_worker(id, AgentLifecycle::Running),
+        MailboxMessage::ToolCallStarted { .. } => {
+            card.claim_pending_worker(id, AgentLifecycle::Running)
         }
         MailboxMessage::ToolCallCompleted { .. } => true,
-        MailboxMessage::Completed { .. } => {
-            card.upsert_worker(id, AgentLifecycle::Completed);
-            true
-        }
-        MailboxMessage::Failed { .. } => {
-            card.upsert_worker(id, AgentLifecycle::Failed);
-            true
-        }
-        MailboxMessage::Cancelled { .. } => {
-            card.upsert_worker(id, AgentLifecycle::Cancelled);
-            true
-        }
+        MailboxMessage::Completed { .. } => card.upsert_worker(id, AgentLifecycle::Completed),
+        MailboxMessage::Failed { .. } => card.upsert_worker(id, AgentLifecycle::Failed),
+        MailboxMessage::Interrupted { .. } => card.upsert_worker(id, AgentLifecycle::Interrupted),
+        MailboxMessage::Cancelled { .. } => card.upsert_worker(id, AgentLifecycle::Cancelled),
         MailboxMessage::ChildSpawned { child_id, .. } => {
-            card.upsert_worker(child_id, AgentLifecycle::Pending);
-            true
+            card.upsert_worker(child_id, AgentLifecycle::Pending)
         }
         MailboxMessage::TokenUsage { .. } => {
             // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
@@ -501,6 +548,7 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_width::UnicodeWidthStr;
 
     fn render_to_strings(lines: &[Line<'static>]) -> Vec<String> {
         lines
@@ -512,6 +560,27 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn delegate_card_cjk_text_respects_render_width() {
+        let mut card = DelegateCard::new("agent_e0b2dcf1", "implementer");
+        card.status = AgentLifecycle::Running;
+        card.summary = Some(
+            "抹香鲸 agent_e0b2dcf1 running 10+ 124838ms role: implementer git: branch codex/issue-3439-zhipu-glm-fixture @ issue-3439".into(),
+        );
+        card.push_action("objective: QUESTION: Add Zhipu GLM as a first-class provider-scoped route for 中文输出".to_string());
+
+        let rendered = render_to_strings(&card.render_lines(40));
+
+        assert!(
+            rendered[0].contains("builder") && rendered[0].contains("[running]"),
+            "header keeps fixed status columns visible: {rendered:?}"
+        );
+        for line in rendered {
+            let width = UnicodeWidthStr::width(line.as_str());
+            assert!(width <= 40, "line width {width} exceeds 40: {line:?}");
+        }
     }
 
     #[test]
@@ -594,6 +663,10 @@ mod tests {
         assert!(
             !rendered.contains("requesting model response"),
             "{rendered}"
+        );
+        assert!(
+            !apply_to_delegate(&mut card, &msg),
+            "repeated low-signal progress should not redraw the card"
         );
     }
 
@@ -702,6 +775,12 @@ mod tests {
         assert_eq!(card.workers[0].status, AgentLifecycle::Running);
         assert_eq!(card.workers[1].agent_id, "task:b");
         assert_eq!(card.workers[1].status, AgentLifecycle::Pending);
+        let progress =
+            MailboxMessage::progress("agent_live", "step 1/100: requesting model response");
+        assert!(
+            !apply_to_fanout(&mut card, &progress),
+            "repeated progress for a running worker should not redraw"
+        );
     }
 
     #[test]
@@ -745,6 +824,72 @@ mod tests {
                 "fanout dot-grid for total={total} done={done}",
             );
         }
+    }
+
+    #[test]
+    fn delegate_interrupted_leaves_running_and_renders_reason() {
+        let mut card = DelegateCard::new("agent_int", "general");
+        apply_to_delegate(
+            &mut card,
+            &MailboxMessage::started("agent_int", crate::tools::subagent::SubAgentType::General),
+        );
+        assert_eq!(card.status, AgentLifecycle::Running);
+
+        let msg = MailboxMessage::Interrupted {
+            agent_id: "agent_int".into(),
+            reason: "API call timed out after 120000ms; checkpoint preserved for continuation"
+                .into(),
+        };
+        assert!(apply_to_delegate(&mut card, &msg));
+        assert_eq!(card.status, AgentLifecycle::Interrupted);
+
+        let rendered = render_to_strings(&card.render_lines(80)).join("\n");
+        assert!(rendered.contains("[interrupted]"), "{rendered}");
+        assert!(rendered.contains("API call timed out"), "{rendered}");
+    }
+
+    #[test]
+    fn fanout_interrupted_worker_leaves_running_counts() {
+        let mut card = FanoutCard::new("fanout", Locale::En).with_workers(["w_1", "w_2"]);
+        apply_to_fanout(
+            &mut card,
+            &MailboxMessage::started("w_1", crate::tools::subagent::SubAgentType::General),
+        );
+        apply_to_fanout(
+            &mut card,
+            &MailboxMessage::started("w_2", crate::tools::subagent::SubAgentType::General),
+        );
+
+        let msg = MailboxMessage::Interrupted {
+            agent_id: "w_1".into(),
+            reason: "API call timed out".into(),
+        };
+        assert!(apply_to_fanout(&mut card, &msg));
+        assert_eq!(card.workers[0].status, AgentLifecycle::Interrupted);
+        assert_eq!(card.workers[1].status, AgentLifecycle::Running);
+
+        let rendered = render_to_strings(&card.render_lines(80));
+        let stats = rendered
+            .iter()
+            .find(|line| line.contains("running") && line.contains("pending"))
+            .expect("counts line present");
+        assert!(stats.contains("1 running"), "{stats}");
+        assert!(
+            stats.contains("1 failed"),
+            "interrupted folds into the non-running attention bucket: {stats}"
+        );
+
+        let msg = MailboxMessage::Interrupted {
+            agent_id: "w_2".into(),
+            reason: "API call timed out".into(),
+        };
+        assert!(apply_to_fanout(&mut card, &msg));
+        let rendered = render_to_strings(&card.render_lines(80)).join("\n");
+        assert!(
+            rendered.contains("[interrupted]"),
+            "aggregate header should surface interrupted once nothing runs: {rendered}"
+        );
+        assert!(rendered.contains("0 running"), "{rendered}");
     }
 
     #[test]

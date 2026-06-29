@@ -17,6 +17,11 @@ only what you actually read or executed; do not paraphrase from memory. Format
 file refs as `path/to/file.rs:120-145`. Omit this section only if the task was
 purely generative and you observed nothing (rare).
 
+If you rely on a child sub-agent report, cite it as child-agent evidence:
+include the child `agent_id` and the specific EVIDENCE line(s) the child
+provided. Do not present child-agent findings as files or commands you
+personally verified unless you directly read or ran them yourself.
+
 ### CHANGES
 Bullet list of every write you performed: files created, files edited, patches
 applied, shell side effects (e.g. `cargo fmt --write`). Each bullet names the

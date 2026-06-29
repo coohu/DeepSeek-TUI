@@ -1,57 +1,35 @@
-export function envFirst(env, ...names) {
-  for (const name of names) {
-    const value = env?.[name];
-    if (value != null && String(value).trim()) return String(value).trim();
-  }
-  return "";
-}
+import {
+  activeTurnBlock,
+  cleanEnvValue,
+  commandAction as coreCommandAction,
+  compactRuntimeError,
+  envFirst,
+  isPlaceholderValue,
+  latestRunningTurn,
+  parseApprovalDecisionArgs,
+  parseBool,
+  parseCommand as coreParseCommand,
+  parseEnvText,
+  parseList,
+  preservedChatStateFields,
+  splitMessage,
+  stripGroupPrefix as coreStripGroupPrefix
+} from "../../bridge-core/src/lib.mjs";
 
-export function parseList(raw) {
-  return String(raw || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-export function parseBool(raw, fallback = false) {
-  if (raw == null || raw === "") return fallback;
-  return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
-}
-
-export function parseEnvText(raw) {
-  const env = {};
-  for (const line of String(raw || "").split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const normalized = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed;
-    const index = normalized.indexOf("=");
-    if (index <= 0) continue;
-    const key = normalized.slice(0, index).trim();
-    let value = normalized.slice(index + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    env[key] = value;
-  }
-  return env;
-}
-
-export function cleanEnvValue(value) {
-  return String(value ?? "").trim();
-}
-
-export function isPlaceholderValue(value) {
-  const normalized = cleanEnvValue(value).toLowerCase();
-  return (
-    !normalized ||
-    normalized.includes("replace-with") ||
-    normalized.includes("xxxxxxxx") ||
-    normalized === "changeme"
-  );
-}
+export {
+  activeTurnBlock,
+  cleanEnvValue,
+  compactRuntimeError,
+  envFirst,
+  isPlaceholderValue,
+  latestRunningTurn,
+  parseApprovalDecisionArgs,
+  parseBool,
+  parseEnvText,
+  parseList,
+  preservedChatStateFields,
+  splitMessage
+};
 
 export function telegramIdentity(update) {
   const message = update?.message || update?.edited_message || {};
@@ -97,76 +75,20 @@ export function pairingRefusalText(identity) {
 }
 
 export function stripGroupPrefix(text, { chatType, requirePrefix, prefix }) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return { accepted: false, text: "" };
-  if (!requirePrefix || !isGroupChat(chatType)) {
-    return { accepted: true, text: trimmed };
-  }
-  const marker = prefix || "/cw";
-  if (trimmed === marker) return { accepted: true, text: "/help" };
-  if (trimmed.startsWith(`${marker} `)) {
-    return { accepted: true, text: trimmed.slice(marker.length).trim() };
-  }
-  return { accepted: false, text: "" };
+  return coreStripGroupPrefix(text, {
+    chatType,
+    requirePrefix,
+    prefix: prefix || "/cw",
+    directChatTypes: ["private", "channel"]
+  });
 }
 
 export function parseCommand(text) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed.startsWith("/")) return { name: "prompt", args: trimmed };
-  const [head, ...rest] = trimmed.split(/\s+/);
-  const name = head
-    .slice(1)
-    .split("@")[0]
-    .toLowerCase();
-  return {
-    name,
-    args: rest.join(" ").trim()
-  };
-}
-
-export function parseApprovalDecisionArgs(args) {
-  const parts = String(args || "")
-    .split(/\s+/)
-    .filter(Boolean);
-  return {
-    approvalId: parts[0] || "",
-    remember: parts.slice(1).includes("remember")
-  };
+  return coreParseCommand(text, { stripBotMention: true });
 }
 
 export function commandAction(command) {
-  switch (command.name) {
-    case "start":
-    case "help":
-      return { kind: "help" };
-    case "menu":
-      return { kind: "menu" };
-    case "status":
-      return { kind: "status" };
-    case "threads":
-      return { kind: "threads" };
-    case "new":
-      return { kind: "new_thread" };
-    case "resume":
-      return { kind: "resume", threadId: command.args };
-    case "interrupt":
-      return { kind: "interrupt" };
-    case "compact":
-      return { kind: "compact" };
-    case "model":
-      return { kind: "set_model", modelName: command.args };
-    case "allow":
-      return { kind: "approval", decision: "allow", ...parseApprovalDecisionArgs(command.args) };
-    case "deny":
-      return { kind: "approval", decision: "deny", ...parseApprovalDecisionArgs(command.args) };
-    case "prompt":
-      return { kind: "prompt", prompt: command.args };
-    default:
-      return {
-        kind: "prompt",
-        prompt: `/${command.name}${command.args ? ` ${command.args}` : ""}`
-      };
-  }
+  return coreCommandAction(command, { allowMenu: true, allowStart: true });
 }
 
 export function controlKeyboard() {
@@ -249,53 +171,214 @@ export function callbackAction(data) {
   return null;
 }
 
-export function preservedChatStateFields(state = {}) {
-  const preserved = {};
-  if (Object.prototype.hasOwnProperty.call(state || {}, "model")) {
-    preserved.model = state.model || null;
+const MARKDOWN_V2_SPECIALS = /([_*\[\]()~`>#+\-=|{}.!])/g;
+const BLOCK_PLACEHOLDER_PREFIX = "\u0000mdv2:block:";
+const INLINE_PLACEHOLDER_PREFIX = "\u0000mdv2:inline:";
+const PLACEHOLDER_SUFFIX = "\u0000";
+
+export function telegramMessageBody(text, options = {}) {
+  const maxChars = Math.floor(Number(options.maxChars) || 0);
+  if (options.markdown === false) {
+    return { text: boundedPlainTelegramText(text, maxChars) };
   }
-  return preserved;
-}
-
-export function splitMessage(text, maxChars = 3500) {
-  const value = String(text || "");
-  const chars = Array.from(value);
-  if (chars.length <= maxChars) return value ? [value] : [];
-  const chunks = [];
-  let cursor = 0;
-  while (cursor < chars.length) {
-    chunks.push(chars.slice(cursor, cursor + maxChars).join(""));
-    cursor += maxChars;
+  const markdownText = telegramMarkdownV2(text);
+  if (maxChars > 0 && markdownText.length > maxChars) {
+    return { text: boundedPlainTelegramText(text, maxChars) };
   }
-  return chunks;
-}
-
-export function compactRuntimeError(status, body) {
-  const message =
-    body?.error?.message ||
-    body?.message ||
-    (typeof body === "string" ? body : JSON.stringify(body));
-  return `Runtime API request failed (${status}): ${message}`;
-}
-
-export function latestRunningTurn(detail) {
-  const turns = Array.isArray(detail?.turns) ? detail.turns : [];
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index];
-    if (["queued", "in_progress"].includes(turn?.status)) return turn;
-  }
-  return null;
-}
-
-export function activeTurnBlock(detail, state = {}) {
-  const runningTurn = latestRunningTurn(detail);
-  if (!runningTurn) return null;
   return {
-    turnId: runningTurn.id || state.activeTurnId || "",
-    message: `Thread already has active turn ${
-      runningTurn.id || state.activeTurnId || "(unknown)"
-    }. Wait for it to finish or send /interrupt.`
+    text: markdownText,
+    parse_mode: "MarkdownV2"
   };
+}
+
+export function telegramMarkdownV2(text) {
+  const placeholders = [];
+  const source = String(text || "");
+  const fenced = source.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_match, language, body) =>
+    markdownPlaceholder(
+      placeholders,
+      `\`\`\`${safeFenceLanguage(language)}\n${escapeMarkdownV2Code(removeClosingFenceNewline(body))}\n\`\`\``,
+      BLOCK_PLACEHOLDER_PREFIX
+    )
+  );
+  return restoreMarkdownPlaceholders(renderMarkdownLines(fenced), placeholders, BLOCK_PLACEHOLDER_PREFIX);
+}
+
+export function plainTelegramText(text) {
+  const source = String(text || "");
+  return renderPlainLines(
+    source
+      .replace(/```[^\n`]*\n?([\s\S]*?)```/g, "$1")
+      .replace(/`([^`\n]+)`/g, "$1")
+      .replace(/\[([^\]\n]+)\]\(([^ \n]+)\)/g, "$1 ($2)")
+      .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+      .replace(/__([^_\n]+)__/g, "$1")
+      .replace(/[*_~]/g, "")
+  );
+}
+
+function boundedPlainTelegramText(text, maxChars) {
+  const plain = plainTelegramText(text);
+  if (maxChars > 0 && plain.length > maxChars) {
+    return String(text || "");
+  }
+  return plain;
+}
+
+export function isTelegramMarkdownParseError(error) {
+  if (Number(error?.errorCode) !== 400) return false;
+  const text = String(error?.description || error?.message || "").toLowerCase();
+  return (
+    text.includes("parse") ||
+    text.includes("can't parse entities") ||
+    text.includes("entity") ||
+    text.includes("markdown")
+  );
+}
+
+function renderMarkdownLines(text) {
+  const lines = String(text || "").split("\n");
+  const output = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isMarkdownTable(lines, index)) {
+      const { rendered, nextIndex } = renderMarkdownTable(lines, index);
+      output.push(rendered);
+      index = nextIndex - 1;
+    } else {
+      output.push(renderMarkdownInline(lines[index]));
+    }
+  }
+  return output.join("\n");
+}
+
+function renderPlainLines(text) {
+  const lines = String(text || "").split("\n");
+  const output = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isMarkdownTable(lines, index)) {
+      const { rendered, nextIndex } = renderPlainTable(lines, index);
+      output.push(rendered);
+      index = nextIndex - 1;
+    } else {
+      output.push(lines[index]);
+    }
+  }
+  return output.join("\n");
+}
+
+function renderMarkdownInline(text) {
+  const placeholders = [];
+  let value = String(text || "");
+  value = value.replace(/\[([^\]\n]+)\]\(([^ \n]+)\)/g, (_match, label, url) =>
+    markdownPlaceholder(
+      placeholders,
+      `[${escapeMarkdownV2Text(label)}](${escapeMarkdownV2Url(url)})`,
+      INLINE_PLACEHOLDER_PREFIX
+    )
+  );
+  value = value.replace(/`([^`\n]+)`/g, (_match, code) =>
+    markdownPlaceholder(placeholders, `\`${escapeMarkdownV2Code(code)}\``, INLINE_PLACEHOLDER_PREFIX)
+  );
+  value = value.replace(/\*\*([^*\n]+)\*\*/g, (_match, body) =>
+    markdownPlaceholder(placeholders, `*${escapeMarkdownV2Text(body)}*`, INLINE_PLACEHOLDER_PREFIX)
+  );
+  value = escapeMarkdownV2Text(value);
+  return restoreMarkdownPlaceholders(value, placeholders, INLINE_PLACEHOLDER_PREFIX);
+}
+
+function renderMarkdownTable(lines, startIndex) {
+  const headers = tableCells(lines[startIndex]);
+  const rows = [];
+  let index = startIndex + 2;
+  while (index < lines.length && looksLikeTableRow(lines[index])) {
+    rows.push(tableCells(lines[index]));
+    index += 1;
+  }
+  const headerText = headers.map(escapeMarkdownV2Text).join(" / ");
+  const rendered = [`*${headerText}*`];
+  for (const row of rows) {
+    const fields = headers.map((header, cellIndex) => {
+      const value = row[cellIndex] || "";
+      return `${escapeMarkdownV2Text(header)}: ${escapeMarkdownV2Text(value)}`;
+    });
+    rendered.push(`• ${fields.join("; ")}`);
+  }
+  return { rendered: rendered.join("\n"), nextIndex: index };
+}
+
+function renderPlainTable(lines, startIndex) {
+  const headers = tableCells(lines[startIndex]);
+  const rows = [];
+  let index = startIndex + 2;
+  while (index < lines.length && looksLikeTableRow(lines[index])) {
+    rows.push(tableCells(lines[index]));
+    index += 1;
+  }
+  const rendered = [headers.join(" / ")];
+  for (const row of rows) {
+    const fields = headers.map((header, cellIndex) => `${header}: ${row[cellIndex] || ""}`);
+    rendered.push(`- ${fields.join("; ")}`);
+  }
+  return { rendered: rendered.join("\n"), nextIndex: index };
+}
+
+function isMarkdownTable(lines, index) {
+  return (
+    looksLikeTableRow(lines[index]) &&
+    index + 1 < lines.length &&
+    looksLikeTableSeparator(lines[index + 1])
+  );
+}
+
+function looksLikeTableRow(line) {
+  return tableCells(line).length >= 2;
+}
+
+function looksLikeTableSeparator(line) {
+  const cells = tableCells(line);
+  return cells.length >= 2 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function tableCells(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) return [];
+  return trimmed
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function escapeMarkdownV2Text(text) {
+  return String(text || "").replace(MARKDOWN_V2_SPECIALS, "\\$1");
+}
+
+function escapeMarkdownV2Code(text) {
+  return String(text || "").replace(/([`\\])/g, "\\$1");
+}
+
+function escapeMarkdownV2Url(text) {
+  return String(text || "").replace(/([)\\])/g, "\\$1");
+}
+
+function safeFenceLanguage(language) {
+  return String(language || "").trim().replace(/[^\w+-]/g, "");
+}
+
+function removeClosingFenceNewline(text) {
+  return String(text || "").replace(/\n$/, "");
+}
+
+function markdownPlaceholder(placeholders, rendered, prefix) {
+  const index = placeholders.push(rendered) - 1;
+  return `${prefix}${index}${PLACEHOLDER_SUFFIX}`;
+}
+
+function restoreMarkdownPlaceholders(text, placeholders, prefix) {
+  return String(text || "").replace(
+    new RegExp(`${prefix}(\\d+)${PLACEHOLDER_SUFFIX}`, "g"),
+    (_match, index) => placeholders[Number(index)] || ""
+  );
 }
 
 export function telegramRetryDelayMs(error, fallbackMs = 3000) {
@@ -304,6 +387,46 @@ export function telegramRetryDelayMs(error, fallbackMs = 3000) {
     return Math.min(retryAfter * 1000, 60000);
   }
   return fallbackMs;
+}
+
+const POLLING_CONFLICT_DELAYS_MS = [15000, 25000, 35000, 45000, 55000];
+
+export function telegramPollingConflictDelayMs(attempt = 0) {
+  const index = Math.max(0, Math.floor(Number(attempt) || 0));
+  return POLLING_CONFLICT_DELAYS_MS[index] ?? null;
+}
+
+export function telegramSendRetryDelayMs(error, attempt = 0) {
+  const retryAfter = Number(error?.parameters?.retry_after || 0);
+  if (error?.errorCode === 429 && attempt < 3) {
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1000, 60000);
+    }
+    return 3000;
+  }
+  if (isTransientTelegramSendError(error) && attempt < 2) {
+    return attempt === 0 ? 1000 : 2000;
+  }
+  return null;
+}
+
+function isTransientTelegramSendError(error) {
+  if (!error || error.errorCode) return false;
+  const name = String(error.name || "");
+  if (name === "AbortError" || name === "TimeoutError") return false;
+  if (error instanceof TypeError) return true;
+
+  const code = String(error.code || error.cause?.code || "");
+  if (["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENOTFOUND", "ETIMEDOUT"].includes(code)) {
+    return true;
+  }
+
+  const message = String(error.message || "").toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network") ||
+    message.includes("socket hang up")
+  );
 }
 
 export function looksLikePollingConflict(error) {
@@ -326,30 +449,30 @@ export function validateBridgeConfig(env, options = {}) {
     add(errors, "placeholder_value", "TELEGRAM_BOT_TOKEN still contains a placeholder value");
   }
 
-  const runtimeUrl = envFirst(env, "CODEWHALE_RUNTIME_URL", "DEEPSEEK_RUNTIME_URL") || "http://127.0.0.1:7878";
+  const runtimeUrl = envFirst(env, "DEEPSEEK_RUNTIME_URL", "DEEPSEEK_RUNTIME_URL") || "http://127.0.0.1:7878";
   try {
     const parsed = new URL(runtimeUrl);
     const localHosts = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
     if (!["http:", "https:"].includes(parsed.protocol)) {
-      add(errors, "invalid_runtime_url", "CODEWHALE_RUNTIME_URL must use http or https");
+      add(errors, "invalid_runtime_url", "DEEPSEEK_RUNTIME_URL must use http or https");
     }
     if (!localHosts.has(parsed.hostname) && options.requireLocalRuntime !== false) {
-      add(errors, "remote_runtime_url", "CODEWHALE_RUNTIME_URL should point at localhost on a VM deployment");
+      add(errors, "remote_runtime_url", "DEEPSEEK_RUNTIME_URL should point at localhost on a VM deployment");
     }
   } catch {
-    add(errors, "invalid_runtime_url", "CODEWHALE_RUNTIME_URL is not a valid URL");
+    add(errors, "invalid_runtime_url", "DEEPSEEK_RUNTIME_URL is not a valid URL");
   }
 
-  const runtimeToken = envFirst(env, "CODEWHALE_RUNTIME_TOKEN", "DEEPSEEK_RUNTIME_TOKEN");
+  const runtimeToken = envFirst(env, "DEEPSEEK_RUNTIME_TOKEN", "DEEPSEEK_RUNTIME_TOKEN");
   if (!runtimeToken) {
-    add(errors, "missing_required", "CODEWHALE_RUNTIME_TOKEN is required");
+    add(errors, "missing_required", "DEEPSEEK_RUNTIME_TOKEN is required");
   } else if (isPlaceholderValue(runtimeToken)) {
-    add(errors, "placeholder_value", "CODEWHALE_RUNTIME_TOKEN still contains a placeholder value");
+    add(errors, "placeholder_value", "DEEPSEEK_RUNTIME_TOKEN still contains a placeholder value");
   }
 
-  const workspace = envFirst(env, "CODEWHALE_WORKSPACE", "DEEPSEEK_WORKSPACE");
+  const workspace = envFirst(env, "DEEPSEEK_WORKSPACE", "DEEPSEEK_WORKSPACE");
   if (workspace && !workspace.startsWith("/")) {
-    add(errors, "relative_workspace", "CODEWHALE_WORKSPACE must be an absolute path");
+    add(errors, "relative_workspace", "DEEPSEEK_WORKSPACE must be an absolute path");
   }
   if (
     workspace &&
@@ -357,7 +480,7 @@ export function validateBridgeConfig(env, options = {}) {
     workspace !== workspaceRoot &&
     !workspace.startsWith(`${workspaceRoot}/`)
   ) {
-    add(warnings, "workspace_root", `CODEWHALE_WORKSPACE is outside ${workspaceRoot}`);
+    add(warnings, "workspace_root", `DEEPSEEK_WORKSPACE is outside ${workspaceRoot}`);
   }
 
   const threadMapPath = envFirst(env, "TELEGRAM_THREAD_MAP_PATH");
@@ -368,11 +491,11 @@ export function validateBridgeConfig(env, options = {}) {
   const allowGroups = parseBool(env.TELEGRAM_ALLOW_GROUPS, false);
   const requirePrefix = parseBool(env.TELEGRAM_REQUIRE_PREFIX_IN_GROUP, true);
   const allowUnlisted = parseBool(
-    envFirst(env, "TELEGRAM_ALLOW_UNLISTED", "CODEWHALE_ALLOW_UNLISTED", "DEEPSEEK_ALLOW_UNLISTED"),
+    envFirst(env, "TELEGRAM_ALLOW_UNLISTED", "DEEPSEEK_ALLOW_UNLISTED", "DEEPSEEK_ALLOW_UNLISTED"),
     false
   );
   const allowlist = parseList(
-    envFirst(env, "TELEGRAM_CHAT_ALLOWLIST", "CODEWHALE_CHAT_ALLOWLIST", "DEEPSEEK_CHAT_ALLOWLIST")
+    envFirst(env, "TELEGRAM_CHAT_ALLOWLIST", "DEEPSEEK_CHAT_ALLOWLIST", "DEEPSEEK_CHAT_ALLOWLIST")
   );
 
   if (!allowlist.length && allowUnlisted) {
@@ -398,27 +521,27 @@ export function validateBridgeConfig(env, options = {}) {
   if (!Number.isFinite(pollTimeout) || pollTimeout < 1 || pollTimeout > 60) {
     add(errors, "invalid_poll_timeout", "TELEGRAM_POLL_TIMEOUT_SECONDS must be between 1 and 60");
   }
-  const turnTimeoutMs = Number(envFirst(env, "CODEWHALE_TURN_TIMEOUT_MS", "DEEPSEEK_TURN_TIMEOUT_MS") || 900000);
+  const turnTimeoutMs = Number(envFirst(env, "DEEPSEEK_TURN_TIMEOUT_MS", "DEEPSEEK_TURN_TIMEOUT_MS") || 900000);
   if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs < 1000) {
-    add(errors, "invalid_turn_timeout", "CODEWHALE_TURN_TIMEOUT_MS must be at least 1000");
+    add(errors, "invalid_turn_timeout", "DEEPSEEK_TURN_TIMEOUT_MS must be at least 1000");
   }
 
   if (runtimeEnv) {
-    const runtimeFileToken = envFirst(runtimeEnv, "CODEWHALE_RUNTIME_TOKEN", "DEEPSEEK_RUNTIME_TOKEN");
+    const runtimeFileToken = envFirst(runtimeEnv, "DEEPSEEK_RUNTIME_TOKEN", "DEEPSEEK_RUNTIME_TOKEN");
     if (!runtimeFileToken) {
-      add(errors, "missing_runtime_token", "runtime.env is missing CODEWHALE_RUNTIME_TOKEN");
+      add(errors, "missing_runtime_token", "runtime.env is missing DEEPSEEK_RUNTIME_TOKEN");
     } else if (isPlaceholderValue(runtimeFileToken)) {
-      add(errors, "placeholder_runtime_token", "runtime.env CODEWHALE_RUNTIME_TOKEN is still a placeholder");
+      add(errors, "placeholder_runtime_token", "runtime.env DEEPSEEK_RUNTIME_TOKEN is still a placeholder");
     } else if (runtimeToken && runtimeToken !== runtimeFileToken) {
       add(errors, "token_mismatch", "Runtime and bridge token values do not match");
     }
 
-    const provider = envFirst(runtimeEnv, "CODEWHALE_PROVIDER", "DEEPSEEK_PROVIDER");
+    const provider = envFirst(runtimeEnv, "DEEPSEEK_PROVIDER", "DEEPSEEK_PROVIDER");
     if (!provider) {
-      add(warnings, "missing_provider", "runtime.env does not set CODEWHALE_PROVIDER");
+      add(warnings, "missing_provider", "runtime.env does not set DEEPSEEK_PROVIDER");
     }
 
-    const runtimePort = Number(envFirst(runtimeEnv, "CODEWHALE_RUNTIME_PORT", "DEEPSEEK_RUNTIME_PORT") || 7878);
+    const runtimePort = Number(envFirst(runtimeEnv, "DEEPSEEK_RUNTIME_PORT", "DEEPSEEK_RUNTIME_PORT") || 7878);
     if (!Number.isInteger(runtimePort) || runtimePort <= 0 || runtimePort > 65535) {
       add(errors, "invalid_runtime_port", "runtime port must be a valid TCP port");
     }

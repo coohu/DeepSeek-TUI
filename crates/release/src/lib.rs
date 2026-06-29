@@ -21,7 +21,7 @@ pub const RELEASES_URL: &str =
 pub const CNB_REPO_URL: &str = "https://cnb.cool/deepseek.net/deepseek";
 
 /// Environment variable that overrides the base URL for release asset downloads.
-pub const RELEASE_BASE_URL_ENV: &str = "CODEWHALE_RELEASE_BASE_URL";
+pub const RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
 
 /// Legacy environment variable (alias for [`RELEASE_BASE_URL_ENV`]).
 pub const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
@@ -30,7 +30,7 @@ pub const LEGACY_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_TUI_RELEASE_BASE_URL";
 pub const DEEPSEEK_RELEASE_BASE_URL_ENV: &str = "DEEPSEEK_RELEASE_BASE_URL";
 
 /// Environment variable that, when set, enables the CNB mirror for downloads.
-pub const CNB_MIRROR_ENV: &str = "CODEWHALE_USE_CNB_MIRROR";
+pub const CNB_MIRROR_ENV: &str = "DEEPSEEK_USE_CNB_MIRROR";
 
 /// Environment variable that pins the update target version.
 pub const UPDATE_VERSION_ENV: &str = "DEEPSEEK_TUI_VERSION";
@@ -96,7 +96,7 @@ pub fn resolve_release_query(channel: ReleaseChannel) -> ReleaseQuery {
 }
 
 /// Reads the release base URL from environment variables, falling back to the
-/// CNB mirror if `CODEWHALE_USE_CNB_MIRROR` is set. Returns `None` when no
+/// CNB mirror if `DEEPSEEK_USE_CNB_MIRROR` is set. Returns `None` when no
 /// override is configured.
 pub fn release_base_url_from_env(version: &str) -> Option<String> {
     for env_name in [
@@ -347,7 +347,337 @@ fn version_is_beta(version: &semver::Version) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
+
+    static RELEASE_ENV_LOCK: Mutex<()> = Mutex::new(());
+    const RELEASE_ENV_VARS: &[&str] = &[
+        RELEASE_BASE_URL_ENV,
+        LEGACY_RELEASE_BASE_URL_ENV,
+        DEEPSEEK_RELEASE_BASE_URL_ENV,
+        CNB_MIRROR_ENV,
+        UPDATE_VERSION_ENV,
+        LEGACY_UPDATE_VERSION_ENV,
+    ];
+
+    struct ReleaseEnvGuard {
+        previous: Vec<(&'static str, Option<OsString>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ReleaseEnvGuard {
+        fn clear() -> Self {
+            let lock = RELEASE_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = RELEASE_ENV_VARS
+                .iter()
+                .map(|&name| (name, std::env::var_os(name)))
+                .collect();
+            for &name in RELEASE_ENV_VARS {
+                // SAFETY: tests that mutate these process-wide vars hold RELEASE_ENV_LOCK.
+                unsafe { std::env::remove_var(name) };
+            }
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ReleaseEnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.previous {
+                // SAFETY: the guard still holds RELEASE_ENV_LOCK while restoring state.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    fn set_release_env(name: &str, value: &str) {
+        // SAFETY: callers hold a ReleaseEnvGuard, which serializes env mutation.
+        unsafe { std::env::set_var(name, value) };
+    }
+
+    #[test]
+    fn release_channel_from_beta_flag_maps_booleans() {
+        assert_eq!(
+            ReleaseChannel::from_beta_flag(false),
+            ReleaseChannel::Stable
+        );
+        assert_eq!(ReleaseChannel::from_beta_flag(true), ReleaseChannel::Beta);
+    }
+
+    #[test]
+    fn release_channel_label_matches_channel_names() {
+        assert_eq!(ReleaseChannel::Stable.label(), "stable");
+        assert_eq!(ReleaseChannel::Beta.label(), "beta");
+    }
+
+    #[test]
+    fn is_beta_tag_detects_beta_prereleases_case_insensitively() {
+        for tag in [
+            "beta",
+            "BETA",
+            "BeTa",
+            "v1.0.0-beta.1",
+            "v1.0.0-BETA.1",
+            "v2.0.0-beta",
+            "something-beta-something",
+            "beta-1.0",
+        ] {
+            assert!(is_beta_tag(tag), "{tag} should be beta");
+        }
+
+        for tag in [
+            "",
+            "bet",
+            "alpha",
+            "rc",
+            "v1.0.0",
+            "v1.0.0-alpha.1",
+            "v1.0.0-rc.1",
+        ] {
+            assert!(!is_beta_tag(tag), "{tag} should not be beta");
+        }
+    }
+
+    #[test]
+    fn release_base_url_from_env_returns_none_without_overrides() {
+        let _env = ReleaseEnvGuard::clear();
+
+        assert_eq!(release_base_url_from_env("1.0.0"), None);
+    }
+
+    #[test]
+    fn release_base_url_from_env_prefers_primary_override() {
+        let _env = ReleaseEnvGuard::clear();
+        set_release_env(RELEASE_BASE_URL_ENV, "https://primary.example.com");
+        set_release_env(LEGACY_RELEASE_BASE_URL_ENV, "https://legacy.example.com");
+
+        assert_eq!(
+            release_base_url_from_env("1.0.0"),
+            Some("https://primary.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn release_base_url_from_env_falls_back_to_legacy_overrides() {
+        let _env = ReleaseEnvGuard::clear();
+        set_release_env(LEGACY_RELEASE_BASE_URL_ENV, "https://legacy.example.com");
+        set_release_env(
+            DEEPSEEK_RELEASE_BASE_URL_ENV,
+            "https://deepseek.example.com",
+        );
+
+        assert_eq!(
+            release_base_url_from_env("1.0.0"),
+            Some("https://legacy.example.com".to_string())
+        );
+
+        set_release_env(LEGACY_RELEASE_BASE_URL_ENV, "");
+
+        assert_eq!(
+            release_base_url_from_env("1.0.0"),
+            Some("https://deepseek.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn release_base_url_from_env_trims_and_ignores_empty_overrides() {
+        let _env = ReleaseEnvGuard::clear();
+        set_release_env(RELEASE_BASE_URL_ENV, "  https://spaced.example.com  \n");
+
+        assert_eq!(
+            release_base_url_from_env("1.0.0"),
+            Some("https://spaced.example.com".to_string())
+        );
+
+        set_release_env(RELEASE_BASE_URL_ENV, "   ");
+        set_release_env(LEGACY_RELEASE_BASE_URL_ENV, "");
+        set_release_env(DEEPSEEK_RELEASE_BASE_URL_ENV, "\n");
+
+        assert_eq!(release_base_url_from_env("1.0.0"), None);
+    }
+
+    #[test]
+    fn release_base_url_from_env_uses_cnb_mirror_last() {
+        let _env = ReleaseEnvGuard::clear();
+        set_release_env(CNB_MIRROR_ENV, "1");
+
+        assert_eq!(
+            release_base_url_from_env("v1.2.3"),
+            Some("https://cnb.cool/coohu/deepseek-tui/-/releases/v1.2.3".to_string())
+        );
+
+        set_release_env(RELEASE_BASE_URL_ENV, "https://explicit.example.com");
+
+        assert_eq!(
+            release_base_url_from_env("1.0.0"),
+            Some("https://explicit.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn update_version_from_env_prefers_primary_then_legacy() {
+        {
+            let _env = ReleaseEnvGuard::clear();
+            set_release_env(UPDATE_VERSION_ENV, "  v1.2.3  ");
+
+            assert_eq!(update_version_from_env().as_deref(), Some("1.2.3"));
+        }
+
+        {
+            let _env = ReleaseEnvGuard::clear();
+            set_release_env(LEGACY_UPDATE_VERSION_ENV, "v1.2.4");
+
+            assert_eq!(update_version_from_env().as_deref(), Some("1.2.4"));
+        }
+    }
+
+    #[test]
+    fn update_version_from_env_ignores_missing_or_empty_values() {
+        let _env = ReleaseEnvGuard::clear();
+        assert_eq!(update_version_from_env(), None);
+
+        set_release_env(UPDATE_VERSION_ENV, "   ");
+        set_release_env(LEGACY_UPDATE_VERSION_ENV, "");
+
+        assert_eq!(update_version_from_env(), None);
+    }
+
+    #[test]
+    fn update_network_fallback_hint_mentions_required_mirror_inputs() {
+        let hint = update_network_fallback_hint();
+
+        assert!(hint.contains(CNB_REPO_URL), "hint missing CNB_REPO_URL");
+        assert!(
+            hint.contains(RELEASE_BASE_URL_ENV),
+            "hint missing RELEASE_BASE_URL_ENV"
+        );
+        assert!(
+            hint.contains(UPDATE_VERSION_ENV),
+            "hint missing UPDATE_VERSION_ENV"
+        );
+        assert!(
+            hint.contains(CHECKSUM_MANIFEST_ASSET),
+            "hint missing CHECKSUM_MANIFEST_ASSET"
+        );
+    }
+
+    #[test]
+    fn mirror_asset_url_trims_trailing_base_slashes() {
+        for base_url in [
+            "https://example.com/assets",
+            "https://example.com/assets/",
+            "https://example.com/assets//",
+        ] {
+            assert_eq!(
+                mirror_asset_url(base_url, "file.zip"),
+                "https://example.com/assets/file.zip",
+                "{base_url} should join with a single slash"
+            );
+        }
+        assert_eq!(mirror_asset_url("", "file.zip"), "/file.zip");
+    }
+
+    #[test]
+    fn resolve_release_query_uses_github_without_overrides() {
+        let _env = ReleaseEnvGuard::clear();
+
+        assert_eq!(
+            resolve_release_query(ReleaseChannel::Stable),
+            ReleaseQuery::GitHubLatest {
+                url: LATEST_RELEASE_URL
+            }
+        );
+        assert_eq!(
+            resolve_release_query(ReleaseChannel::Beta),
+            ReleaseQuery::GitHubReleaseList { url: RELEASES_URL }
+        );
+    }
+
+    #[test]
+    fn resolve_release_query_uses_release_base_url_overrides() {
+        let default_version = env!("CARGO_PKG_VERSION").to_string();
+
+        for (env_name, expected_url) in [
+            (RELEASE_BASE_URL_ENV, "https://primary.example.com/mirror"),
+            (
+                LEGACY_RELEASE_BASE_URL_ENV,
+                "https://legacy.example.com/mirror",
+            ),
+            (
+                DEEPSEEK_RELEASE_BASE_URL_ENV,
+                "https://deepseek.example.com/mirror",
+            ),
+        ] {
+            let _env = ReleaseEnvGuard::clear();
+            set_release_env(env_name, expected_url);
+
+            assert_eq!(
+                resolve_release_query(ReleaseChannel::Stable),
+                ReleaseQuery::Mirror {
+                    base_url: expected_url.to_string(),
+                    version: default_version.clone(),
+                },
+                "{env_name} should drive mirror query"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_release_query_uses_cnb_mirror_override() {
+        let _env = ReleaseEnvGuard::clear();
+        let default_version = env!("CARGO_PKG_VERSION").to_string();
+        set_release_env(CNB_MIRROR_ENV, "1");
+
+        assert_eq!(
+            resolve_release_query(ReleaseChannel::Stable),
+            ReleaseQuery::Mirror {
+                base_url: cnb_release_base_url(&default_version),
+                version: default_version,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_release_query_uses_pinned_release_versions_for_mirrors() {
+        {
+            let _env = ReleaseEnvGuard::clear();
+            set_release_env(RELEASE_BASE_URL_ENV, "https://example.com/mirror");
+            set_release_env(UPDATE_VERSION_ENV, "v1.2.3");
+
+            assert_eq!(
+                resolve_release_query(ReleaseChannel::Stable),
+                ReleaseQuery::Mirror {
+                    base_url: "https://example.com/mirror".to_string(),
+                    version: "1.2.3".to_string(),
+                }
+            );
+        }
+
+        {
+            let _env = ReleaseEnvGuard::clear();
+            set_release_env(RELEASE_BASE_URL_ENV, "https://example.com/mirror");
+            set_release_env(LEGACY_UPDATE_VERSION_ENV, "v1.2.3-legacy");
+
+            assert_eq!(
+                resolve_release_query(ReleaseChannel::Stable),
+                ReleaseQuery::Mirror {
+                    base_url: "https://example.com/mirror".to_string(),
+                    version: "1.2.3-legacy".to_string(),
+                }
+            );
+        }
+    }
 
     #[test]
     fn cnb_release_base_url_includes_tag_directory() {

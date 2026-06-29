@@ -82,10 +82,42 @@ fn cell() -> &'static Mutex<RetryState> {
     STATE.get_or_init(|| Mutex::new(RetryState::Idle))
 }
 
+fn rate_limit_cell() -> &'static Mutex<Option<Instant>> {
+    static STATE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
 /// Public read snapshot for renderers.
 #[must_use]
 pub fn snapshot() -> RetryState {
     cell().lock().map(|s| s.clone()).unwrap_or(RetryState::Idle)
+}
+
+/// Extend the provider-wide rate-limit pause window. This is separate from
+/// the footer banner so one successful concurrent request cannot clear another
+/// request's active `Retry-After` window.
+pub fn note_rate_limit(delay: Duration) {
+    let deadline = Instant::now() + delay;
+    if let Ok(mut current) = rate_limit_cell().lock()
+        && current.is_none_or(|existing| existing < deadline)
+    {
+        *current = Some(deadline);
+    }
+}
+
+/// Remaining provider-wide rate-limit pause, if any.
+#[must_use]
+pub fn rate_limit_remaining() -> Option<Duration> {
+    let now = Instant::now();
+    let mut current = rate_limit_cell().lock().ok()?;
+    match *current {
+        Some(deadline) if deadline > now => Some(deadline.duration_since(now)),
+        Some(_) => {
+            *current = None;
+            None
+        }
+        None => None,
+    }
 }
 
 /// Mark an in-flight retry. `attempt` is the number of the *upcoming*
@@ -128,6 +160,13 @@ pub fn clear() {
     }
 }
 
+#[cfg(test)]
+pub fn clear_rate_limit() {
+    if let Ok(mut current) = rate_limit_cell().lock() {
+        *current = None;
+    }
+}
+
 /// Test helper: serialize tests that touch the global state so cargo's
 /// parallel runner can't observe a torn read. The guard is exported so
 /// tests in *other* modules (e.g. footer rendering tests) can hold the
@@ -147,6 +186,7 @@ mod tests {
     fn setup() -> std::sync::MutexGuard<'static, ()> {
         let g = test_guard();
         clear();
+        clear_rate_limit();
         g
     }
 
@@ -197,5 +237,18 @@ mod tests {
         }
         assert_eq!(snapshot().seconds_remaining(), Some(0));
         clear();
+    }
+
+    #[test]
+    fn rate_limit_deadline_survives_banner_clear() {
+        let _g = setup();
+        note_rate_limit(Duration::from_secs(5));
+        start(1, Duration::from_secs(5), "rate limited");
+        succeeded();
+        assert!(
+            rate_limit_remaining().is_some(),
+            "provider-wide rate limit pause must not be cleared by an unrelated success"
+        );
+        clear_rate_limit();
     }
 }

@@ -4,14 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Config schema and precedence model for DeepSeek workspace architecture"
+description = "Config schema and precedence model for DeepSeek"
 
 [dependencies]
 anyhow.workspace = true
-deepseek-execpolicy = { path = "../execpolicy", version = "0.8.54" }
-deepseek-secrets = { path = "../secrets", version = "0.8.54" }
+deepseek-execpolicy = { path = "../execpolicy", version = "0.8.65" }
+deepseek-secrets = { path = "../secrets", version = "0.8.65" }
 dirs.workspace = true
+libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 tracing.workspace = true

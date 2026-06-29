@@ -11,7 +11,7 @@ WorkingDirectory=/opt/whalebro
 # Legacy /etc/deepseek is loaded first for old installs; /etc/deepseek wins.
 EnvironmentFile=-/etc/deepseek/runtime.env
 EnvironmentFile=-/etc/deepseek/runtime.env
-ExecStart=/bin/sh -lc 'exec /home/deepseek/.cargo/bin/deepseek serve --http --host 127.0.0.1 --port "${CODEWHALE_RUNTIME_PORT:-${DEEPSEEK_RUNTIME_PORT:-7878}}" --workers "${CODEWHALE_RUNTIME_WORKERS:-${DEEPSEEK_RUNTIME_WORKERS:-2}}" --auth-token "${CODEWHALE_RUNTIME_TOKEN:-${DEEPSEEK_RUNTIME_TOKEN}}"'
+ExecStart=/bin/sh -lc 'exec /home/deepseek/.cargo/bin/deepseek serve --http --host 127.0.0.1 --port "${DEEPSEEK_RUNTIME_PORT:-${DEEPSEEK_RUNTIME_PORT:-7878}}" --workers "${DEEPSEEK_RUNTIME_WORKERS:-${DEEPSEEK_RUNTIME_WORKERS:-2}}" --auth-token "${DEEPSEEK_RUNTIME_TOKEN:-${DEEPSEEK_RUNTIME_TOKEN}}"'
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

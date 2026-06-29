@@ -8,7 +8,9 @@
 # GitHub login, old-style noreply address, raw email from a contributor commit,
 # or local machine email seen in older harvested history.
 
-hmbown = coohu <101357273+coohu@users.noreply.github.com>
+hmbown = Hmbown <101357273+Hmbown@users.noreply.github.com>
+lerugray = Ray Weiss <15095329+lerugray@users.noreply.github.com>
+lerugray@gmail.com = Ray Weiss <15095329+lerugray@users.noreply.github.com>
 reidliu41 = reidliu41 <61492567+reidliu41@users.noreply.github.com>
 reid201711@gmail.com = reidliu41 <61492567+reidliu41@users.noreply.github.com>
 ousamabenyounes = Ben Younes <2910651+ousamabenyounes@users.noreply.github.com>
@@ -40,7 +42,11 @@ Duducoco = Duducoco <69681789+Duducoco@users.noreply.github.com>
 cyq1017 = cyq1017 <61975706+cyq1017@users.noreply.github.com>
 cyq = cyq1017 <61975706+cyq1017@users.noreply.github.com>
 15000851237@163.com = cyq1017 <61975706+cyq1017@users.noreply.github.com>
+cy2311 = CY <29836092+cy2311@users.noreply.github.com>
+noaft = Toan Nguyen <118294762+noaft@users.noreply.github.com>
+nvantoan1203@gmail.com = Toan Nguyen <118294762+noaft@users.noreply.github.com>
 zlh124 = zlh124 <56312993+zlh124@users.noreply.github.com>
+LeoLin990405 = LeoLin990405 <101193087+LeoLin990405@users.noreply.github.com>
 THINKER-ONLY = THINKER-ONLY <181556007+THINKER-ONLY@users.noreply.github.com>
 nightt5879 = nightt5879 <87569709+nightt5879@users.noreply.github.com>
 Liu-Vince = Liu-Vince <56624166+Liu-Vince@users.noreply.github.com>
@@ -55,9 +61,12 @@ JasonOA888 = JasonOA888 <101583541+JasonOA888@users.noreply.github.com>
 Inference1 = Inference1 <68734681+Inference1@users.noreply.github.com>
 hongqitai = hongqitai <188678175+hongqitai@users.noreply.github.com>
 gordonlu = gordonlu <3125629+gordonlu@users.noreply.github.com>
+angus-guo = gus <217034332+angus-guo@users.noreply.github.com>
+gus.guo@tec-do.com = gus <217034332+angus-guo@users.noreply.github.com>
 gaord = gaord <9567937+gaord@users.noreply.github.com>
 Ben Gao = gaord <9567937+gaord@users.noreply.github.com>
 bengao168@msn.com = gaord <9567937+gaord@users.noreply.github.com>
+lucaszhu-hue = lucaszhu-hue <278269343+lucaszhu-hue@users.noreply.github.com>
 zhuangbiaowei = zhuangbiaowei <93194+zhuangbiaowei@users.noreply.github.com>
 yuanchenglu = yuanchenglu <4088730+yuanchenglu@users.noreply.github.com>
 Vishnu1837 = Vishnu1837 <104626273+Vishnu1837@users.noreply.github.com>
@@ -104,3 +113,37 @@ tdccccc = tdccccc <79492752+tdccccc@users.noreply.github.com>
 greyfreedom = greyfreedom <11493871+greyfreedom@users.noreply.github.com>
 greyfreedom@163.com = greyfreedom <11493871+greyfreedom@users.noreply.github.com>
 puneetdixit200 = puneetdixit200 <236133619+puneetdixit200@users.noreply.github.com>
+yekern = Stime <13691766+yekern@users.noreply.github.com>
+Stime = Stime <13691766+yekern@users.noreply.github.com>
+pkeging = pkeging <237035657+pkeging@users.noreply.github.com>
+147567034@qq.com = pkeging <237035657+pkeging@users.noreply.github.com>
+findshan = Wenshan Deng <224246733+findshan@users.noreply.github.com>
+dengwenshan123456@outlook.com = Wenshan Deng <224246733+findshan@users.noreply.github.com>
+KUK4 = KUK4 <246008043+KUK4@users.noreply.github.com>
+LLL@users.noreply.github.com = KUK4 <246008043+KUK4@users.noreply.github.com>
+
+# Harvest-credit reconciliation: contributors restored to docs/CONTRIBUTORS.md
+# whose harvested work previously lacked a canonical map entry.
+MMMarcinho = MMMarcinho <48539922+MMMarcinho@users.noreply.github.com>
+MeAiRobot = MeAiRobot <283844506+MeAiRobot@users.noreply.github.com>
+NorethSea = NorethSea <39730900+NorethSea@users.noreply.github.com>
+SamhandsomeLee = SamhandsomeLee <135809116+SamhandsomeLee@users.noreply.github.com>
+YaYII = YaYII <6007186+YaYII@users.noreply.github.com>
+sandofree = sandofree <7775605+sandofree@users.noreply.github.com>
+tiger-dog = tiger-dog <63037740+tiger-dog@users.noreply.github.com>
+Jianfengwu2024 = Jianfengwu2024 <186297054+Jianfengwu2024@users.noreply.github.com>
+wplll = wplll <106327929+wplll@users.noreply.github.com>
+buko = buko <12692585+buko@users.noreply.github.com>
+
+# Machine-credit reconciliation follow-up: contributors credited in prose or
+# harvested by handle but missing from AUTHOR_MAP. Logins/IDs verified against
+# the GitHub user API.
+1Git2Clone = 1Git2Clone <171241044+1Git2Clone@users.noreply.github.com>
+jieshu666 = jieshu666 <272788222+jieshu666@users.noreply.github.com>
+rockeverm3m = rockeverm3m <280319705+rockeverm3m@users.noreply.github.com>
+wfxqws65hc@privaterelay.appleid.com = rockeverm3m <280319705+rockeverm3m@users.noreply.github.com>
+wavezhang = wavezhang <832911+wavezhang@users.noreply.github.com>
+hxy91819 = hxy91819 <8814856+hxy91819@users.noreply.github.com>
+hxy91819@gmail.com = hxy91819 <8814856+hxy91819@users.noreply.github.com>
+heloanc = heloanc <61081755+heloanc@users.noreply.github.com>
+heloanc@users.noreply.github.com = heloanc <61081755+heloanc@users.noreply.github.com>

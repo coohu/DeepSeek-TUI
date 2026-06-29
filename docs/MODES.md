@@ -4,14 +4,19 @@ deepseek has two related concepts:
 
 - **TUI mode**: what kind of visible interaction you're in (Plan/Agent/YOLO).
 - **Approval mode**: how aggressively the UI asks before executing tools.
+- **WhaleFlow overlay**: optional long-running workflow orchestration that can
+  run on top of any TUI mode when a task needs many coordinated workers.
 
 Model selection is separate. `--model auto` and `/model auto` route each turn to
 a concrete model and thinking level; they are not TUI modes and are not part of
 the `Tab` cycle.
 
-Each user turn includes a small `<turn_meta>` block with the current local date
-and the concrete model sent to the provider. When `--model auto` is active, the
-same block also records that the model was auto-routed.
+WhaleFlow is also separate from the `Tab` mode cycle. It is the visible
+continuous-work layer for repeatable workflows and fleet workers. Swarm-style
+high-fanout remains gated in v0.8.61 until it routes through durable
+Fleet-backed workers instead of prompt-only sub-agent fanout. The active mode
+still controls permissions; WhaleFlow controls whether a large task is planned
+into a resumable workflow with its own progress view.
 
 ## TUI Modes
 
@@ -48,10 +53,24 @@ The fast `deepseek-v4-flash` / thinking-off path is called Fin in the product
 language. Fin is a seam for routing, summaries, cheap child calls, and
 coordination work; it does not change approval behavior.
 
-`/goal` sets a session objective with an optional token budget and keeps that
-objective visible as Work context. It does not change the active TUI mode,
+`/goal` sets a session objective with an optional token budget and keeps active
+objectives visible as Work context. `/goal pause` stops goal continuation without
+changing the objective, `/goal resume` resumes and sends the objective back into
+the turn, `/goal complete` marks it done, `/goal blocked` marks it blocked, and
+`/goal clear` removes it. Goal state does not change the active TUI mode,
 approval mode, or model route. This remains distinct from `--model auto`, which
 only controls model and thinking selection.
+
+WhaleFlow builds on the same separation: a goal can ask the agent to keep
+working, while WhaleFlow supplies the repeatable workflow/progress surface for
+large fanout. In the UI, a WhaleFlow run should be shown as an overlay on the
+main screen, not as a fourth mode next to Agent, Plan, and YOLO.
+
+App-server clients can persist a thread-scoped goal with `thread/goal/set`, read
+it with `thread/goal/get`, and clear it with `thread/goal/clear`. That persisted
+record carries `active`, `paused`, `blocked`, `usage_limited`, `budget_limited`,
+or `complete` status plus token/time accounting fields for clients that need
+thread resume semantics.
 
 ## Compatibility Notes
 
@@ -114,7 +133,6 @@ Run `deepseek --help` for the canonical list. Common flags:
 - `deepseek exec --auto --output-format stream-json <PROMPT>`: run the tool-backed non-interactive agent and emit one JSON object per line for harnesses and backend wrappers
 - `deepseek exec --resume <ID|PREFIX> <PROMPT>` / `--session-id <ID|PREFIX>`: continue a saved session non-interactively
 - `deepseek exec --continue <PROMPT>`: continue the most recent saved session for this workspace non-interactively
-- `deepseek swebench run --instance-id <ID> --issue-file <PATH>`: run the tool-backed agent on one SWE-bench task and write/update a prediction JSONL row
 - `deepseek fork <ID|PREFIX>` / `deepseek fork --last`: copy a saved session into a new sibling session; forked sessions retain additive parent-session metadata and show that lineage in session listings
 - `--model <MODEL>`: when using the `deepseek` facade, forward a DeepSeek model override to the TUI
 - `--workspace <DIR>`: workspace root for file tools

@@ -14,6 +14,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -1204,8 +1205,33 @@ fn parse_pdf_page(
 }
 
 fn pdf_extract_text(bytes: &[u8]) -> Result<String, ToolError> {
-    pdf_extract::extract_text_from_mem(bytes)
+    guard_pdf_extract(|| pdf_extract::extract_text_from_mem(bytes))
         .map_err(|e| ToolError::execution_failed(format!("PDF extract failed: {e}")))
+}
+
+fn guard_pdf_extract<T, E, F>(extract: F) -> Result<T, String>
+where
+    E: Display,
+    F: FnOnce() -> Result<T, E>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(extract)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(payload) => Err(format!(
+            "extractor panicked: {}",
+            panic_payload_message(payload.as_ref())
+        )),
+    }
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 fn split_pdf_pages(text: &str) -> Vec<Vec<String>> {
@@ -1792,6 +1818,17 @@ mod tests {
         assert_eq!(percent_decode("查询 keyword"), "查询 keyword");
         // ASCII-only inputs preserve existing behavior; `+` stays literal.
         assert_eq!(percent_decode("foo+bar%20baz"), "foo+bar baz");
+    }
+
+    #[test]
+    fn pdf_extract_panic_is_returned_as_tool_error_text() {
+        let err = guard_pdf_extract(|| -> Result<String, &'static str> {
+            panic!("assertion failed: name == \"Identity-H\"");
+        })
+        .expect_err("panic should become an error");
+
+        assert!(err.contains("extractor panicked"));
+        assert!(err.contains("Identity-H"));
     }
 
     #[test]

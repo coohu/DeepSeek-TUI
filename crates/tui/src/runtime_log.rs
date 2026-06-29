@@ -209,6 +209,16 @@ pub fn init() -> Result<TuiLogGuard> {
 }
 
 pub(crate) fn log_directory() -> Option<PathBuf> {
+    // $DEEPSEEK_HOME is a hard override of the base data directory
+    // (docs/CONFIGURATION.md): when SET, logs live under it and we do NOT fall
+    // back to the legacy ~/.deepseek path — silent fallback would defeat the
+    // isolation the override promises (CI, containers, test harnesses). We
+    // check the env var directly rather than deepseek_home()'s Ok/Err because
+    // that helper succeeds (returns $HOME/.deepseek) even when the override is
+    // unset, which would short-circuit the legacy fallback below.
+    if let Some(home) = std::env::var_os("DEEPSEEK_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(home).join("logs"));
+    }
     let resolve = |base: PathBuf| -> Option<PathBuf> {
         let primary = base.join(".deepseek").join("logs");
         if primary.exists() {
@@ -484,5 +494,23 @@ mod tests {
         assert!(!stale.exists());
         assert!(!legacy_stale.exists());
         assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn log_directory_honors_deepseek_home_as_hard_override() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by lock_test_env.
+        unsafe {
+            std::env::set_var("DEEPSEEK_HOME", tmp.path());
+        }
+        // $DEEPSEEK_HOME IS the home dir (no ".deepseek" appended), and the
+        // legacy ~/.deepseek fallback is bypassed entirely.
+        let resolved = log_directory().expect("log_directory should resolve");
+        assert_eq!(resolved, tmp.path().join("logs"));
+        // SAFETY: cleanup under the same lock.
+        unsafe {
+            std::env::remove_var("DEEPSEEK_HOME");
+        }
     }
 }

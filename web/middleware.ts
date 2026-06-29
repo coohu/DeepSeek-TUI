@@ -31,10 +31,12 @@ function detectLocale(req: NextRequest): string {
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Skip API routes, static files, _next (but still apply security headers).
+  // Skip API routes, static files, _next, and the dot-less metadata route
+  // for the shared OG image (but still apply security headers).
   if (
     pathname.startsWith("/api/") ||
     pathname.startsWith("/_next/") ||
+    pathname === "/opengraph-image" ||
     pathname.includes(".")
   ) {
     return applySecurityHeaders(NextResponse.next());

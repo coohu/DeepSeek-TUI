@@ -8,6 +8,16 @@ If you just want the short version, see the
 [main README](../README.md#install) or
 [简体中文 README](../README.zh-CN.md#安装).
 
+On macOS and Linux, the website installer is the shortest install/update path:
+
+```bash
+curl -fsSL https://deepseek.net/install.sh | sh
+```
+
+It downloads the matching `deepseek`, `codew`, and `deepseek-tui` release binaries,
+verifies them against `deepseek-artifacts-sha256.txt`, installs to
+`~/.local/bin` by default, and exposes the `codew` convenience command.
+
 ---
 
 ## 1. Supported platforms
@@ -18,24 +28,55 @@ v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 
 | Platform     | Architecture | npm install | `cargo install` | GitHub release asset                                  |
 | ------------ | ------------ | :---------: | :-------------: | ----------------------------------------------------- |
-| Linux        | x64 (x86_64) |     ✅      |       ✅        | `deepseek-linux-x64`, `deepseek-tui-linux-x64`        |
-| Linux        | arm64        |     ✅      |       ✅        | `deepseek-linux-arm64`, `deepseek-tui-linux-arm64`    |
-| Linux        | riscv64      |     ✅      |       ✅        | `deepseek-linux-riscv64`, `deepseek-tui-linux-riscv64`|
+| Linux        | x64 (x86_64) |     ✅      |       ✅        | `deepseek-linux-x64`,`deepseek-tui-linux-x64`        |
+| Linux        | arm64        |     ✅      |       ✅        | `deepseek-linux-arm64`,`deepseek-tui-linux-arm64`    |
+| Linux        | riscv64      |     ✅      |       ✅        | `deepseek-linux-riscv64`,  `deepseek-tui-linux-riscv64`|
 | macOS        | x64          |     ✅      |       ✅        | `deepseek-macos-x64`, `deepseek-tui-macos-x64`        |
-| macOS        | arm64 (M-series) | ✅      |       ✅        | `deepseek-macos-arm64`, `deepseek-tui-macos-arm64`    |
+| macOS        | arm64 (M-series) | ✅      |       ✅        | `deepseek-macos-arm64`,`deepseek-tui-macos-arm64`    |
 | Windows      | x64          |     ✅      |       ✅        | `deepseek-windows-x64.exe`, `deepseek-tui-windows-x64.exe` |
-| Other Linux (musl, other architectures) | — |   ❌¹    |       ✅²       | build from source                                     |
+| Linux x64 on musl (Alpine) | ✅ (static) |    ✅      |       ✅        | static `deepseek-tui-linux-x64` (musl) asset           |
+| Other Linux (musl non-x64, other arches) | — | ❌¹ | ✅² | build from source                                     |
 | FreeBSD / OpenBSD              | — |   ❌      |       ✅²       | build from source                                     |
 
 ¹ The npm package will exit with a clear error and point you here.
 ² Provided your toolchain can compile a recent Rust workspace; see
   [Build from source](#7-build-from-source) below.
 
-The Linux release assets are glibc builds, not musl builds. They dynamically
-link normal Linux runtime libraries such as `libdbus-1` and `libc`; SQLite is
-currently bundled into the binary through `rusqlite` so users do not need a
-separate `libsqlite3` runtime package for official release assets. Musl-based
-systems such as Alpine should use [Build from source](#7-build-from-source).
+The Linux **x64** release assets are **static (musl) builds** as of v0.8.65.
+They have no glibc dependency and run on any x86_64 Linux, including Ubuntu
+22.04, Debian stable, RHEL/CentOS, and Alpine/musl. SQLite is bundled into the
+binary through `rusqlite`, so no separate `libsqlite3` runtime package is needed.
+
+The Linux **arm64** and **riscv64** release assets are still GNU libc (glibc)
+builds. They dynamically link normal Linux runtime libraries such as
+`libdbus-1` and `libc`, and are built on Ubuntu 24.04, so they can require
+`GLIBC_2.39`.
+
+### Linux glibc floor (arm64 / riscv64)
+
+This floor applies only to the **GNU libc** assets (arm64, riscv64). The static
+x64 (musl) asset has no `GLIBC_*` symbols, so it passes the install preflight
+and runs on older systems without error. In the current v0.8.65 release lane,
+the GNU assets are built on Ubuntu 24.04 and can require `GLIBC_2.39`. Ubuntu
+22.04 ships glibc 2.35, so those arm64/riscv64 binaries fail with errors such as:
+
+```text
+version `GLIBC_2.39' not found
+```
+
+The npm wrapper, `deepseek update`, and the Unix archive installer preflight
+Linux GNU binaries before installing them and point older systems to Cargo/source
+builds. If you are on Ubuntu 22.04 arm64, Debian stable, RHEL/CentOS, or another
+older GNU base for a non-x64 asset, use:
+
+```bash
+cargo install deepseek-cli --locked
+cargo install deepseek-tui --locked
+```
+
+Future release engineering may add static (musl) arm64/riscv64 assets so the
+glibc floor goes away entirely; until then, x64 is static and arm64/riscv64
+build from source on older distros.
 
 > **Linux ARM64 note (v0.8.7 and earlier).** v0.8.7 and earlier do **not**
 > publish a Linux ARM64 prebuilt; users on HarmonyOS thin-and-light, Asahi
@@ -83,35 +124,33 @@ a download sourced from an impersonating repository or mirror.
 
 ---
 
-## 3. Install via npm (deferred for v0.8.54)
+## 3. Install via npm
 
-The `deepseek` npm wrapper for v0.8.54 is intentionally deferred while the
-release asset publication path is being hardened. Use Cargo, GitHub Releases,
-or CNB for v0.8.54. The notes below describe the npm wrapper behavior once a
-matching npm package is published.
+npm is the recommended install path. The `deepseek` wrapper is published at
+v0.8.65 (Node 18+; wrapper available for v0.8.56 and later).
 
 ```bash
-# Available only after the matching npm package is published.
 npm install -g deepseek
-deepseek
+deepseek --version   # 0.8.65
 ```
 
 `postinstall` downloads the right pair of binaries from the matching GitHub
-release, verifies a SHA-256 manifest, and exposes both `deepseek` and
+release, verifies a SHA-256 manifest, and exposes `deepseek`, `codew`, and
 `deepseek-tui` on your `PATH`.
 
 Useful environment variables:
 
 | Variable                            | Purpose                                                                                |
 | ----------------------------------- | -------------------------------------------------------------------------------------- |
-| `DEEPSEEK_TUI_VERSION`              | Pin which release the wrapper downloads (defaults to `deepseekBinaryVersion`)          |
+| `DEEPSEEK_VERSION`                 | Pin which release the wrapper downloads (canonical)                                    |
+| `DEEPSEEK_TUI_VERSION`              | Legacy alias for `DEEPSEEK_VERSION` (defaults to `codewhaleBinaryVersion`)            |
 | `DEEPSEEK_TUI_GITHUB_REPO`          | Point the downloader at a fork (`owner/repo`)                                          |
 | `DEEPSEEK_TUI_RELEASE_BASE_URL`     | Override the download root (e.g. an internal mirror or release-asset proxy)            |
 | `DEEPSEEK_TUI_FORCE_DOWNLOAD=1`     | Re-download even if a cached binary marker matches                                     |
 | `DEEPSEEK_TUI_DISABLE_INSTALL=1`    | Skip the `postinstall` download entirely (CI smoke, vendored binaries)                 |
 | `DEEPSEEK_TUI_OPTIONAL_INSTALL=1`   | Don't fail `npm install` on download/extract errors — useful in CI matrices            |
 
-> **Slow npm download from mainland China?** Once npm publication resumes, if `npm install` itself is slow
+> **Slow npm download from mainland China?** If `npm install` itself is slow
 > (not just the postinstall binary download), use an npm registry mirror:
 > ```bash
 > npm config set registry https://registry.npmmirror.com
@@ -130,10 +169,28 @@ delegates to the TUI runtime at runtime.
 
 ```bash
 # Requires Rust 1.88+ (https://rustup.rs)
-cargo install deepseek-cli --locked   # provides `deepseek`
+cargo install deepseek-cli --locked   # provides `deepseek` and `codew`
 cargo install deepseek-tui     --locked   # provides `deepseek-tui`
 deepseek --version
 ```
+
+> **Linux: install build-time dependencies first.** `cargo install` compiles
+> from source, and on Linux the `deepseek-tui` crate links against
+> `libdbus-1` (used by the D-Bus secret-service backend for credential
+> storage). Install the required system packages before running `cargo install`:
+>
+> ```bash
+> # Debian / Ubuntu
+> sudo apt-get install -y build-essential pkg-config libdbus-1-dev
+>
+> # Fedora / RHEL
+> sudo dnf install -y gcc make pkgconf-pkg-config dbus-devel
+> ```
+>
+> If you use the npm wrapper or download GitHub Release binaries, these
+> build-time packages are **not** required — the prebuilt binary only
+> needs the runtime library (`libdbus-1`), which is already present on
+> most desktop Linux installs.
 
 ### China / mirror-friendly install
 
@@ -185,21 +242,6 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 
 `rsproxy`, Tencent COS, and Aliyun OSS mirrors work the same way; pick whichever
 is fastest from your network.
-
-### Tencent Cloud remote-first setup
-
-For an always-on workspace that can be controlled from a phone, use the
-Tencent-native path instead of treating install as a single laptop step:
-
-- CNB mirror/source: `https://cnb.cool/deepseek.net/deepseek.git`
-- Tencent Lighthouse HK: `/opt/whalebro` remote workspace
-- Feishu/Lark: long-connection phone bridge
-- EdgeOne: optional public HTTPS edge for docs/status/webhook surfaces
-
-Start with [Tencent Cloud Remote-First Quickstart](TENCENT_CLOUD_REMOTE_FIRST.md),
-then follow [Tencent Lighthouse Hong Kong Phone Setup](TENCENT_LIGHTHOUSE_HK.md).
-
----
 
 ## 5. Install via Nix
 
@@ -259,9 +301,33 @@ Install into a NixOS module:
 
 ---
 
+## Homebrew (legacy tap)
+
+Homebrew currently ships only the legacy `deepseek-tui` tap, kept for
+compatibility while the formula is renamed to `deepseek`. It installs the
+same current-release binaries:
+
+```bash
+brew tap Hmbown/deepseek-tui
+brew install deepseek-tui
+```
+
+Update with `brew upgrade deepseek-tui`. There is no `deepseek` formula yet;
+once the rename lands, this section will switch to it.
+
+---
+
 ## 6. Manual download from GitHub Releases
 
-Grab the matching pair of binaries for your platform from the
+Each platform appears on the Releases page in **two forms** (this is intentional — see #3208):
+the **bare binaries** (`deepseek-<platform>`, `codew-<platform>`, and
+`deepseek-tui-<platform>`, no extension) and a **`.tar.gz` / `.zip` archive**
+(`deepseek-<platform>.tar.gz`) that bundles the same commands plus an
+`install.sh`. The npm wrapper and the in-app `deepseek update` download the
+matched runtime binaries; the archive is the easiest manual install (see §5).
+The steps below use the bare binaries directly.
+
+Grab the matching command set for your platform from the
 [Releases page](https://github.com/coohu/deepseek-tui/releases) and drop them
 side by side into a directory on your `PATH` (e.g. `~/.local/bin`):
 
@@ -270,17 +336,19 @@ side by side into a directory on your `PATH` (e.g. `~/.local/bin`):
 mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/deepseek      \
     https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-linux-arm64
+curl -L -o ~/.local/bin/codew          \
+    https://github.com/coohu/deepseek-tui/releases/latest/download/codew-linux-arm64
 curl -L -o ~/.local/bin/deepseek-tui  \
     https://github.com/coohu/deepseek-tui/releases/latest/download/deepseek-tui-linux-arm64
-chmod +x ~/.local/bin/deepseek ~/.local/bin/deepseek-tui
+chmod +x ~/.local/bin/deepseek ~/.local/bin/codew ~/.local/bin/deepseek-tui
 deepseek --version
 ```
 
 > **macOS Gatekeeper note.** If you downloaded the binaries with a browser,
 > macOS may block them with "Apple cannot verify" warnings. Clear the quarantine
-> attribute on both binaries and retry:
+> attribute on all three binaries and retry:
 > ```bash
-> xattr -d com.apple.quarantine ~/.local/bin/deepseek ~/.local/bin/deepseek-tui 2>/dev/null || true
+> xattr -d com.apple.quarantine ~/.local/bin/deepseek ~/.local/bin/codew ~/.local/bin/deepseek-tui 2>/dev/null || true
 > ```
 
 Verify integrity against the per-release SHA-256 manifest:
@@ -307,7 +375,7 @@ cargo install deepseek-cli --version X.Y.Z --locked --force
 cargo install deepseek-tui --version X.Y.Z --locked --force
 ```
 
-For manual installs, download both binaries or the platform archive from the
+For manual installs, download the matched binaries or the platform archive from the
 exact release tag and verify the matching checksum manifest from that same tag:
 
 ```bash
@@ -350,7 +418,7 @@ Cargo required).
 
 **Install** by double-clicking the setup executable. The installer:
 
-- Installs `deepseek.exe` and `deepseek-tui.exe` side-by-side into
+- Installs `deepseek.exe`, `codew.exe`, and `deepseek-tui.exe` side-by-side into
   `%LOCALAPPDATA%\Programs\DeepSeek\bin`
 - Adds the install directory to the **current user** `PATH`
 - Registers in Windows **Apps & Features** for easy uninstall
@@ -410,13 +478,13 @@ LoongArch, FreeBSD, and pre-2024 ARM64 distros.
 git clone https://github.com/coohu/deepseek-tui.git
 cd DeepSeek
 
-cargo install --path crates/cli --locked   # provides `deepseek`
+cargo install --path crates/cli --locked   # provides `deepseek` and `codew`
 cargo install --path crates/tui --locked   # provides `deepseek-tui`
 
 deepseek --version
 ```
 
-Both binaries land in `~/.cargo/bin/` by default; make sure that directory is
+The commands land in `~/.cargo/bin/` by default; make sure that directory is
 on your `PATH`.
 
 ### Cross-compiling from x64 to ARM64 Linux
@@ -516,12 +584,11 @@ set CARGO_HTTP_CHECK_REVOKE=false   # may be needed behind some Chinese ISPs
 cargo build --release
 ```
 
-Both binaries appear in `target\release\deepseek.exe` and
-`target\release\deepseek-tui.exe`.
+The binaries appear in `target\release\deepseek.exe`,
+`target\release\codew.exe`, and `target\release\deepseek-tui.exe`.
 
-> For v0.8.54, prefer the GitHub Release installer/archive or the Cargo crates.
-> The npm wrapper path is deferred for this release while release asset
-> publication is hardened.
+> Prefer not to build? Install via npm, Cargo, GitHub Releases, or the CNB
+> mirror — see the sections above.
 
 ---
 
@@ -558,9 +625,10 @@ cargo install deepseek-cli --locked
 
 ### npm download is slow or times out from mainland China
 
-Set `DEEPSEEK_TUI_RELEASE_BASE_URL` to a mirrored release-asset directory
+Set `DEEPSEEK_RELEASE_BASE_URL` to a mirrored release-asset directory
 (rsproxy, TUNA, Tencent COS, Aliyun OSS), or skip npm entirely and use the
 Cargo mirror setup in [Section 4](#4-install-via-cargo-any-tier-1-rust-target).
+The legacy `DEEPSEEK_TUI_RELEASE_BASE_URL` name is still accepted.
 
 ### `deepseek update` is blocked by GitHub from mainland China
 
@@ -579,13 +647,14 @@ cargo install --git https://cnb.cool/deepseek.net/deepseek --tag vX.Y.Z deepseek
 If you operate a binary asset mirror, `deepseek update` can use it directly:
 
 ```bash
+DEEPSEEK_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek/vX.Y.Z/ \
 DEEPSEEK_TUI_VERSION=X.Y.Z \
-DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/vX.Y.Z/ \
 deepseek update
 ```
 
 The mirror directory must contain `deepseek-artifacts-sha256.txt` and the
-platform binaries from the GitHub release.
+platform binaries from the GitHub release. The legacy
+`DEEPSEEK_TUI_RELEASE_BASE_URL` mirror variable remains supported as an alias.
 
 ### Debian/Ubuntu: `feature edition2024 is required` from `cargo install`
 
@@ -624,6 +693,23 @@ Install the C toolchain:
 ```bash
 sudo apt-get install -y build-essential pkg-config libdbus-1-dev
 ```
+
+### WSL2 / Ubuntu: `dbus-1` or `pkg-config` not found while building
+
+WSL2 uses the same Linux source-build path as Ubuntu. If `cargo install
+deepseek-tui --locked` fails while compiling the keyring or D-Bus secret
+storage crates, install the Linux build dependencies inside the WSL distro,
+then rerun both Cargo install commands:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libdbus-1-dev
+cargo install deepseek-cli --locked
+cargo install deepseek-tui --locked
+```
+
+The prebuilt npm/GitHub binaries do not need these build-time packages; they
+only apply when WSL2 is compiling DeepSeek from source.
 
 ### Wrapper installs but `deepseek` isn't found
 
@@ -707,7 +793,7 @@ Use one of these paths:
 2. Mirror the release assets internally and set `DEEPSEEK_TUI_RELEASE_BASE_URL`:
 
    ```bash
-   export DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek-TUI/
+   export DEEPSEEK_TUI_RELEASE_BASE_URL=https://your-mirror.example.com/DeepSeek/
    deepseek
    ```
 

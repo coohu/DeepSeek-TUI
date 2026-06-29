@@ -15,7 +15,7 @@ pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 /// [`compaction_threshold_for_model`] (#664).
 pub const DEFAULT_COMPACTION_TOKEN_THRESHOLD: usize = 102_400;
 const COMPACTION_THRESHOLD_PERCENT: u32 = 80;
-pub const DEFAULT_AUTO_COMPACT_MAX_CONTEXT_WINDOW_TOKENS: u32 = 262_144;
+pub const DEFAULT_AUTO_COMPACT_MAX_CONTEXT_WINDOW_TOKENS: u32 = DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS;
 
 // === Core Message Types ===
 
@@ -91,7 +91,15 @@ pub enum ContentBlock {
     #[serde(rename = "image_url")]
     ImageUrl { image_url: ImageUrlContent },
     #[serde(rename = "thinking")]
-    Thinking { thinking: String },
+    Thinking {
+        thinking: String,
+        /// Anthropic signed-thinking signature (#3014). Only populated on the
+        /// native Messages dialect and serde-skipped when absent so OpenAI
+        /// dialects are unaffected. Anthropic rejects tool loops that drop or
+        /// modify signed thinking blocks, so replay this verbatim.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        signature: Option<String>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -228,6 +236,9 @@ pub struct Usage {
 /// 3. Claude -> 200K.
 #[must_use]
 pub fn context_window_for_model(model: &str) -> Option<u32> {
+    if let Some(window) = crate::model_catalog::resolved_context_window(model) {
+        return Some(window);
+    }
     let lower = model.to_lowercase();
     if let Some(explicit_window) = explicit_context_window_hint(&lower) {
         return Some(explicit_window);
@@ -237,6 +248,12 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
             return Some(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS);
         }
         return Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
+    }
+    if is_openai_gpt_55_api_model(&lower) {
+        return Some(1_050_000);
+    }
+    if is_openai_codex_model(&lower) {
+        return Some(400_000);
     }
     if let Some(window) = known_context_window_for_model(&lower) {
         return Some(window);
@@ -249,6 +266,17 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
 
 fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
     match model_lower {
+        // OpenAI API model docs, verified 2026-06-12:
+        // https://developers.openai.com/api/docs/models/gpt-5.5
+        // Family aliases and snapshots are handled by
+        // `is_openai_gpt_55_api_model` before this table.
+        // OpenAI Codex model docs, verified 2026-06-12:
+        // https://developers.openai.com/api/docs/models/gpt-5-codex
+        // https://developers.openai.com/api/docs/models/gpt-5.3-codex
+        "gpt-5-codex" | "gpt-5.3-codex" => Some(400_000),
+        // Anthropic 4.6+ models carry a 1M window; Haiku stays at 200K (#3014).
+        "claude-opus-4-8" | "claude-sonnet-4-6" => Some(1_000_000),
+        "claude-haiku-4-5" => Some(200_000),
         "trinity-mini" => Some(128_000),
         "arcee-ai/trinity-large-thinking" | "trinity-large-thinking" | "trinity-large-preview" => {
             Some(262_144)
@@ -262,13 +290,34 @@ fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
         | "qwen/qwen3.6-max-preview"
         | "qwen/qwen3.6-27b"
         | "tencent/hy3-preview"
+        | "moonshotai/kimi-k2.7-code"
         | "moonshotai/kimi-k2.6"
-        | "moonshotai/kimi-k2.6:free" => Some(262_144),
-        "z-ai/glm-5.1" | "z-ai/glm-5v-turbo" => Some(202_752),
-        "minimax/minimax-m3" | "qwen/qwen3.6-flash" | "qwen/qwen3.6-plus" => Some(1_000_000),
-        "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5" => {
+        | "moonshotai/kimi-k2.6:free"
+        | "kimi-k2.7-code"
+        | "kimi-k2.6"
+        | "kimi-for-coding" => Some(262_144),
+        "minimax-m2.7"
+        | "minimax/minimax-m2.7"
+        | "minimax-m2.7-highspeed"
+        | "minimax-m2.5"
+        | "minimax-m2.5-highspeed"
+        | "minimax-m2.1"
+        | "minimax-m2.1-highspeed"
+        | "minimax-m2" => Some(204_800),
+        "z-ai/glm-5.1" | "z-ai/glm-5v-turbo" | "glm-5.1" | "glm-5v-turbo" => Some(202_752),
+        "z-ai/glm-5-turbo" | "glm-5-turbo" => Some(202_752),
+        "z-ai/glm-5.2" | "glm-5.2" => Some(1_000_000),
+        "minimax/minimax-m3" | "minimax-m3" | "qwen/qwen3.6-flash" | "qwen/qwen3.6-plus" => {
             Some(1_000_000)
         }
+        "nvidia/nemotron-3-ultra-550b-a55b" | "nvidia/nemotron-3-ultra-550b-a55b:free" => {
+            Some(1_000_000)
+        }
+        "xiaomi/mimo-v2.5-pro"
+        | "xiaomi/mimo-v2.5"
+        | "mimo-v2.5-pro"
+        | "mimo-v2.5-pro-ultraspeed"
+        | "mimo-v2.5" => Some(1_000_000),
         "mimo-v2.5-asr"
         | "mimo-v2.5-tts"
         | "mimo-v2.5-tts-voicedesign"
@@ -280,26 +329,45 @@ fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
 
 #[must_use]
 pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
+    if let Some(max_output) = crate::model_catalog::resolved_max_output(model) {
+        return Some(max_output);
+    }
     let lower = model.to_lowercase();
     if lower.contains("deepseek") && lower.contains("v4") {
         return Some(384_000);
     }
+    if is_openai_gpt_55_api_model(&lower) || is_openai_codex_model(&lower) {
+        return Some(128_000);
+    }
     match lower.as_str() {
-        "arcee-ai/trinity-large-thinking" | "trinity-large-thinking" | "moonshotai/kimi-k2.6" => {
-            Some(262_144)
-        }
-        "minimax/minimax-m3" => Some(524_288),
+        "gpt-5-codex" | "gpt-5.3-codex" => Some(128_000),
+        "claude-opus-4-8" => Some(128_000),
+        "claude-sonnet-4-6" | "claude-haiku-4-5" => Some(64_000),
+        "arcee-ai/trinity-large-thinking"
+        | "trinity-large-thinking"
+        | "moonshotai/kimi-k2.7-code"
+        | "moonshotai/kimi-k2.6"
+        | "kimi-k2.7-code"
+        | "kimi-k2.6"
+        | "kimi-for-coding" => Some(262_144),
+        "minimax/minimax-m3" | "minimax-m3" => Some(524_288),
         "qwen/qwen3.6-35b-a3b" | "qwen/qwen3.6-27b" => Some(262_140),
         "qwen/qwen3.6-flash" | "qwen/qwen3.6-max-preview" | "qwen/qwen3.6-plus" => Some(65_536),
-        "xiaomi/mimo-v2.5-pro" | "xiaomi/mimo-v2.5" | "mimo-v2.5-pro" | "mimo-v2.5" => {
-            Some(131_072)
-        }
+        "z-ai/glm-5.1" | "z-ai/glm-5.2" | "z-ai/glm-5-turbo" | "glm-5.1" | "glm-5.2"
+        | "glm-5-turbo" => Some(131_072),
+        "xiaomi/mimo-v2.5-pro"
+        | "xiaomi/mimo-v2.5"
+        | "mimo-v2.5-pro"
+        | "mimo-v2.5-pro-ultraspeed"
+        | "mimo-v2.5" => Some(131_072),
         "mimo-v2.5-asr" => Some(2_048),
         "mimo-v2.5-tts"
         | "mimo-v2.5-tts-voicedesign"
         | "mimo-v2.5-tts-voiceclone"
         | "mimo-v2-tts" => Some(8_192),
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" => Some(65_536),
+        "nvidia/nemotron-3-ultra-550b-a55b" => Some(16_384),
+        "nvidia/nemotron-3-ultra-550b-a55b:free" => Some(65_536),
         "google/gemma-4-31b-it" => Some(16_384),
         "google/gemma-4-31b-it:free" | "google/gemma-4-26b-a4b-it:free" => Some(32_768),
         _ => None,
@@ -308,22 +376,50 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
 
 #[must_use]
 pub fn model_supports_reasoning(model: &str) -> bool {
+    if let Some(supports_reasoning) = crate::model_catalog::resolved_supports_reasoning(model) {
+        return supports_reasoning;
+    }
     let lower = model.to_lowercase();
     if lower.contains("deepseek") && lower.contains("v4") {
         return true;
     }
+    // #3016 plus the 2026 Kimi Code K2.7 update: Moonshot-native Kimi IDs,
+    // including the stable `kimi-for-coding` coding route, emit
+    // reasoning_content that must stay out of answer prose.
+    if lower.starts_with("kimi-") {
+        return true;
+    }
     matches!(
         lower.as_str(),
-        "arcee-ai/trinity-large-thinking"
+        "claude-opus-4-8"
+            | "claude-sonnet-4-6"
+            | "gpt-5-codex"
+            | "gpt-5.3-codex"
+            | "arcee-ai/trinity-large-thinking"
             | "trinity-large-thinking"
             | "google/gemma-4-31b-it"
             | "google/gemma-4-31b-it:free"
             | "google/gemma-4-26b-a4b-it"
             | "google/gemma-4-26b-a4b-it:free"
+            | "moonshotai/kimi-k2.7-code"
             | "moonshotai/kimi-k2.6"
             | "moonshotai/kimi-k2.6:free"
+            | "kimi-k2.7-code"
+            | "kimi-k2.6"
+            | "kimi-for-coding"
             | "minimax/minimax-m3"
+            | "minimax/minimax-m2.7"
+            | "minimax-m3"
+            | "minimax-m2.7"
+            | "minimax-m2.7-highspeed"
+            | "minimax-m2.5"
+            | "minimax-m2.5-highspeed"
+            | "minimax-m2.1"
+            | "minimax-m2.1-highspeed"
+            | "minimax-m2"
             | "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+            | "nvidia/nemotron-3-ultra-550b-a55b"
+            | "nvidia/nemotron-3-ultra-550b-a55b:free"
             | "qwen/qwen3.6-flash"
             | "qwen/qwen3.6-35b-a3b"
             | "qwen/qwen3.6-max-preview"
@@ -333,9 +429,60 @@ pub fn model_supports_reasoning(model: &str) -> bool {
             | "xiaomi/mimo-v2.5-pro"
             | "xiaomi/mimo-v2.5"
             | "mimo-v2.5-pro"
+            | "mimo-v2.5-pro-ultraspeed"
             | "mimo-v2.5"
             | "z-ai/glm-5.1"
+            | "z-ai/glm-5.2"
+            | "z-ai/glm-5-turbo"
+            | "glm-5.1"
+            | "glm-5.2"
+            | "glm-5-turbo"
+    ) || is_openai_gpt_55_api_model(&lower)
+        || is_openai_codex_model(&lower)
+}
+
+#[must_use]
+pub(crate) fn model_is_openai_reasoning_family(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    is_openai_gpt_55_api_model(&lower) || is_openai_codex_model(&lower)
+}
+
+fn is_openai_gpt_55_api_model(model_lower: &str) -> bool {
+    matches!(model_lower, "gpt-5.5" | "gpt-5.5-pro")
+        || has_date_snapshot_suffix(model_lower, "gpt-5.5-")
+        || has_date_snapshot_suffix(model_lower, "gpt-5.5-pro-")
+}
+
+fn is_openai_codex_model(model_lower: &str) -> bool {
+    matches!(
+        model_lower,
+        "gpt-5-codex"
+            | "gpt-5.1-codex"
+            | "gpt-5.1-codex-mini"
+            | "gpt-5.1-codex-max"
+            | "gpt-5.2-codex"
+            | "gpt-5.3-codex"
+            | "codex-gpt-5.5"
+            | "chatgpt-gpt-5.5"
+            | "gpt-5.5-codex"
+            | "gpt-5.5-codex-preview"
+            | "codex-gpt-5.5-preview"
+            | "chatgpt-gpt-5.5-preview"
     )
+}
+
+fn has_date_snapshot_suffix(model_lower: &str, prefix: &str) -> bool {
+    let Some(rest) = model_lower.strip_prefix(prefix) else {
+        return false;
+    };
+    let bytes = rest.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(idx, byte)| idx == 4 || idx == 7 || byte.is_ascii_digit())
 }
 
 /// Parse an explicit `_Nk` context-window hint from a model name (vendor
@@ -390,9 +537,8 @@ pub fn compaction_threshold_for_model_at_percent(model: &str, percent: f64) -> u
 }
 
 /// Whether auto-compaction should be enabled when the user did not explicitly
-/// configure it. V4-class 1M models keep the prefix-cache-friendly opt-in
-/// behavior; 256K-class and smaller known models need automatic pressure
-/// relief near the context wall.
+/// configure it. v0.8.64 defaults automatic continuity on for known model
+/// windows up to the V4 1M class while keeping unknown model ids opt-in.
 #[must_use]
 pub fn auto_compact_default_for_model(model: &str) -> bool {
     context_window_for_model(model)
@@ -426,6 +572,9 @@ pub enum StreamEvent {
     MessageStop,
     #[serde(rename = "ping")]
     Ping,
+    /// Anthropic SSE error event (#3014).
+    #[serde(rename = "error")]
+    Error { error: serde_json::Value },
 }
 
 #[allow(dead_code)]
@@ -465,6 +614,10 @@ pub enum Delta {
     ThinkingDelta { thinking: String },
     #[serde(rename = "input_json_delta")]
     InputJsonDelta { partial_json: String },
+    /// Anthropic signed-thinking signature delta (#3014); arrives at the end
+    /// of a thinking block on the native Messages stream.
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
 }
 
 #[allow(dead_code)]
@@ -478,6 +631,7 @@ pub struct MessageDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn v4_snapshots_preserve_context_window() {
@@ -531,15 +685,110 @@ mod tests {
             (concat!("qwen/", "qwen3.6-plus"), 1_000_000),
             (concat!("xiaomi/", "mimo-v2.5-pro"), 1_000_000),
             ("mimo-v2.5-pro", 1_000_000),
+            ("mimo-v2.5-pro-ultraspeed", 1_000_000),
             ("mimo-v2.5", 1_000_000),
             ("minimax/minimax-m3", 1_000_000),
+            ("minimax/minimax-m2.7", 204_800),
+            ("moonshotai/kimi-k2.7-code", 262_144),
             ("moonshotai/kimi-k2.6", 262_144),
             ("google/gemma-4-31b-it", 262_144),
             ("z-ai/glm-5.1", 202_752),
+            ("z-ai/glm-5.2", 1_000_000),
         ] {
             assert_eq!(context_window_for_model(model), Some(expected_window));
             assert!(model_supports_reasoning(model));
         }
+    }
+
+    #[test]
+    fn openai_api_and_codex_models_have_verified_context_metadata() {
+        for model in [
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.5-2026-04-23",
+            "gpt-5.5-pro-2026-04-23",
+        ] {
+            assert_eq!(context_window_for_model(model), Some(1_050_000));
+            assert_eq!(max_output_tokens_for_model(model), Some(128_000));
+            assert!(model_supports_reasoning(model));
+            assert_eq!(
+                compaction_threshold_for_model_at_percent(model, 80.0),
+                840_000
+            );
+        }
+
+        for model in [
+            "gpt-5-codex",
+            "gpt-5.1-codex",
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-max",
+            "gpt-5.2-codex",
+            "gpt-5.3-codex",
+            "codex-gpt-5.5",
+            "chatgpt-gpt-5.5",
+            "gpt-5.5-codex",
+            "gpt-5.5-codex-preview",
+        ] {
+            assert_eq!(context_window_for_model(model), Some(400_000));
+            assert_eq!(max_output_tokens_for_model(model), Some(128_000));
+            assert!(model_supports_reasoning(model));
+            assert_eq!(
+                compaction_threshold_for_model_at_percent(model, 80.0),
+                320_000
+            );
+        }
+
+        assert_eq!(context_window_for_model("gpt-5.5-nano"), None);
+        assert_eq!(max_output_tokens_for_model("gpt-5.5-nano"), None);
+        assert!(!model_supports_reasoning("gpt-5.5-nano"));
+    }
+
+    #[test]
+    fn model_metadata_catalog_override_flows_through_models_chokepoint() {
+        let _lock = crate::model_catalog::test_catalog_lock();
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "catalog-only-model".to_string(),
+            crate::model_catalog::CatalogEntry {
+                id: "catalog-only-model".to_string(),
+                context_window: Some(777_000),
+                max_output: Some(55_000),
+                supports_reasoning: Some(true),
+                input_usd_per_million: None,
+                output_usd_per_million: None,
+                modalities: Vec::new(),
+                supported_parameters: Vec::new(),
+                provider_model_id: None,
+                provenance: crate::model_catalog::MetadataProvenance::UserOverride,
+            },
+        );
+        let catalog = crate::model_catalog::MergedCatalog::from_sources(
+            overrides,
+            None,
+            crate::model_catalog::bundled_catalog(),
+            chrono::Utc::now(),
+        );
+        let _guard = crate::model_catalog::replace_active_catalog_for_test(catalog);
+
+        assert_eq!(
+            context_window_for_model("catalog-only-model"),
+            Some(777_000)
+        );
+        assert_eq!(
+            max_output_tokens_for_model("catalog-only-model"),
+            Some(55_000)
+        );
+        assert!(model_supports_reasoning("catalog-only-model"));
+    }
+
+    #[test]
+    fn moonshot_native_kimi_ids_support_reasoning_including_coding_route() {
+        // #3016: bare Moonshot ids (no moonshotai/ prefix) emit
+        // reasoning_content; kimi-for-coding currently rides the K2.7 Code path.
+        assert!(model_supports_reasoning("kimi-k2.7-code"));
+        assert!(model_supports_reasoning("kimi-k2.6"));
+        assert!(model_supports_reasoning("kimi-for-coding"));
+        assert!(model_supports_reasoning("kimi-k2.5"));
     }
 
     #[test]
@@ -580,11 +829,60 @@ mod tests {
             Some(131_072)
         );
         assert_eq!(max_output_tokens_for_model("mimo-v2.5-pro"), Some(131_072));
+        assert_eq!(
+            max_output_tokens_for_model("mimo-v2.5-pro-ultraspeed"),
+            Some(131_072)
+        );
         assert_eq!(max_output_tokens_for_model("mimo-v2.5"), Some(131_072));
         assert_eq!(
             max_output_tokens_for_model("minimax/minimax-m3"),
             Some(524_288)
         );
+        assert_eq!(max_output_tokens_for_model("z-ai/glm-5.1"), Some(131_072));
+        assert_eq!(max_output_tokens_for_model("z-ai/glm-5.2"), Some(131_072));
+        assert_eq!(
+            max_output_tokens_for_model("z-ai/glm-5-turbo"),
+            Some(131_072)
+        );
+        assert_eq!(max_output_tokens_for_model("glm-5-turbo"), Some(131_072));
+    }
+
+    #[test]
+    fn bare_provider_model_ids_mirror_vendor_prefixed_rows() {
+        // Direct-provider routes (Moonshot, MiniMax, Z.ai) serve bare model
+        // ids without the OpenRouter vendor prefix; both spellings must
+        // resolve identical metadata (#1310 ride-along on #3023).
+        for (model, expected_window) in [
+            ("kimi-k2.7-code", 262_144),
+            ("kimi-k2.6", 262_144),
+            ("minimax-m3", 1_000_000),
+            ("minimax-m2.7", 204_800),
+            ("minimax-m2.5-highspeed", 204_800),
+            ("minimax-m2", 204_800),
+            ("glm-5.1", 202_752),
+            ("glm-5.2", 1_000_000),
+            ("glm-5-turbo", 202_752),
+        ] {
+            assert_eq!(context_window_for_model(model), Some(expected_window));
+            assert!(model_supports_reasoning(model));
+        }
+        assert_eq!(context_window_for_model("kimi-for-coding"), Some(262_144));
+        assert!(model_supports_reasoning("kimi-for-coding"));
+        assert_eq!(context_window_for_model("glm-5v-turbo"), Some(202_752));
+        assert!(!model_supports_reasoning("glm-5v-turbo"));
+        // GLM-5-Turbo is a fast text sibling (distinct from the glm-5v-turbo
+        // vision model): same compact window as 5.1 but reasoning-capable.
+        assert_eq!(context_window_for_model("z-ai/glm-5-turbo"), Some(202_752));
+        assert!(model_supports_reasoning("z-ai/glm-5-turbo"));
+        assert_eq!(max_output_tokens_for_model("kimi-k2.7-code"), Some(262_144));
+        assert_eq!(max_output_tokens_for_model("kimi-k2.6"), Some(262_144));
+        assert_eq!(
+            max_output_tokens_for_model("kimi-for-coding"),
+            Some(262_144)
+        );
+        assert_eq!(max_output_tokens_for_model("minimax-m3"), Some(524_288));
+        assert_eq!(max_output_tokens_for_model("glm-5.1"), Some(131_072));
+        assert_eq!(max_output_tokens_for_model("glm-5.2"), Some(131_072));
     }
 
     #[test]
@@ -639,11 +937,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_compaction_defaults_on_for_256k_class_models_only() {
+    fn auto_compaction_defaults_on_for_known_supported_model_windows() {
         assert!(auto_compact_default_for_model("trinity-large-thinking"));
         assert!(auto_compact_default_for_model("deepseek-v3.2-128k"));
-        assert!(!auto_compact_default_for_model("deepseek-v4-pro"));
-        assert!(!auto_compact_default_for_model("mimo-v2.5-pro"));
+        assert!(auto_compact_default_for_model("deepseek-v4-pro"));
+        assert!(auto_compact_default_for_model("mimo-v2.5-pro"));
         assert!(!auto_compact_default_for_model("unknown-model"));
     }
 }

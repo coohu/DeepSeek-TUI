@@ -9,12 +9,12 @@
 #
 # Example:
 #   docker build -f docs/examples/Dockerfile.toolbox \
-#     --build-arg CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
+#     --build-arg DEEPSEEK_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
 #     --build-arg TOOLBOX_PACKAGES="git openssh-client curl build-essential pkg-config python3 python3-pip nodejs npm" \
 #     -t deepseek-toolbox:my-project .
 
-ARG CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:latest
-FROM ${CODEWHALE_IMAGE}
+ARG DEEPSEEK_IMAGE=ghcr.io/hmbown/deepseek:latest
+FROM ${DEEPSEEK_IMAGE}
 
 USER root
 

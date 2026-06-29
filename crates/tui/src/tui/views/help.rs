@@ -2,7 +2,7 @@
 //!
 //! Renders two stacked sections — *Slash commands* and *Keybindings* — with
 //! a live substring filter applied as the user types in the search box. The
-//! command list is sourced from [`crate::commands::COMMANDS`] and the
+//! command list is sourced from [`crate::commands::command_infos()`] and the
 //! keybinding list from [`crate::tui::keybindings::KEYBINDINGS`] so neither
 //! can drift from the wired-up handlers.
 //!
@@ -12,7 +12,9 @@
 //! ten rows, `Home`/`End` jump to ends, and `Esc` closes. Pressing `?` again
 //! at the call-site (`tui::ui`) also toggles the overlay closed.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::borrow::Cow;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -36,7 +38,7 @@ enum HelpSection {
 }
 
 impl HelpSection {
-    fn label(self, locale: Locale) -> &'static str {
+    fn label(self, locale: Locale) -> Cow<'static, str> {
         match self {
             Self::Command => tr(locale, MessageId::HelpSlashCommands),
             Self::Keybinding => tr(locale, MessageId::HelpKeybindings),
@@ -107,7 +109,7 @@ impl HelpView {
         view
     }
 
-    fn tr(&self, id: MessageId) -> &'static str {
+    fn tr(&self, id: MessageId) -> Cow<'static, str> {
         tr(self.locale, id)
     }
 
@@ -202,7 +204,7 @@ impl HelpView {
 fn build_entries(locale: Locale) -> Vec<HelpEntry> {
     let mut entries = Vec::new();
 
-    for command in commands::COMMANDS {
+    for command in commands::command_infos() {
         let label = format!("/{}", command.name);
         let localized = command.description_for(locale);
         let description = if command.aliases.is_empty() {
@@ -295,6 +297,17 @@ impl ModalView for HelpView {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        // Scroll clamps at the ends (keyboard Up/Down wrap); wheel-wrapping
+        // reads as disorienting.
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.move_selection(-1),
+            MouseEventKind::ScrollDown => self.move_selection(1),
+            _ => {}
+        }
+        ViewAction::None
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
@@ -441,7 +454,7 @@ impl ModalView for HelpView {
                         lines.push(Line::from(Span::styled(
                             format!("  {} ({})", section.label(self.locale), count),
                             Style::default()
-                                .fg(palette::DEEPSEEK_BLUE)
+                                .fg(palette::WHALE_ACCENT_PRIMARY)
                                 .add_modifier(Modifier::BOLD),
                         )));
                     }
@@ -451,7 +464,7 @@ impl ModalView for HelpView {
                         let style = if is_selected {
                             Style::default()
                                 .fg(palette::SELECTION_TEXT)
-                                .bg(palette::DEEPSEEK_BLUE)
+                                .bg(palette::SELECTION_BG)
                                 .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().fg(palette::TEXT_PRIMARY)
@@ -470,7 +483,7 @@ impl ModalView for HelpView {
             .title(Line::from(vec![Span::styled(
                 format!(" {} ", self.tr(MessageId::HelpTitle)),
                 Style::default()
-                    .fg(palette::DEEPSEEK_BLUE)
+                    .fg(palette::WHALE_ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             )]))
             .title_bottom(Line::from(vec![
@@ -515,7 +528,7 @@ mod tests {
     fn empty_filter_lists_all_entries() {
         let view = HelpView::new();
         // Total = registered slash commands + catalogued keybindings.
-        let expected = commands::COMMANDS.len() + KEYBINDINGS.len();
+        let expected = commands::command_infos().len() + KEYBINDINGS.len();
         assert_eq!(view.filtered.len(), expected);
         assert_eq!(view.entries.len(), expected);
     }
@@ -699,7 +712,7 @@ mod tests {
                 let cell = &buf[(x, y)];
                 row.push_str(cell.symbol());
                 row_has_highlight |=
-                    cell.bg == palette::DEEPSEEK_BLUE && cell.fg == palette::SELECTION_TEXT;
+                    cell.bg == palette::SELECTION_BG && cell.fg == palette::SELECTION_TEXT;
             }
             if row_has_highlight && row.contains(&selected_label) {
                 highlighted_label = true;
@@ -714,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_help_row_uses_stronger_highlight() {
+    fn selected_help_row_uses_selection_highlight() {
         let view = HelpView::new();
         let area = Rect::new(0, 0, 96, 32);
         let mut buf = Buffer::empty(area);
@@ -724,7 +737,7 @@ mod tests {
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 let cell = &buf[(x, y)];
-                if cell.bg == palette::DEEPSEEK_BLUE && cell.fg == palette::SELECTION_TEXT {
+                if cell.bg == palette::SELECTION_BG && cell.fg == palette::SELECTION_TEXT {
                     found_highlight = true;
                     break;
                 }
@@ -733,7 +746,7 @@ mod tests {
 
         assert!(
             found_highlight,
-            "selected row should use a strong blue highlight"
+            "selected row should use the semantic selection highlight"
         );
     }
 

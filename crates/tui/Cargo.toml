@@ -13,6 +13,7 @@ tui = ["dep:schemaui", "schemaui/tui", "json", "toml"]
 web = ["dep:schemaui", "schemaui/web", "json", "toml"]
 json = ["schemaui/json"]
 toml = ["schemaui/toml"]
+long-running-tests = []
 
 [[bin]]
 name = "deepseek-tui"
@@ -20,11 +21,12 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
-deepseek-config = { path = "../config", version = "0.8.54" }
-deepseek-protocol = { path = "../protocol", version = "0.8.54" }
-deepseek-release = { path = "../release", version = "0.8.54" }
-deepseek-secrets = { path = "../secrets", version = "0.8.54" }
-deepseek-tools = { path = "../tools", version = "0.8.54" }
+deepseek-config = { path = "../config", version = "0.8.65" }
+deepseek-execpolicy = { path = "../execpolicy", version = "0.8.65" }
+deepseek-protocol = { path = "../protocol", version = "0.8.65" }
+deepseek-release = { path = "../release", version = "0.8.65" }
+deepseek-secrets = { path = "../secrets", version = "0.8.65" }
+deepseek-tools = { path = "../tools", version = "0.8.65" }
 schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-stream = "0.3.6"
 async-trait = "0.1"
@@ -38,43 +40,46 @@ dotenvy = "0.15.7"
 dirs = "6.0.0"
 fd-lock = "4.0.4"
 futures-util = "0.3.31"
+oauth2 = "5"
 ratatui = "0.30"
 regex = "1.11"
 reqwest = { version = "0.13.1", default-features = false, features = ["blocking", "json", "stream", "multipart", "form", "rustls-no-provider", "http2", "gzip", "brotli"] }
+rmcp = { version = "1.7.0", default-features = false, features = ["auth", "client"] }
 rustls.workspace = true
 qrcode = { version = "0.14", default-features = false }
-similar = "2"
+similar = "3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
 shellexpand = "3"
-toml = "0.9.7"
-tokio = { version = "1.49.0", features = ["full"] }
+toml = "1.0.6"
+toml_edit.workspace = true
+tokio = { version = "1.50.0", features = ["full"] }
 tokio-util = { version = "0.7.16", features = ["io"] }
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
+urlencoding = "2.1"
 uuid = { version = "1.11", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
-tempfile = "3.16"
+chrono.workspace = true
+tempfile.workspace = true
 thiserror = "2.0"
 tracing = "0.1"
-tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 tower-http = { version = "0.6", features = ["cors"] }
 wait-timeout = "0.2"
+webbrowser = "1.0"
 multimap = "0.10.0"
 shlex = "1.3.0"
 tiny_http = "0.12"
-zeroize = "1.8.2"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
-lru = "0.16"
+lru = "0.18"
 parking_lot = "0.12"
-pdf-extract = "0.7"
+pdf-extract = "0.10"
 tar = "0.4"
 flate2 = "1.1"
-sha2 = "0.10"
-sys-locale = "0.3"
+sha2 = "0.11"
+rust-i18n = "4.1.0"
 
 [dev-dependencies]
 cucumber = "0.23.0"
@@ -97,4 +102,4 @@ objc2 = "0.6.3"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.60", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

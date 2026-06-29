@@ -176,6 +176,8 @@ pub fn new_shared_todo_list() -> SharedTodoList {
 
 const TODO_ALIAS_FIRST_DEPRECATED_VERSION: &str = "0.8.53";
 const TODO_ALIAS_REMOVAL_VERSION: &str = "0.9.0";
+const CANONICAL_WORK_SURFACE: &str = "checklist";
+const DURABLE_WORK_OWNER: &str = "fleet_whaleflow_ledger";
 
 fn is_compat_alias(tool_name: &str) -> bool {
     tool_name.starts_with("todo_")
@@ -596,6 +598,12 @@ fn checklist_metadata(snapshot: &TodoListSnapshot, tool_name: &str) -> serde_jso
     let mut metadata = json!({
         "canonical_tool": canonical_tool,
         "compat_alias": compat_alias,
+        "work_surface": {
+            "canonical": CANONICAL_WORK_SURFACE,
+            "model_visible": !compat_alias,
+            "durable_owner": DURABLE_WORK_OWNER,
+            "progress_key": "task_updates.checklist"
+        },
         "task_updates": {
             "checklist": {
                 "items": items,
@@ -646,6 +654,16 @@ mod tests {
         let metadata = result.metadata.expect("metadata");
         assert_eq!(metadata["canonical_tool"], "checklist_write");
         assert_eq!(metadata["compat_alias"], false);
+        assert_eq!(metadata["work_surface"]["canonical"], "checklist");
+        assert_eq!(metadata["work_surface"]["model_visible"], true);
+        assert_eq!(
+            metadata["work_surface"]["durable_owner"],
+            "fleet_whaleflow_ledger"
+        );
+        assert_eq!(
+            metadata["work_surface"]["progress_key"],
+            "task_updates.checklist"
+        );
         assert_eq!(
             metadata["task_updates"]["checklist"]["in_progress_id"],
             json!(1)
@@ -676,6 +694,15 @@ mod tests {
         assert_eq!(tool.name(), "todo_write");
         assert_eq!(metadata["canonical_tool"], "checklist_write");
         assert_eq!(metadata["compat_alias"], true);
+        assert_eq!(metadata["work_surface"]["canonical"], "checklist");
+        assert_eq!(
+            metadata["work_surface"]["progress_key"],
+            "task_updates.checklist"
+        );
+        assert_eq!(
+            metadata["task_updates"]["checklist"]["items"][0]["content"],
+            "legacy caller"
+        );
         assert_eq!(metadata["_deprecation"]["this_tool"], "todo_write");
         assert_eq!(metadata["_deprecation"]["use_instead"], "checklist_write");
         assert_eq!(metadata["_deprecation"]["removed_in"], "0.9.0");
@@ -697,6 +724,7 @@ mod tests {
             .expect("todo add succeeds");
         let add_metadata = add_result.metadata.expect("add metadata");
         assert_eq!(add_metadata["canonical_tool"], "checklist_add");
+        assert_eq!(add_metadata["work_surface"]["canonical"], "checklist");
         assert_eq!(add_metadata["_deprecation"]["use_instead"], "checklist_add");
         assert!(!add.model_visible());
 
@@ -707,6 +735,7 @@ mod tests {
             .expect("todo update succeeds");
         let update_metadata = update_result.metadata.expect("update metadata");
         assert_eq!(update_metadata["canonical_tool"], "checklist_update");
+        assert_eq!(update_metadata["work_surface"]["canonical"], "checklist");
         assert_eq!(
             update_metadata["_deprecation"]["use_instead"],
             "checklist_update"
@@ -720,6 +749,7 @@ mod tests {
             .expect("todo list succeeds");
         let list_metadata = list_result.metadata.expect("list metadata");
         assert_eq!(list_metadata["canonical_tool"], "checklist_list");
+        assert_eq!(list_metadata["work_surface"]["canonical"], "checklist");
         assert_eq!(
             list_metadata["_deprecation"]["use_instead"],
             "checklist_list"

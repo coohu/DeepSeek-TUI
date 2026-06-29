@@ -4,29 +4,32 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Codex-style app-server transport for DeepSeek workspace architecture"
+description = "App-server transport for DeepSeek runtime integrations"
+# `deepseek app-server` is owned by deepseek-cli; this crate is library-only.
+autobins = false
 
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
-deepseek-agent = { path = "../agent", version = "0.8.54" }
-deepseek-config = { path = "../config", version = "0.8.54" }
-deepseek-core = { path = "../core", version = "0.8.54" }
-deepseek-execpolicy = { path = "../execpolicy", version = "0.8.54" }
-deepseek-hooks = { path = "../hooks", version = "0.8.54" }
-deepseek-mcp = { path = "../mcp", version = "0.8.54" }
-deepseek-protocol = { path = "../protocol", version = "0.8.54" }
-deepseek-state = { path = "../state", version = "0.8.54" }
-deepseek-tools = { path = "../tools", version = "0.8.54" }
+deepseek-agent = { path = "../agent", version = "0.8.65" }
+deepseek-config = { path = "../config", version = "0.8.65" }
+deepseek-core = { path = "../core", version = "0.8.65" }
+deepseek-execpolicy = { path = "../execpolicy", version = "0.8.65" }
+deepseek-hooks = { path = "../hooks", version = "0.8.65" }
+deepseek-mcp = { path = "../mcp", version = "0.8.65" }
+deepseek-protocol = { path = "../protocol", version = "0.8.65" }
+deepseek-state = { path = "../state", version = "0.8.65" }
+deepseek-tools = { path = "../tools", version = "0.8.65" }
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 uuid.workspace = true
 
 [dev-dependencies]
-tempfile = "3.16"
+tempfile.workspace = true
 tower = "0.5"

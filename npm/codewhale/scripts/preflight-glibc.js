@@ -69,7 +69,7 @@ function buildFromSourceHint() {
     "You can still run deepseek by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install deepseek-cli --locked   # provides `deepseek`",
+    "  cargo install deepseek-cli --locked   # provides `deepseek` ,
     "  cargo install deepseek-tui --locked   # provides `deepseek-tui`",
     "",
     "Or build from a checkout:",
@@ -83,12 +83,34 @@ function buildFromSourceHint() {
   ].join("\n");
 }
 
-function preflightGlibc(filePath) {
-  if (!isLinux()) return;
-  if (
+function skipGlibcCheck() {
+  return (
+    process.env.DEEPSEEK_SKIP_GLIBC_CHECK === "1" ||
     process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK === "1" ||
     process.env.DEEPSEEK_SKIP_GLIBC_CHECK === "1"
-  ) {
+  );
+}
+
+function glibcCompatibilityMessage(required, host) {
+  const hostLine = host
+    ? `this system has glibc ${formatVersion(host)}, which is too old for that asset.`
+    : "this system does not appear to provide GNU libc.";
+  return [
+    `Prebuilt DeepSeek Linux binaries require GLIBC_${formatVersion(required)}, but ${hostLine}`,
+    "",
+    "The Linux x64 release asset is a static (musl) build that runs on any glibc,",
+    "but the Linux arm64 and riscv64 assets are GNU libc builds linked against",
+    "Ubuntu 24.04/glibc 2.39, which Ubuntu 22.04 (glibc 2.35) cannot run.",
+    "",
+    buildFromSourceHint(),
+    "",
+    "Set DEEPSEEK_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
+  ].join("\n");
+}
+
+function preflightGlibc(filePath) {
+  if (!isLinux()) return;
+  if (skipGlibcCheck()) {
     return;
   }
 
@@ -100,29 +122,11 @@ function preflightGlibc(filePath) {
 
   const host = detectHostGlibc();
   if (!host) {
-    throw new Error(
-      [
-        `The prebuilt binary requires GLIBC_${formatVersion(required)}, but no GNU libc was detected on this host.`,
-        "This usually means you're on a musl-based distro such as Alpine.",
-        "",
-        buildFromSourceHint(),
-        "",
-        "Set DEEPSEEK_TUI_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
-      ].join("\n"),
-    );
+    throw new Error(glibcCompatibilityMessage(required, null));
   }
 
   if (compareVersion(host, required) < 0) {
-    throw new Error(
-      [
-        `Prebuilt DeepSeek TUI binary requires GLIBC_${formatVersion(required)} but this system has glibc ${formatVersion(host)}.`,
-        "Older distros (CentOS 7/8, RHEL 7/8, Debian 10, etc.) ship an older glibc that is not compatible with the prebuilt artifact.",
-        "",
-        buildFromSourceHint(),
-        "",
-        "Set DEEPSEEK_TUI_SKIP_GLIBC_CHECK=1 to bypass this check at your own risk.",
-      ].join("\n"),
-    );
+    throw new Error(glibcCompatibilityMessage(required, host));
   }
 }
 
@@ -131,5 +135,11 @@ module.exports = {
   detectHostGlibc,
   detectBinaryRequiredGlibc,
   // exported for tests
-  _internal: { parseVersion, compareVersion, formatVersion },
+  _internal: {
+    parseVersion,
+    compareVersion,
+    formatVersion,
+    glibcCompatibilityMessage,
+    skipGlibcCheck,
+  },
 };

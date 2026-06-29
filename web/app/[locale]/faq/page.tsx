@@ -74,7 +74,7 @@ brew tap coohu/ && brew install
         Yes. DeepSeek is the new name for what was previously called DeepSeek TUI.
         The canonical command is now <code className="inline">deepseek</code>. Legacy <code className="inline">deepseek</code> and <code className="inline">deepseek-tui</code> commands remain as compatibility shims — they still work.
         Config lives at <code className="inline">~/.deepseek/</code>. Legacy <code className="inline">~/.deepseek/</code> config is still read as a compatibility fallback, and <code className="inline">DEEPSEEK_*</code> env vars continue to work.
-        DeepSeek is not deprecated. The rename reflects DeepSeek's broader mission as the agentic terminal for open models across providers, not a narrowing away from DeepSeek.
+        DeepSeek is not deprecated. The rename reflects a mission idea put in this version: DeepSeek as an agentic terminal for open models across providers, not a narrowing away from DeepSeek.
       </>
     ),
     sources: ["docs/REBRAND.md", "README.md"],
@@ -114,7 +114,7 @@ deepseek doctor         # full connectivity check`}
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — first-class, native API. Reasoning streaming, cache metrics, thinking effort control.</li>
           <li><strong>OpenRouter</strong> — unified API for DeepSeek models and other open-model routes.</li>
-          <li><strong>OpenAI-compatible</strong>, <strong>NVIDIA NIM</strong>, <strong>AtlasCloud</strong>, <strong>Wanjie Ark</strong>, <strong>Volcengine Ark</strong>, <strong>Xiaomi MiMo</strong>, <strong>Novita</strong>, <strong>Fireworks</strong>, <strong>SiliconFlow</strong>, <strong>SiliconFlow CN</strong>, <strong>Arcee AI</strong>, <strong>Moonshot/Kimi</strong>, <strong>Hugging Face</strong>, <strong>SGLang</strong>, <strong>vLLM</strong>, <strong>Ollama</strong></li>
+          <li><strong>OpenAI-compatible</strong>, <strong>NVIDIA NIM</strong>, <strong>AtlasCloud</strong>, <strong>Wanjie Ark</strong>, <strong>Volcengine Ark</strong>, <strong>Xiaomi MiMo</strong>, <strong>Novita</strong>, <strong>Fireworks</strong>, <strong>SiliconFlow</strong>, <strong>SiliconFlow CN</strong>, <strong>Arcee AI</strong>, <strong>Moonshot/Kimi</strong>, <strong>Hugging Face</strong>, <strong>DeepInfra</strong>, <strong>Together AI</strong>, <strong>Z.ai</strong>, <strong>StepFun</strong>, <strong>MiniMax</strong>, <strong>OpenAI Codex</strong>, <strong>Anthropic</strong>, <strong>SGLang</strong>, <strong>vLLM</strong>, <strong>Ollama</strong></li>
         </ul>
         <p>
           Set the corresponding env var (e.g. <code className="inline">OPENROUTER_API_KEY</code>) and your provider in <code className="inline">~/.deepseek/config.toml</code>.
@@ -200,8 +200,10 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     q: "What does /goal do?",
     a: (
       <>
-        <code className="inline">/goal</code> is a simple goal-setter for the current session.
-        It does not add another app mode; the mode switcher remains Plan, Agent, and YOLO.
+        <code className="inline">/goal</code> sets a goal for the current TUI session.
+        App-server clients can also persist a thread-scoped goal through the
+        <code className="inline">thread/goal/*</code> methods. It does not add another
+        app mode; the mode switcher remains Plan, Agent, and YOLO.
         Track progress in <a href="https://github.com/coohu/deepseek-tui/issues/891" className="body-link">#891</a>.
       </>
     ),
@@ -265,6 +267,35 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
       </>
     ),
     sources: ["README.md", "#1914", "docs/CNB_MIRROR.md"],
+  },
+  {
+    q: "Is deepseek.net the official site? What about mirrors?",
+    a: (
+      <>
+        <p className="mb-2">
+          <strong>deepseek.net</strong> and <strong>www.deepseek.net</strong> are the
+          official DeepSeek sites, deployed on Cloudflare. The website source is open
+          and lives under <code className="inline">web/</code> in the{" "}
+          <code className="inline">coohu/deepseek-tui</code> repository — anyone can
+          self-deploy it as a mirror.
+        </p>
+        <p className="mb-2">
+          All official releases and SHA-256 checksums are distributed exclusively through{" "}
+          <a href="https://github.com/coohu/deepseek-tui/releases" className="body-link">GitHub Releases</a>.
+          The npm package downloads verified binaries from GitHub Releases.
+        </p>
+        <p className="mb-2">
+          A CNB mirror is maintained for users who cannot reliably reach GitHub
+          (<Link href="/docs#cnb-mirror" className="body-link">docs/CNB_MIRROR.md</Link>).
+          Cargo users can use the TUNA mirror for faster downloads in China.
+        </p>
+        <p>
+          Self-deployed website copies, mirror sites, and third-party packages are not
+          controlled by the DeepSeek project. Verify download sources and checksums.
+        </p>
+      </>
+    ),
+    sources: ["#2624", "#3421", "docs/CNB_MIRROR.md"],
   },
   {
     q: "My API key was rejected or I get auth errors on first run.",
@@ -427,7 +458,7 @@ deepseek doctor         # 完整连接检查`}
         <ul className="list-disc pl-5 space-y-1 text-sm text-ink-soft mb-3">
           <li><strong>DeepSeek</strong> — 一级支持，原生 API。推理流、缓存指标、思考力度控制。</li>
           <li><strong>OpenRouter</strong> — 统一 API，可访问 DeepSeek 和其他开放模型路由。</li>
-          <li><strong>OpenAI 兼容</strong>、<strong>NVIDIA NIM</strong>、<strong>AtlasCloud</strong>、<strong>Wanjie Ark</strong>、<strong>Volcengine Ark</strong>、<strong>Xiaomi MiMo</strong>、<strong>Novita</strong>、<strong>Fireworks</strong>、<strong>SiliconFlow</strong>、<strong>SiliconFlow CN</strong>、<strong>Arcee AI</strong>、<strong>Moonshot/Kimi</strong>、<strong>Hugging Face</strong>、<strong>SGLang</strong>、<strong>vLLM</strong>、<strong>Ollama</strong></li>
+          <li><strong>OpenAI 兼容</strong>、<strong>NVIDIA NIM</strong>、<strong>AtlasCloud</strong>、<strong>Wanjie Ark</strong>、<strong>Volcengine Ark</strong>、<strong>Xiaomi MiMo</strong>、<strong>Novita</strong>、<strong>Fireworks</strong>、<strong>SiliconFlow</strong>、<strong>SiliconFlow CN</strong>、<strong>Arcee AI</strong>、<strong>Moonshot/Kimi</strong>、<strong>Hugging Face</strong>、<strong>DeepInfra</strong>、<strong>Together AI</strong>、<strong>Z.ai</strong>、<strong>StepFun</strong>、<strong>MiniMax</strong>、<strong>OpenAI Codex</strong>、<strong>Anthropic</strong>、<strong>SGLang</strong>、<strong>vLLM</strong>、<strong>Ollama</strong></li>
         </ul>
         <p>
           设置对应的环境变量（如 <code className="inline">OPENROUTER_API_KEY</code>）并在 <code className="inline">~/.deepseek/config.toml</code> 中配置你的提供商。
@@ -513,9 +544,10 @@ default_text_model = "openrouter/deepseek/deepseek-v4-pro"`}
     q: "什么是 Goal 模式？现在可用吗？",
     a: (
       <>
-        Goal 模式是未来的工作流/标签页方向，用于长时间运行的多步目标——不是当前的 <code className="inline">/goal</code> 命令。
-        当前的 <code className="inline">/goal</code> 是一个简单的目标设置器。完整的 Goal 模式（自主多回合任务执行，支持检查点/恢复）已规划但尚未实现。
-        关注 <a href="https://github.com/coohu/deepseek-tui/issues/891" className="body-link">#891</a> 的进展。
+        <code className="inline">/goal</code> 为当前 TUI 会话设置目标，支持 <code className="inline">pause</code>、<code className="inline">resume</code>、<code className="inline">complete</code>、<code className="inline">blocked</code> 和 <code className="inline">clear</code> 控制。
+        App-server 客户端也可以通过 <code className="inline">thread/goal/*</code> 方法持久化线程范围的目标，支持 <code className="inline">set</code>、<code className="inline">get</code> 和 <code className="inline">clear</code>。
+        它不会新增一个应用模式；模式切换器仍然是 Plan、Agent 和 YOLO。
+        跟踪进展：<a href="https://github.com/coohu/deepseek-tui/issues/891" className="body-link">#891</a>。
       </>
     ),
     sources: ["#891"],
@@ -578,6 +610,34 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"`}
       </>
     ),
     sources: ["README.md", "#1914", "docs/CNB_MIRROR.md"],
+  },
+  {
+    q: "deepseek.net 是官方网站吗？镜像站点呢？",
+    a: (
+      <>
+        <p className="mb-2">
+          <strong>deepseek.net</strong> 和 <strong>www.deepseek.net</strong> 是
+          DeepSeek 的官方站点，部署在 Cloudflare 上。网站源码存放于{" "}
+          <code className="inline">coohu/deepseek-tui</code> 仓库的{" "}
+          <code className="inline">web/</code> 目录下，任何人都可自行部署为镜像。
+        </p>
+        <p className="mb-2">
+          所有正式发布和 SHA-256 校验文件仅通过{" "}
+          <a href="https://github.com/coohu/deepseek-tui/releases" className="body-link">GitHub Releases</a> 分发。
+          npm 包从 GitHub Releases 下载经校验的二进制。
+        </p>
+        <p className="mb-2">
+          面向无法稳定访问 GitHub 的用户，提供 CNB 镜像（
+          <Link href="/docs#cnb-mirror" className="body-link">docs/CNB_MIRROR.md</Link>）。
+          Cargo 用户可使用 TUNA 镜像在国内加速下载。
+        </p>
+        <p>
+          自行部署的网站副本、镜像站和第三方包不受 DeepSeek 项目控制。
+          请验证下载来源和校验和。
+        </p>
+      </>
+    ),
+    sources: ["#2624", "#3421", "docs/CNB_MIRROR.md"],
   },
   {
     q: "首次运行时提示 API 密钥被拒绝或认证错误？",

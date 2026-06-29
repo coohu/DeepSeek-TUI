@@ -35,7 +35,7 @@ chosen over the available shell equivalent. Companion to `crates/tui/src/prompts
 |---|---|
 | `grep_files` | Regex search file contents within the workspace; structured matches + context lines. Pure-Rust (`regex` crate), no `rg`/`grep` shell-out. |
 | `file_search` | Fuzzy-match filenames (not contents). Use when you know roughly the name. |
-| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, and Baidu are selectable in config. Ranked snippets + `ref_id` for citation. |
+| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, SearXNG, Baidu, Volcengine, and Sofya are selectable in config. Ranked snippets + `ref_id` for citation. |
 | `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. |
 
 ### Shell
@@ -71,9 +71,27 @@ stale rather than presented as live processes.
 Shell permission policy is evaluated by `crates/execpolicy`. Deny prefixes are
 checked before trusted prefixes and block matching commands regardless of layer.
 Trusted prefixes only skip approval in modes that permit trust shortcuts. Typed
-ask records are currently a narrow foundation: when one matches under
-`AskForApproval::Never`, the command is rejected because the runtime cannot ask
-the user; existing allow/deny behavior is otherwise unchanged.
+ask records are an ask-only layer: when one matches under
+`AskForApproval::Never`, the invocation is rejected because the runtime cannot
+ask the user; YOLO / auto approval keeps complete freedom and is not limited by
+ask rules. Existing allow/deny behavior is otherwise unchanged.
+
+The TUI runtime loads ask-only records from the sibling `permissions.toml` file
+and applies matching `exec_shell` command ask-rules and explicit file-path
+ask-rules in modes that can ask. In supported approval cards, `S` approves once
+and appends persistent ask rules:
+
+- `exec_shell`: the exact approved command string (matched by the existing
+  arity-aware command matcher).
+- `write_file`: the exact workspace-relative target path.
+- `edit_file`: the exact workspace-relative target path.
+- `apply_patch`: one exact workspace-relative path rule per validated touched
+  file reported by apply-patch preflight.
+
+`read_file` path ask rules can be authored in `permissions.toml` and matched at
+runtime, but the approval UI does not save `read_file` rules. This is still not
+a policy editor: no typed allow/deny records, glob expansion, broad directory
+rules, or UI edit/delete flow exist for saved ask rules.
 
 ### MCP manager and palette discovery
 
@@ -128,6 +146,12 @@ confirmation prompt, `/relay`, and fork-state handoff all render the same
 artifact so a plan can be reviewed, accepted, revised, replayed, or delegated
 without losing its source context.
 
+Strategy metadata and checklist work are one Work surface. Treat
+`update_plan` as phase context and sequencing intent, while `checklist_*`
+remains the counted task ledger. When both exist, UI projections should group
+strategy around the checklist instead of showing two peer checklist/progress
+systems for the same run.
+
 ### Verification gates and artifacts
 
 | Tool | Niche |
@@ -135,6 +159,12 @@ without losing its source context.
 | `task_gate_run` | Run an approved verification command and attach structured evidence to the active durable task: command, cwd, exit code, duration, classification, summary, and log artifact. |
 
 Large logs and command outputs should be artifacts with compact summaries in the transcript. `task_gate_run` handles this automatically for active durable tasks.
+
+Sub-agent runs expose a compact run receipt through `agent`: `run_id`,
+`follow_up`, `takeover`, `artifacts`, `usage`, `verification`, and
+`worker_record`. Usage is marked
+`unknown` until worker-level token accounting is available, and verification is
+`self_report_only` unless a separate gate or artifact proves the claim.
 
 ### GitHub context and guarded writes
 
@@ -172,20 +202,18 @@ small `var_handle` objects, and `handle_read` retrieves bounded slices, counts,
 or JSON projections from the backing environment. This keeps the parent
 transcript small while preserving a recovery path to the full payload.
 
-The active model-facing sub-agent surface is persistent and intentionally small:
+The active model-facing sub-agent surface is intentionally small:
 
 | Tool | Niche |
 |---|---|
-| `agent_open` | Open a named sub-agent session for independent work. Returns a session projection immediately so the parent can keep coordinating. |
-| `agent_eval` | Send follow-up input, block for completion, or fetch the current projection/transcript handle for an existing session. |
-| `agent_close` | Cancel or release a sub-agent session by name or id. |
+| `agent` | Launch one focused child run. Returns an agent id, compact receipt, and transcript handle while the parent can keep coordinating. |
 
 See `agent.txt` for the delegation protocol and
 [`SUBAGENTS.md`](SUBAGENTS.md) for the role taxonomy
 (`general` / `explore` / `plan` / `review` / `implementer` /
 `verifier` / `custom`).
 
-`agent_open` defaults to a fresh child conversation. Pass
+`agent` defaults to a fresh child conversation. Pass
 `fork_context: true` for continuation-style work or multi-perspective reviews
 that should inherit the parent's context. In fork mode, the runtime preserves
 the parent prefill/prompt prefix byte-identically where available so DeepSeek's
@@ -257,23 +285,21 @@ reflect very different cost classes:
 
 | Tool | What each child does | Wall-clock | Token cost | Cap |
 |---|---|---|---|---|
-| `agent_open` | Full sub-agent loop (planning, tool calls, multi-turn streaming, can open children) | minutes | thousands of tokens | 10 in flight by default (`[subagents].max_concurrent`, hard ceiling 20) |
+| `agent` | Full sub-agent loop (planning, tool calls, multi-turn streaming) | minutes | thousands of tokens | 20 running by default (`[subagents].max_concurrent`, hard ceiling 20), with up to 200 running + queued admitted by default |
 | `rlm_eval` helper `sub_query_batch` | One-shot non-streaming Chat Completions calls pinned to `deepseek-v4-flash` inside a live RLM session | seconds | ~hundreds of tokens | 16 per call |
 
 The caps appear in each tool's description and error messages so the model
 (and the user) can choose the right tool for the job. If one sub-agent is
 enough but you need parallel semantic lookups over the same loaded context,
 prefer `rlm_eval` with `sub_query_batch`; if each task needs its own
-tool-carrying agent loop, use `agent_open` and wait for running sessions to
-complete or cancel no-longer-needed running sessions with `agent_close`.
+tool-carrying agent loop, use `agent` and inspect the returned transcript
+handle when needed.
 
 ## Removed legacy aliases and surfaces
 
-v0.8.33 removed the old model-facing sub-agent fan-out surface from active
-prompting and tool catalogs. Do not use these names in new active guidance:
-`agent_spawn`, `agent_wait`, `agent_result`, `agent_send_input`,
-`agent_assign`, `agent_resume`, `agent_list`, `spawn_agent`,
-`delegate_to_agent`, `send_input`, and `close_agent`.
+The old model-facing sub-agent fan-out surface is removed from active prompting
+and tool catalogs. Do not use retired sub-agent lifecycle names in new active
+guidance.
 
 The old one-shot `rlm` model-facing tool is also replaced by persistent
 `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` sessions.
@@ -292,22 +318,6 @@ v0.9.0 adds the following hidden-compat aliases (#2682, #2683):
 All hidden aliases remain registered and callable so saved transcripts can
 replay without teaching new sessions the deprecated spelling.
 
-Historical compatibility results may include a `_deprecation` block shaped
-like this:
-
-```json
-{
-  "_deprecation": {
-    "this_tool": "spawn_agent",
-    "use_instead": "agent_open",
-    "removed_in": "0.8.33",
-    "message": "Tool 'spawn_agent' is deprecated; switch to 'agent_open'."
-  }
-}
-```
-
-This is a legacy/compatibility note, not the active recommended surface.
-
 ## Release smoke: verify the live names
 
 When validating a release, verify the model-visible registry names directly.
@@ -324,20 +334,18 @@ deepseek-tui --version
 Tool-surface smoke:
 
 ```bash
-rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent_open"|"agent_eval"|"agent_close"' crates/tui/src
-rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent_open|agent_eval|agent_close' docs crates/tui/src/prompts crates/tui/src/tools
+rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent"' crates/tui/src
+rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent' docs crates/tui/src/prompts crates/tui/src/tools
 ```
 
-The canonical live names (since v0.8.35, still current in v0.8.49):
+The canonical live names:
 
 - `handle_read`
 - `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
-- `agent_open`, `agent_eval`, `agent_close`
+- `agent`
 
-The registry should not actively advertise the legacy one-shot names
-`agent_spawn`, `agent_wait`, `agent_result`, or the old foreground `rlm` tool
-outside legacy/removal notes. Historical changelog entries and compatibility
-code may still mention them.
+The registry should not actively advertise retired sub-agent lifecycle names or
+the old foreground `rlm` tool outside historical changelog entries.
 
 ## Additional registered tools (v0.8.49)
 

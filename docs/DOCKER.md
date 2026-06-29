@@ -62,13 +62,13 @@ environments:
 
 ```bash
 docker build -f docs/examples/Dockerfile.toolbox \
-  --build-arg CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
+  --build-arg DEEPSEEK_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
   --build-arg TOOLBOX_PACKAGES="git openssh-client curl build-essential pkg-config python3 python3-pip nodejs npm" \
   -t deepseek-toolbox:my-project .
 ```
 
 Use `latest` only for throwaway testing. For shared projects, keep the
-`CODEWHALE_IMAGE` value pinned and review package additions like any other
+`DEEPSEEK_IMAGE` value pinned and review package additions like any other
 development-environment change.
 
 Run the toolbox image with the same workspace and state mounts:
@@ -101,14 +101,14 @@ the toolbox image from [`docs/examples/Dockerfile.toolbox`](examples/Dockerfile.
 and keeps the project state volume explicit:
 
 ```bash
-CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
-CODEWHALE_TOOLBOX_IMAGE=deepseek-toolbox:my-project \
-CODEWHALE_HOME_VOLUME=deepseek-my-project-home \
-CODEWHALE_WORKSPACE="$PWD" \
+DEEPSEEK_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
+DEEPSEEK_TOOLBOX_IMAGE=deepseek-toolbox:my-project \
+DEEPSEEK_HOME_VOLUME=deepseek-my-project-home \
+DEEPSEEK_WORKSPACE="$PWD" \
 docker compose -f docs/examples/compose.toolbox.yml run --rm deepseek
 ```
 
-Use a different `CODEWHALE_TOOLBOX_IMAGE` and `CODEWHALE_HOME_VOLUME` for each
+Use a different `DEEPSEEK_TOOLBOX_IMAGE` and `DEEPSEEK_HOME_VOLUME` for each
 project that needs an independent toolchain or independent `.deepseek` state.
 The Compose file also shows opt-in, read-only mounts for SSH material and local
 CA certificates; keep those commented out unless the project needs them.

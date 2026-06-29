@@ -42,17 +42,85 @@ pub fn agents_global_skills_dir() -> Option<PathBuf> {
 
 // === Types ===
 
+/// Session-time skill discovery scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillDiscoveryMode {
+    /// Preserve the existing broad compatibility scan across DeepSeek,
+    /// agentskills.io, Claude, OpenCode, Cursor, and legacy DeepSeek roots.
+    Compatible,
+    /// Scan only DeepSeek-owned roots. Callers that also pass an explicit
+    /// `skills_dir` still get that directory because it is user configuration.
+    CodeWhaleOnly,
+}
+
+impl SkillDiscoveryMode {
+    #[must_use]
+    pub fn from_deepseek_only(value: bool) -> Self {
+        if value {
+            Self::CodeWhaleOnly
+        } else {
+            Self::Compatible
+        }
+    }
+}
+
 /// Parsed representation of a SKILL.md definition.
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
+    /// Default (language-neutral, usually English) description.
     pub description: String,
+    /// Optional locale-specific descriptions, keyed by lowercased locale tag
+    /// (e.g. `zh`, `zh-hant`, `ja`). Populated from `description_<tag>:`
+    /// frontmatter keys so a skill author can ship a shorter, native-language
+    /// description for non-English sessions (saves prompt tokens; see #3354).
+    pub localized_descriptions: HashMap<String, String>,
     pub body: String,
     /// On-disk path to the `SKILL.md` this was loaded from. The directory
     /// name can differ from the frontmatter `name` for community installs
     /// or manually-placed skills, so callers must use this rather than
     /// reconstructing `<dir>/<name>/SKILL.md`.
     pub path: PathBuf,
+}
+
+impl Skill {
+    /// Pick the best description for a session `locale_tag`, falling back to the
+    /// default `description` when no localized variant matches.
+    ///
+    /// Order: exact (lowercased) tag match, then the primary language subtag
+    /// (so `en-us` → `en`, `pt-br` → `pt`, `zh-cn` → `zh`), then default.
+    ///
+    /// Chinese is the one place where the primary-subtag fallback would be
+    /// *wrong*: Traditional and Simplified are written differently, so a
+    /// Traditional tag (`zh-hant`, or the Traditional regions `zh-tw` / `zh-hk`
+    /// / `zh-mo`) must NOT borrow a Simplified `description_zh`. Those match only
+    /// an exact `description_zh-hant`-style key, else the default. Simplified
+    /// tags (`zh`, `zh-hans`, `zh-cn`, …) still fold to `description_zh`.
+    #[must_use]
+    pub fn description_for_locale(&self, locale_tag: &str) -> &str {
+        if self.localized_descriptions.is_empty() {
+            return &self.description;
+        }
+        let normalized = locale_tag.trim().to_ascii_lowercase();
+        if let Some(desc) = self.localized_descriptions.get(&normalized) {
+            return desc;
+        }
+        if let Some((primary, _)) = normalized.split_once('-') {
+            // Don't let a Traditional-Chinese session fall back to a Simplified
+            // (`zh`) description — different written form, not just a region.
+            let traditional_chinese = primary == "zh"
+                && (normalized.contains("hant")
+                    || normalized.ends_with("-tw")
+                    || normalized.ends_with("-hk")
+                    || normalized.ends_with("-mo"));
+            if !traditional_chinese {
+                if let Some(desc) = self.localized_descriptions.get(primary) {
+                    return desc;
+                }
+            }
+        }
+        &self.description
+    }
 }
 
 /// Collection of discovered skills.
@@ -218,7 +286,7 @@ impl SkillRegistry {
         self.warnings.push(warning);
     }
 
-    fn parse_skill(_path: &Path, content: &str) -> std::result::Result<Skill, String> {
+    pub(crate) fn parse_skill(_path: &Path, content: &str) -> std::result::Result<Skill, String> {
         let trimmed = content.trim_start();
 
         // Try to parse frontmatter block first. If absent, fall back to
@@ -374,9 +442,21 @@ impl SkillRegistry {
 
             let description = metadata.get("description").cloned().unwrap_or_default();
 
+            // Collect `description_<tag>:` frontmatter keys (already lowercased
+            // above) into locale-specific descriptions, e.g. `description_zh`.
+            let localized_descriptions = metadata
+                .iter()
+                .filter_map(|(key, value)| {
+                    key.strip_prefix("description_")
+                        .filter(|tag| !tag.is_empty())
+                        .map(|tag| (tag.to_string(), value.clone()))
+                })
+                .collect();
+
             return Ok(Skill {
                 name,
                 description,
+                localized_descriptions,
                 body: body.trim().to_string(),
                 // Filled in by `discover` after parse succeeds; default to an
                 // empty path so direct constructors (e.g. tests) compile.
@@ -399,6 +479,7 @@ impl SkillRegistry {
         Ok(Skill {
             name,
             description: String::new(),
+            localized_descriptions: HashMap::new(),
             body: content.trim().to_string(),
             path: PathBuf::new(),
         })
@@ -455,29 +536,59 @@ impl SkillRegistry {
 /// need to filter further. Returns an empty vec when nothing is
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
+#[allow(dead_code)]
 pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
-    let home = dirs::home_dir();
-    skills_directories_with_home(workspace, home.as_deref())
+    skills_directories_for_mode(workspace, SkillDiscoveryMode::Compatible)
 }
 
-fn skills_directories_with_home(workspace: &Path, home_dir: Option<&Path>) -> Vec<PathBuf> {
-    let mut candidates = vec![
-        workspace.join(".agents").join("skills"),
-        workspace.join("skills"),
-        workspace.join(".opencode").join("skills"),
-        workspace.join(".claude").join("skills"),
-        workspace.join(".cursor").join("skills"),
-        workspace.join(".deepseek").join("skills"),
-    ];
+#[must_use]
+pub fn skills_directories_for_mode(workspace: &Path, mode: SkillDiscoveryMode) -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    skills_directories_with_home_and_mode(workspace, home.as_deref(), mode)
+}
+
+fn skills_directories_with_home_and_mode(
+    workspace: &Path,
+    home_dir: Option<&Path>,
+    mode: SkillDiscoveryMode,
+) -> Vec<PathBuf> {
+    let mut candidates = match mode {
+        SkillDiscoveryMode::Compatible => vec![
+            workspace.join(".agents").join("skills"),
+            workspace.join("skills"),
+            workspace.join(".opencode").join("skills"),
+            workspace.join(".claude").join("skills"),
+            workspace.join(".cursor").join("skills"),
+            workspace.join(".deepseek").join("skills"),
+        ],
+        SkillDiscoveryMode::CodeWhaleOnly => deepseek_workspace_skills_dir(workspace)
+            .into_iter()
+            .collect(),
+    };
     if let Some(home) = home_dir {
-        candidates.push(home.join(".agents").join("skills"));
-        candidates.push(home.join(".claude").join("skills"));
-        candidates.push(home.join(".deepseek").join("skills"));
-        candidates.push(home.join(".deepseek").join("skills"));
+        match mode {
+            SkillDiscoveryMode::Compatible => {
+                candidates.push(home.join(".agents").join("skills"));
+                candidates.push(home.join(".claude").join("skills"));
+                candidates.push(home.join(".deepseek").join("skills"));
+                candidates.push(home.join(".deepseek").join("skills"));
+            }
+            SkillDiscoveryMode::CodeWhaleOnly => {
+                candidates.push(home.join(".deepseek").join("skills"));
+            }
+        }
     } else {
         candidates.push(PathBuf::from("/tmp/deepseek/skills"));
     }
     existing_skill_dirs(candidates)
+}
+
+pub(crate) fn deepseek_workspace_skills_dir(workspace: &Path) -> Option<PathBuf> {
+    let skills_dir = workspace.join(".deepseek").join("skills");
+    let canonical_workspace = fs::canonicalize(workspace).ok()?;
+    let canonical_skills = fs::canonicalize(&skills_dir).ok()?;
+    (canonical_skills.is_dir() && canonical_skills.starts_with(canonical_workspace))
+        .then_some(skills_dir)
 }
 
 fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
@@ -504,8 +615,16 @@ fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<Pat
 /// load.
 #[must_use]
 pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
+    discover_in_workspace_with_mode(workspace, SkillDiscoveryMode::Compatible)
+}
+
+#[must_use]
+pub fn discover_in_workspace_with_mode(
+    workspace: &Path,
+    mode: SkillDiscoveryMode,
+) -> SkillRegistry {
     let mut merged = SkillRegistry::default();
-    for dir in skills_directories(workspace) {
+    for dir in skills_directories_for_mode(workspace, mode) {
         let registry = SkillRegistry::discover(&dir);
         for skill in registry.skills {
             if !merged.skills.iter().any(|s| s.name == skill.name) {
@@ -525,10 +644,30 @@ pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
 /// outside that set so explicit configuration cannot be buried by large global
 /// libraries.
 #[must_use]
+#[allow(dead_code)]
 pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
-    let mut dirs = skills_directories(workspace);
-    insert_configured_skills_dir(&mut dirs, workspace, skills_dir);
+    discover_for_workspace_and_dir_with_mode(workspace, skills_dir, SkillDiscoveryMode::Compatible)
+}
+
+#[must_use]
+pub fn discover_for_workspace_and_dir_with_mode(
+    workspace: &Path,
+    skills_dir: &Path,
+    mode: SkillDiscoveryMode,
+) -> SkillRegistry {
+    let dirs = skill_directories_for_workspace_and_dir(workspace, skills_dir, mode);
     discover_from_directories(dirs)
+}
+
+#[must_use]
+pub fn skill_directories_for_workspace_and_dir(
+    workspace: &Path,
+    skills_dir: &Path,
+    mode: SkillDiscoveryMode,
+) -> Vec<PathBuf> {
+    let mut dirs = skills_directories_for_mode(workspace, mode);
+    insert_configured_skills_dir(&mut dirs, workspace, skills_dir);
+    dirs
 }
 
 fn insert_configured_skills_dir(dirs: &mut Vec<PathBuf>, workspace: &Path, skills_dir: &Path) {
@@ -579,7 +718,22 @@ pub(crate) fn discover_for_workspace_and_dir_with_home(
     skills_dir: &Path,
     home_dir: Option<&Path>,
 ) -> SkillRegistry {
-    let mut dirs = skills_directories_with_home(workspace, home_dir);
+    discover_for_workspace_and_dir_with_home_and_mode(
+        workspace,
+        skills_dir,
+        home_dir,
+        SkillDiscoveryMode::Compatible,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn discover_for_workspace_and_dir_with_home_and_mode(
+    workspace: &Path,
+    skills_dir: &Path,
+    home_dir: Option<&Path>,
+    mode: SkillDiscoveryMode,
+) -> SkillRegistry {
+    let mut dirs = skills_directories_with_home_and_mode(workspace, home_dir, mode);
     insert_configured_skills_dir(&mut dirs, workspace, skills_dir);
     discover_from_directories(dirs)
 }
@@ -591,7 +745,17 @@ pub(crate) fn discover_for_workspace_and_dir_with_home(
 #[must_use]
 pub fn render_available_skills_context_for_workspace(workspace: &Path) -> Option<String> {
     let registry = discover_in_workspace(workspace);
-    render_skills_block(&registry)
+    render_skills_block(&registry, "en")
+}
+
+#[must_use]
+pub fn render_available_skills_context_for_workspace_with_mode(
+    workspace: &Path,
+    mode: SkillDiscoveryMode,
+    locale: &str,
+) -> Option<String> {
+    let registry = discover_in_workspace_with_mode(workspace, mode);
+    render_skills_block(&registry, locale)
 }
 
 /// Codex's progressive-disclosure contract: the model sees skill names,
@@ -605,7 +769,7 @@ pub fn render_available_skills_context_for_workspace(workspace: &Path) -> Option
 #[must_use]
 fn render_available_skills_context(skills_dir: &Path) -> Option<String> {
     let registry = SkillRegistry::discover(skills_dir);
-    render_skills_block(&registry)
+    render_skills_block(&registry, "en")
 }
 
 /// Union variant: merge skills discovered in the `workspace` (cross-tool skill
@@ -615,11 +779,26 @@ pub fn render_available_skills_context_for_workspace_and_dir(
     workspace: &Path,
     skills_dir: &Path,
 ) -> Option<String> {
-    let registry = discover_for_workspace_and_dir(workspace, skills_dir);
-    render_skills_block(&registry)
+    render_available_skills_context_for_workspace_and_dir_with_mode(
+        workspace,
+        skills_dir,
+        SkillDiscoveryMode::Compatible,
+        "en",
+    )
 }
 
-fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
+#[must_use]
+pub fn render_available_skills_context_for_workspace_and_dir_with_mode(
+    workspace: &Path,
+    skills_dir: &Path,
+    mode: SkillDiscoveryMode,
+    locale: &str,
+) -> Option<String> {
+    let registry = discover_for_workspace_and_dir_with_mode(workspace, skills_dir, mode);
+    render_skills_block(&registry, locale)
+}
+
+fn render_skills_block(registry: &SkillRegistry, locale: &str) -> Option<String> {
     if registry.is_empty() {
         return None;
     }
@@ -640,7 +819,10 @@ instructions when using a specific skill.\n\n",
         // name can differ from the frontmatter `name` for community
         // installs, in which case `<dir>/<name>/SKILL.md` would not exist
         // and the model would fail to open it.
-        let description = truncate_for_prompt(&skill.description, MAX_SKILL_DESCRIPTION_CHARS);
+        let description = truncate_for_prompt(
+            skill.description_for_locale(locale),
+            MAX_SKILL_DESCRIPTION_CHARS,
+        );
         let line = if description.is_empty() {
             format!("- {}: (file: {})\n", skill.name, skill.path.display())
         } else {
@@ -862,6 +1044,7 @@ mod tests {
         registry.skills.push(super::Skill {
             name: "workspace-priority".to_string(),
             description: "must survive truncation".to_string(),
+            localized_descriptions: std::collections::HashMap::new(),
             body: "body".to_string(),
             path: tmpdir
                 .path()
@@ -876,6 +1059,7 @@ mod tests {
             registry.skills.push(super::Skill {
                 name: format!("aaa-global-{i:03}"),
                 description: big_desc.clone(),
+                localized_descriptions: std::collections::HashMap::new(),
                 body: "body".to_string(),
                 path: tmpdir
                     .path()
@@ -886,7 +1070,7 @@ mod tests {
             });
         }
 
-        let rendered = super::render_skills_block(&registry).expect("skill context");
+        let rendered = super::render_skills_block(&registry, "en").expect("skill context");
         assert!(
             rendered.contains("workspace-priority"),
             "higher-precedence workspace skills must not be reordered behind globals:\n{rendered}"
@@ -894,6 +1078,123 @@ mod tests {
         assert!(
             rendered.contains("additional skills omitted from this prompt budget"),
             "fixture should exceed prompt budget"
+        );
+    }
+
+    // --- Localized skill descriptions (#3354) ------------------------------
+
+    #[test]
+    fn parse_skill_collects_localized_description_frontmatter() {
+        let content = "---\n\
+name: demo\n\
+description: A demo skill\n\
+description_zh: 一个演示技能\n\
+description_zh-Hant: 一個示範技能\n\
+---\n\
+body";
+        let skill = super::SkillRegistry::parse_skill(std::path::Path::new("SKILL.md"), content)
+            .expect("parse should succeed");
+        assert_eq!(skill.description, "A demo skill");
+        assert_eq!(
+            skill.localized_descriptions.get("zh").map(String::as_str),
+            Some("一个演示技能")
+        );
+        // Frontmatter keys are lowercased, so zh-Hant is stored as zh-hant.
+        assert_eq!(
+            skill
+                .localized_descriptions
+                .get("zh-hant")
+                .map(String::as_str),
+            Some("一個示範技能")
+        );
+    }
+
+    #[test]
+    fn description_for_locale_matches_exact_then_primary_then_falls_back() {
+        let mut localized = std::collections::HashMap::new();
+        localized.insert("zh".to_string(), "中文描述".to_string());
+        localized.insert("ja".to_string(), "日本語の説明".to_string());
+        let skill = super::Skill {
+            name: "demo".to_string(),
+            description: "English description".to_string(),
+            localized_descriptions: localized,
+            body: String::new(),
+            path: std::path::PathBuf::new(),
+        };
+
+        assert_eq!(skill.description_for_locale("zh"), "中文描述"); // exact
+        assert_eq!(skill.description_for_locale("ZH"), "中文描述"); // case-insensitive
+        assert_eq!(skill.description_for_locale("zh-CN"), "中文描述"); // Simplified region → zh
+        assert_eq!(skill.description_for_locale("zh-Hans"), "中文描述"); // Simplified script → zh
+        assert_eq!(skill.description_for_locale("ja"), "日本語の説明");
+        assert_eq!(skill.description_for_locale("fr"), "English description"); // fallback
+        assert_eq!(skill.description_for_locale("en"), "English description");
+
+        // Traditional Chinese must NOT borrow the Simplified `zh` description:
+        // with no exact zh-hant key authored, it falls back to the default.
+        assert_eq!(
+            skill.description_for_locale("zh-Hant"),
+            "English description"
+        );
+        assert_eq!(skill.description_for_locale("zh-TW"), "English description");
+        assert_eq!(skill.description_for_locale("zh-HK"), "English description");
+    }
+
+    #[test]
+    fn description_for_locale_uses_exact_traditional_key_when_authored() {
+        let mut localized = std::collections::HashMap::new();
+        localized.insert("zh".to_string(), "简体描述".to_string());
+        localized.insert("zh-hant".to_string(), "繁體描述".to_string());
+        let skill = super::Skill {
+            name: "demo".to_string(),
+            description: "English".to_string(),
+            localized_descriptions: localized,
+            body: String::new(),
+            path: std::path::PathBuf::new(),
+        };
+        // Exact Traditional key wins for a Traditional session.
+        assert_eq!(skill.description_for_locale("zh-Hant"), "繁體描述");
+        // Simplified session still gets the Simplified description.
+        assert_eq!(skill.description_for_locale("zh-Hans"), "简体描述");
+        assert_eq!(skill.description_for_locale("zh"), "简体描述");
+    }
+
+    #[test]
+    fn description_for_locale_uses_default_when_no_localized_variants() {
+        let skill = super::Skill {
+            name: "demo".to_string(),
+            description: "only english".to_string(),
+            localized_descriptions: std::collections::HashMap::new(),
+            body: String::new(),
+            path: std::path::PathBuf::new(),
+        };
+        assert_eq!(skill.description_for_locale("zh"), "only english");
+    }
+
+    #[test]
+    fn render_skills_block_selects_description_by_locale() {
+        let mut registry = super::SkillRegistry::default();
+        let mut localized = std::collections::HashMap::new();
+        localized.insert("zh".to_string(), "压缩日志的技能".to_string());
+        registry.skills.push(super::Skill {
+            name: "compress".to_string(),
+            description: "Compress logs to save space".to_string(),
+            localized_descriptions: localized,
+            body: "body".to_string(),
+            path: std::path::PathBuf::from("/skills/compress/SKILL.md"),
+        });
+
+        let zh = super::render_skills_block(&registry, "zh-Hans").expect("zh block");
+        assert!(
+            zh.contains("压缩日志的技能"),
+            "zh session should get the zh description:\n{zh}"
+        );
+        assert!(!zh.contains("Compress logs to save space"));
+
+        let en = super::render_skills_block(&registry, "en").expect("en block");
+        assert!(
+            en.contains("Compress logs to save space"),
+            "en session keeps default:\n{en}"
         );
     }
 
@@ -1135,6 +1436,107 @@ mod tests {
         let rendered =
             super::render_available_skills_context_for_workspace(workspace).expect("non-empty");
         assert!(rendered.contains("from-claude"));
+    }
+
+    #[test]
+    fn deepseek_only_mode_ignores_cross_tool_skill_dirs() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path().join("workspace");
+        let home = tmpdir.path().join("home");
+        let configured_dir = home.join(".deepseek").join("skills");
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "from-claude",
+            "claude-style skill",
+            "body",
+        );
+        write_skill(
+            &workspace.join(".deepseek").join("skills"),
+            "from-deepseek",
+            "deepseek skill",
+            "body",
+        );
+        write_skill(
+            &home.join(".agents").join("skills"),
+            "from-agents",
+            "agents skill",
+            "body",
+        );
+        write_skill(
+            &configured_dir,
+            "configured-deepseek",
+            "configured skill",
+            "body",
+        );
+
+        let registry = super::discover_for_workspace_and_dir_with_home_and_mode(
+            &workspace,
+            &configured_dir,
+            Some(&home),
+            super::SkillDiscoveryMode::CodeWhaleOnly,
+        );
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+
+        assert!(names.contains(&"from-deepseek"));
+        assert!(names.contains(&"configured-deepseek"));
+        assert!(
+            !names.contains(&"from-claude") && !names.contains(&"from-agents"),
+            "DeepSeek-only mode must not import cross-tool skills: {names:?}"
+        );
+    }
+
+    #[test]
+    fn deepseek_only_mode_still_honors_explicit_configured_dir() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path().join("workspace");
+        let home = tmpdir.path().join("home");
+        let configured_dir = tmpdir.path().join("my-skills");
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_skill(
+            &configured_dir,
+            "configured-skill",
+            "explicit configured skill",
+            "body",
+        );
+
+        let registry = super::discover_for_workspace_and_dir_with_home_and_mode(
+            &workspace,
+            &configured_dir,
+            Some(&home),
+            super::SkillDiscoveryMode::CodeWhaleOnly,
+        );
+        let names: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
+
+        assert_eq!(names, vec!["configured-skill"]);
+    }
+
+    #[test]
+    fn deepseek_only_mode_rejects_workspace_deepseek_symlink_escape() {
+        let tmpdir = TempDir::new().unwrap();
+        let workspace = tmpdir.path().join("workspace");
+        let home = tmpdir.path().join("home");
+        let escape_target = tmpdir.path().join("escape-target");
+        std::fs::create_dir_all(workspace.join(".deepseek")).unwrap();
+        write_skill(&escape_target, "escaped-skill", "escaped skill", "body");
+
+        let link_path = workspace.join(".deepseek").join("skills");
+        if let Err(err) = create_dir_symlink(&escape_target, &link_path) {
+            eprintln!("skipping symlink escape assertion: {err}");
+            return;
+        }
+
+        let registry = super::discover_for_workspace_and_dir_with_home_and_mode(
+            &workspace,
+            &tmpdir.path().join("missing-configured-skills"),
+            Some(&home),
+            super::SkillDiscoveryMode::CodeWhaleOnly,
+        );
+
+        assert!(
+            registry.get("escaped-skill").is_none(),
+            "DeepSeek-only mode must not follow workspace .deepseek/skills outside the workspace"
+        );
     }
 
     #[test]

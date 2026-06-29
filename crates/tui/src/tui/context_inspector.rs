@@ -1,13 +1,12 @@
 //! Compact session context inspector.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt::Write;
 
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::localization::{Locale, MessageId, tr};
-use crate::models::{
-    LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS, SystemPrompt, context_window_for_model,
-};
+use crate::models::SystemPrompt;
 use crate::session_manager::SessionContextReference;
 use crate::tui::app::{App, ToolDetailRecord};
 use crate::tui::file_mention::ContextReferenceSource;
@@ -72,7 +71,7 @@ enum PromptLayerKind {
 }
 
 impl PromptLayerKind {
-    fn label(self, locale: Locale) -> &'static str {
+    fn label(self, locale: Locale) -> Cow<'static, str> {
         match self {
             Self::Static => tr(locale, MessageId::CtxInspCacheFriendly),
             Self::Dynamic => tr(locale, MessageId::CtxInspChangesByTurn),
@@ -110,8 +109,9 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
     if let Some(session_id) = app.current_session_id.as_deref() {
         let _ = writeln!(
             out,
-            "{}: {session_id}",
-            tr(locale, MessageId::CtxInspSession)
+            "{}: {}",
+            tr(locale, MessageId::CtxInspSession),
+            crate::session_manager::truncate_id(session_id)
         );
     }
     let status_label = match context_status(percent) {
@@ -140,7 +140,7 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
         tr(locale, MessageId::CtxInspWorkspaceStatus),
         app.workspace_context
             .as_deref()
-            .unwrap_or(tr(locale, MessageId::CtxInspNotSampledYet))
+            .unwrap_or(&*tr(locale, MessageId::CtxInspNotSampledYet))
     );
 
     let _ = writeln!(out);
@@ -154,8 +154,11 @@ pub fn build_context_inspector_text(app: &App, locale: Locale) -> String {
 }
 
 fn context_usage(app: &App) -> (usize, u32, f64) {
-    let max = context_window_for_model(app.effective_model_for_budget())
-        .unwrap_or(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
+    let max = crate::route_budget::route_context_window_tokens(
+        app.api_provider,
+        app.effective_model_for_budget(),
+        app.active_route_limits,
+    );
     let estimated =
         estimate_input_tokens_conservative(&app.api_messages, app.system_prompt.as_ref());
     let total_chars = estimate_message_chars(&app.api_messages);
@@ -242,7 +245,7 @@ fn push_system_prompt_structure(out: &mut String, app: &App, locale: Locale) {
                 let _ = writeln!(
                     out,
                     "    {first_line_lbl}: {}",
-                    block.text.lines().next().unwrap_or(empty_lbl)
+                    block.text.lines().next().unwrap_or(&*empty_lbl)
                 );
             } else {
                 let _ = writeln!(out, "  {volatile_lbl}: {none_lbl}");
@@ -399,7 +402,7 @@ fn push_tools(out: &mut String, app: &App, locale: Locale) {
     let mut rendered = 0usize;
     for detail in app.active_tool_details.values() {
         let location = tr(locale, MessageId::CtxInspActive);
-        push_tool_row(out, locale, location, detail);
+        push_tool_row(out, locale, &location, detail);
         rendered += 1;
         if rendered >= MAX_TOOL_ROWS {
             return;
@@ -417,7 +420,7 @@ fn push_tools(out: &mut String, app: &App, locale: Locale) {
     if rendered == 0 {
         let _ = writeln!(out, "- {}", tr(locale, MessageId::CtxInspNoToolActivity));
     } else {
-        let _ = writeln!(out, "- {}", tr(locale, MessageId::CtxInspAltVHint));
+        let _ = writeln!(out, "- {}", tr(locale, MessageId::CtxInspVHint));
     }
 }
 
@@ -493,6 +496,17 @@ mod tests {
         assert!(text.contains("Session Context"));
         assert!(text.contains("No file, directory, or media references recorded yet."));
         assert!(text.contains("No tool activity recorded yet."));
+    }
+
+    #[test]
+    fn inspector_uses_compact_session_id() {
+        let mut app = test_app();
+        app.current_session_id = Some("1234567890abcdef".to_string());
+
+        let text = build_context_inspector_text(&app, Locale::En);
+
+        assert!(text.contains("Session: 12345678"), "{text}");
+        assert!(!text.contains("1234567890abcdef"), "{text}");
     }
 
     #[test]

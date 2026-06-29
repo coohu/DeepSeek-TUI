@@ -2,33 +2,38 @@ import Link from "next/link";
 import { Seal } from "@/components/seal";
 import { InstallCodeBlock } from "@/components/install-code-block";
 import { InstallBinary } from "@/components/install-binary";
+import { getFacts } from "@/lib/facts";
+import { buildPageMetadata } from "@/lib/page-meta";
 
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const isZh = locale === "zh";
-  return {
+  return buildPageMetadata({
+    path: "/install",
+    locale,
     title: isZh ? "安装 · DeepSeek" : "Install · DeepSeek",
     description: isZh
-      ? "安装 DeepSeek 的 deepseek / deepseek-tui 二进制对。v0.8.54 推荐 Cargo、GitHub Releases、CNB、Homebrew、预编译二进制、Docker、国内镜像。"
-      : "Install the matched deepseek / deepseek-tui binary pair. For v0.8.54 use Cargo, GitHub Releases, CNB, Homebrew, prebuilt binary, Docker, or source.",
-  };
+      ? "一行 curl -fsSL https://deepseek.net/install.sh | sh 安装或更新 DeepSeek，也支持 npm、Cargo、GitHub Releases、CNB 镜像、Homebrew、预编译二进制、Docker 和源码编译。"
+      : "Install or update DeepSeek with curl -fsSL https://deepseek.net/install.sh | sh, or via npm, cargo, GitHub Releases, the CNB mirror, Homebrew, prebuilt binaries, Docker, or from source.",
+  });
 }
 
+const SHELL_INSTALL = `curl -fsSL https://deepseek.net/install.sh | sh`;
+const SHELL_INSPECT = `curl -fsSL https://deepseek.net/install.sh`;
+const NPM_INSTALL = `npm install -g deepseek`;
 const CARGO_INSTALL = `cargo install deepseek-cli --locked
 cargo install deepseek-tui --locked`;
 const FIRST_RUN = `deepseek`;
-const VERIFY = `deepseek --version
-deepseek doctor`;
 
 const UPDATE = `deepseek update`;
 
 const SET_KEY_BASH = `export DEEPSEEK_API_KEY=sk-...`;
 const SET_KEY_AUTH = `deepseek auth set --provider deepseek --api-key sk-...`;
 
-const RELEASE_DOWNLOAD = `# Download your platform archive:
-https://github.com/coohu/deepseek-tui/releases/tag/v0.8.54`;
-const CNB_INSTALL = `cargo install --git https://cnb.cool/deepseek.net/deepseek --tag v0.8.54 deepseek-cli --locked --force
-cargo install --git https://cnb.cool/deepseek.net/deepseek --tag v0.8.54 deepseek-tui --locked --force`;
+const RELEASE_DOWNLOAD = `# Download your platform archive (incl. Linux riscv64):
+https://github.com/coohu/deepseek-tui/releases/latest`;
+const cnbInstall = (tag: string) => `cargo install --git https://cnb.cool/deepseek.net/deepseek --tag ${tag} deepseek-cli --locked --force
+cargo install --git https://cnb.cool/deepseek.net/deepseek --tag ${tag} deepseek-tui --locked --force`;
 const TUNA_CONFIG = `# ~/.cargo/config.toml
 [source.crates-io]
 replace-with = "tuna"
@@ -48,8 +53,8 @@ docker run --rm -it \\
   -v "$PWD:/workspace" -w /workspace \\
   ghcr.io/hmbown/deepseek:latest`;
 
-const FROM_SOURCE = `git clone https://github.com/coohu/
-cd 
+const FROM_SOURCE = `git clone https://github.com/coohu/deepseek-tui
+cd DeepSeek
 cargo build --release --locked
 
 # Install both binaries from the local checkout
@@ -79,6 +84,10 @@ const CONFIG_TREE_ZH = `~/.deepseek/
 export default async function InstallPage({ params }: { params: Promise<{ locale: string }> }) {
   const { locale } = await params;
   const isZh = locale === "zh";
+  const facts = await getFacts();
+  const tag = facts.version ? `v${facts.version}` : "v0.8.x";
+  const verify = `deepseek --version   # ${facts.version ?? "prints the installed version"}
+deepseek doctor`;
 
   const copyLabel = isZh ? "复制" : "Copy";
   const copiedLabel = isZh ? "已复制 ✓" : "Copied ✓";
@@ -100,22 +109,30 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </h1>
 
         <div className="space-y-3">
-          <InstallCodeBlock cmd={CARGO_INSTALL} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+          <InstallCodeBlock cmd={SHELL_INSTALL} copyLabel={copyLabel} copiedLabel={copiedLabel} />
           <InstallCodeBlock cmd={FIRST_RUN} copyLabel={copyLabel} copiedLabel={copiedLabel} />
         </div>
 
         <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
           {isZh ? (
             <>
-              v0.8.54 推荐通过 Cargo 安装已发布的 crates。npm wrapper 暂缓发布，直到 release asset 发布路径加固完成。
-              下方「其他安装方式」列出 GitHub Releases、CNB、国内镜像、Homebrew、预编译二进制等替代选项。
+              macOS / Linux 安装脚本会从 GitHub Releases 下载经 SHA-256 校验的二进制，
+              默认安装到 <code className="inline">~/.local/bin</code>，并安装{" "}
+              <code className="inline">deepseek</code>、<code className="inline">codew</code> 和{" "}
+              <code className="inline">deepseek-tui</code>。先审阅脚本可运行{" "}
+              <code className="inline">{SHELL_INSPECT}</code>。下方「其他安装方式」列出 npm、Cargo、GitHub Releases、
+              CNB、国内镜像、Homebrew、预编译二进制和 Docker。
             </>
           ) : (
             <>
-              For v0.8.54, install the published Cargo crates. The npm wrapper is deferred
-              while the release asset publication path is hardened. See{" "}
+              The macOS / Linux installer downloads SHA-256-verified binaries from GitHub Releases,
+              installs to <code className="inline">~/.local/bin</code> by default, and exposes{" "}
+              <code className="inline">deepseek</code>, <code className="inline">codew</code>, and{" "}
+              <code className="inline">deepseek-tui</code>. To inspect it first, run{" "}
+              <code className="inline">{SHELL_INSPECT}</code>. See{" "}
               <a href="#other-ways" className="body-link">Other ways to install</a> below for
-              GitHub Releases, CNB, Homebrew, prebuilt binaries, or mainland China mirrors.
+              npm, cargo, GitHub Releases, CNB, Homebrew, prebuilt binaries, Docker, or mainland
+              China mirrors.
             </>
           )}
         </p>
@@ -128,20 +145,20 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
           <div className="eyebrow">{isZh ? "02 · 验证" : "02 · Verify"}</div>
         </div>
 
-        <InstallCodeBlock cmd={VERIFY} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+        <InstallCodeBlock cmd={verify} copyLabel={copyLabel} copiedLabel={copiedLabel} />
 
         <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
           {isZh ? (
             <>
               <code className="inline">deepseek doctor</code> 检查 API 密钥、网络、沙箱可用性、
-              MCP 服务器，并将完整报告写入{" "}
-              <code className="inline">~/.deepseek/doctor.log</code>。
+              MCP 服务器，并在终端输出修复建议；需要结构化输出时可加{" "}
+              <code className="inline">--json</code>。
             </>
           ) : (
             <>
               <code className="inline">deepseek doctor</code> checks your API key, network,
-              sandbox availability, and MCP servers. Full report is written to{" "}
-              <code className="inline">~/.deepseek/doctor.log</code>.
+              sandbox availability, and MCP servers, then prints remediation guidance. Add{" "}
+              <code className="inline">--json</code> when you need structured output.
             </>
           )}
         </p>
@@ -155,22 +172,32 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </div>
 
         <InstallCodeBlock cmd={UPDATE} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+        <div className="mt-3">
+          <InstallCodeBlock cmd={SHELL_INSTALL} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+        </div>
 
         <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
           {isZh ? (
             <>
               检查 GitHub Releases 是否有新版本并就地替换二进制。
-              通过 Homebrew 或 npm 安装的话，使用包管理器升级更稳：
-              <code className="inline">brew upgrade deepseek-tui</code> 或{" "}
-              <code className="inline">npm update -g deepseek</code>。
-              Cargo 安装的可以重跑两个 <code className="inline">cargo install</code> 命令并加 <code className="inline">--force</code>。
+              通过 <code className="inline">install.sh</code> 安装的用户也可以重跑同一条{" "}
+              <code className="inline">curl</code> 命令覆盖更新。
+              通过包管理器安装的话，用包管理器升级更稳：npm 安装的运行{" "}
+              <code className="inline">npm update -g deepseek</code>；
+              Cargo 安装的重跑两个 <code className="inline">cargo install</code> 命令并加{" "}
+              <code className="inline">--force</code>；
+              旧版 Homebrew tap 用 <code className="inline">brew upgrade deepseek-tui</code>。
             </>
           ) : (
             <>
               Checks GitHub Releases for a newer version and replaces the binary in place. If you
-              installed via Homebrew, prefer the package manager instead:{" "}
-              <code className="inline">brew upgrade deepseek-tui</code>. Cargo users can re-run both{" "}
-              <code className="inline">cargo install</code> commands with <code className="inline">--force</code>.
+              installed with <code className="inline">install.sh</code>, re-run the same{" "}
+              <code className="inline">curl</code> command to overwrite the binaries.
+              If you installed via a package manager, prefer it instead: npm users run{" "}
+              <code className="inline">npm update -g deepseek</code>; cargo users re-run both{" "}
+              <code className="inline">cargo install</code> commands with{" "}
+              <code className="inline">--force</code>; the legacy Homebrew tap updates with{" "}
+              <code className="inline">brew upgrade deepseek-tui</code>.
             </>
           )}
         </p>
@@ -259,11 +286,38 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
           </h2>
           <p className="text-sm text-ink-soft max-w-2xl mb-10">
             {isZh
-              ? "如果上面的 Cargo 路径不适合你，从下面找到匹配你情况的一条。每条都安装同一组 deepseek / deepseek-tui 二进制。"
-              : "If the Cargo path above doesn't fit your setup, pick the row that matches your situation. Every path installs the same deepseek / deepseek-tui binary pair."}
+              ? "如果上面的脚本路径不适合你，从下面找到匹配你情况的一条。每条都安装同一组 deepseek / deepseek-tui 二进制。"
+              : "If the script above doesn't fit your setup, pick the row that matches your situation. Every path installs the same deepseek / deepseek-tui binary pair."}
           </p>
 
           <div className="space-y-10">
+            {/* npm */}
+            <div>
+              <div className="eyebrow mb-2 text-indigo">
+                npm{" "}
+                <span className="text-ink-mute font-mono normal-case tracking-normal">
+                  {isZh ? "· Node 18+" : "· Node 18+"}
+                </span>
+              </div>
+              <InstallCodeBlock cmd={NPM_INSTALL} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+              <p className="mt-3 text-sm text-ink-soft leading-relaxed max-w-2xl">
+                {isZh ? (
+                  <>
+                    npm wrapper 会从 GitHub Releases 下载经 SHA-256 校验的二进制，并安装{" "}
+                    <code className="inline">deepseek</code>、<code className="inline">codew</code> 和{" "}
+                    <code className="inline">deepseek-tui</code> 三个命令。
+                  </>
+                ) : (
+                  <>
+                    The npm wrapper downloads SHA-256-verified binaries from GitHub Releases and
+                    installs <code className="inline">deepseek</code>,{" "}
+                    <code className="inline">codew</code>, and{" "}
+                    <code className="inline">deepseek-tui</code>.
+                  </>
+                )}
+              </p>
+            </div>
+
             {/* Cargo */}
             <div>
               <div className="eyebrow mb-2 text-indigo">
@@ -274,7 +328,9 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                 {isZh ? (
                   <>
                     编译并安装 <code className="inline">deepseek</code> 和 <code className="inline">deepseek-tui</code> 到 <code className="inline">~/.cargo/bin</code>。
-                    需要 Rust 1.88+；如未安装可访问 <a href="https://rustup.rs" className="body-link">rustup.rs</a>。
+                    需要 Rust 1.88+；Linux 用户先安装 <code className="inline">pkg-config</code> 和{" "}
+                    <code className="inline">libdbus-1-dev</code> 等构建依赖。如未安装 Rust，可访问{" "}
+                    <a href="https://rustup.rs" className="body-link">rustup.rs</a>。
                   </>
                 ) : (
                   <>
@@ -282,6 +338,9 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
                     <code className="inline">deepseek-tui</code> to{" "}
                     <code className="inline">~/.cargo/bin</code>. Requires Rust 1.88+; install via{" "}
                     <a href="https://rustup.rs" className="body-link">rustup.rs</a> if you don&apos;t have it.
+                    On Linux, install build dependencies such as{" "}
+                    <code className="inline">pkg-config</code> and{" "}
+                    <code className="inline">libdbus-1-dev</code> first.
                   </>
                 )}
               </p>
@@ -296,7 +355,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
             {/* CNB */}
             <div className="rounded-lg border border-ink/12 bg-white/70 p-5">
               <div className="font-display text-lg mb-3">{isZh ? "CNB 镜像" : "CNB mirror"}</div>
-              <InstallCodeBlock cmd={CNB_INSTALL} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+              <InstallCodeBlock cmd={cnbInstall(tag)} copyLabel={copyLabel} copiedLabel={copiedLabel} />
             </div>
 
             {/* Mainland China network */}
@@ -307,11 +366,13 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               <p className="text-sm text-ink-soft leading-relaxed max-w-2xl mb-3">
                 {isZh ? (
                   <>
-                    Cargo 经清华 Tuna 镜像——添加到 <code className="inline">~/.cargo/config.toml</code>：
+                    <strong className="text-indigo">官方源：</strong>
+                    GitHub Releases 为唯一官方发布源。Cargo 经清华 Tuna 镜像——添加到 <code className="inline">~/.cargo/config.toml</code>：
                   </>
                 ) : (
                   <>
-                    Cargo via Tsinghua Tuna mirror — add to{" "}
+                    <strong className="text-indigo">Official source:</strong>{" "}
+                    GitHub Releases is the sole canonical release source. Cargo via Tsinghua Tuna mirror — add to{" "}
                     <code className="inline">~/.cargo/config.toml</code>:
                   </>
                 )}
@@ -324,13 +385,17 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               <p className="mt-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
                 {isZh ? (
                   <>
-                    v0.8.54 的 npm wrapper 暂缓发布。Cargo + Tuna 或 CNB 路径可以绕开 GitHub 下载瓶颈。
+                    npm 安装时设置 <code className="inline">DEEPSEEK_USE_CNB_MIRROR=1</code>，
+                    wrapper 会改从 CNB 镜像下载二进制而不是 GitHub。Cargo + Tuna 或 CNB
+                    路径同样可以绕开 GitHub 下载瓶颈。
                     DeepSeek API（<code className="inline">api.deepseek.com</code>）在国内直连，无需代理。
                   </>
                 ) : (
                   <>
-                    The npm wrapper is deferred for v0.8.54. Cargo + Tuna or the CNB path routes
-                    around GitHub download bottlenecks. The DeepSeek API at{" "}
+                    For the npm path, set{" "}
+                    <code className="inline">DEEPSEEK_USE_CNB_MIRROR=1</code> and the wrapper
+                    downloads binaries from the CNB mirror instead of GitHub. Cargo + Tuna or the
+                    CNB path also routes around GitHub download bottlenecks. The DeepSeek API at{" "}
                     <code className="inline">api.deepseek.com</code> is reachable from mainland China
                     without a proxy.
                   </>
@@ -343,10 +408,15 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               <div className="eyebrow mb-2 text-indigo">
                 Homebrew{" "}
                 <span className="text-ink-mute font-mono normal-case tracking-normal">
-                  · macOS / Linux
+                  {isZh ? "· macOS / Linux · 旧版 tap" : "· macOS / Linux · legacy tap"}
                 </span>
               </div>
               <InstallCodeBlock cmd={BREW} copyLabel={copyLabel} copiedLabel={copiedLabel} />
+              <p className="mt-3 text-sm text-ink-soft leading-relaxed max-w-2xl">
+                {isZh
+                  ? "这是旧版 deepseek-tui tap，在 formula 重命名为 deepseek 期间保留以保证兼容，安装的同样是当前版本的二进制。"
+                  : "This is the legacy deepseek-tui tap, kept for compatibility while the formula is renamed to deepseek. It installs the same current-release binaries."}
+              </p>
             </div>
 
             {/* Prebuilt binary */}
@@ -384,7 +454,7 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
               <p className="mt-3 text-sm text-ink-soft leading-relaxed max-w-2xl">
                 {isZh
                   ? "适合本地修改 workspace 或贡献补丁。"
-                  : "Useful for hacking on the workspace itself or contributing patches."}
+                  : "Useful for working on the workspace itself or contributing patches."}
               </p>
             </div>
           </div>
@@ -417,16 +487,92 @@ export default async function InstallPage({ params }: { params: Promise<{ locale
         </p>
       </section>
 
-      {/* ⑦ NEXT STEPS */}
+      {/* ⑦ PROVENANCE */}
+      <section className="mx-auto max-w-[1100px] px-6 py-12 hairline-t">
+        <div className="flex items-baseline gap-4 mb-5">
+          <Seal char="源" />
+          <div className="eyebrow">{isZh ? "07 · 来源与镜像" : "07 · Provenance & mirrors"}</div>
+        </div>
+
+        <div className="space-y-4 text-sm text-ink-soft leading-relaxed max-w-2xl">
+          <p>
+            {isZh ? (
+              <>
+                <strong className="text-ink">deepseek.net</strong> 和{" "}
+                <strong className="text-ink">www.deepseek.net</strong> 是 DeepSeek 的官方站点，
+                部署在 Cloudflare 上。网站源码位于{" "}
+                <code className="inline">coohu/deepseek-tui</code> 仓库的{" "}
+                <code className="inline">web/</code> 目录下，任何人都可自行部署为镜像。
+              </>
+            ) : (
+              <>
+                <strong className="text-ink">deepseek.net</strong> and{" "}
+                <strong className="text-ink">www.deepseek.net</strong> are the official DeepSeek
+                sites, deployed on Cloudflare. The website source lives under{" "}
+                <code className="inline">web/</code> in the{" "}
+                <code className="inline">coohu/deepseek-tui</code> repository — anyone can
+                self-deploy it as a mirror.
+              </>
+            )}
+          </p>
+
+          <div className="grid sm:grid-cols-2 gap-4 mt-4">
+            <div>
+              <div className="eyebrow mb-1 text-indigo">{isZh ? "官方发布" : "Official releases"}</div>
+              <p>
+                {isZh
+                  ? "所有正式发布和 SHA-256 校验文件仅通过 GitHub Releases 分发。npm 包从 GitHub Releases 下载经校验的二进制。"
+                  : "All official releases and SHA-256 checksums are distributed exclusively through GitHub Releases. The npm package downloads verified binaries from GitHub Releases."}
+              </p>
+            </div>
+            <div>
+              <div className="eyebrow mb-1 text-indigo">{isZh ? "CNB 镜像" : "CNB mirror"}</div>
+              <p>
+                {isZh ? (
+                  <>
+                    面向无法稳定访问 GitHub 的用户，提供 CNB 镜像（
+                    <a href="https://github.com/coohu/deepseek-tui/blob/main/docs/CNB_MIRROR.md" className="body-link">docs/CNB_MIRROR.md</a>
+                    ）。镜像仓库由社区成员维护，发布延迟可能为几小时。
+                  </>
+                ) : (
+                  <>
+                    A CNB mirror is available for users who cannot reliably reach GitHub (
+                    <a href="https://github.com/coohu/deepseek-tui/blob/main/docs/CNB_MIRROR.md" className="body-link">docs/CNB_MIRROR.md</a>
+                    ). The mirror is maintained by community members; release latency may be a few hours.
+                  </>
+                )}
+              </p>
+            </div>
+            <div>
+              <div className="eyebrow mb-1 text-indigo">{isZh ? "TUNA / 包镜像" : "TUNA / package mirrors"}</div>
+              <p>
+                {isZh
+                  ? "Cargo 用户可通过 TUNA（清华大学开源镜像站）加速下载。这些镜像由第三方维护，DeepSeek 项目不控制镜像内容。"
+                  : "Cargo users can accelerate downloads via TUNA (Tsinghua University Open Source Mirror). These mirrors are maintained by third parties; the DeepSeek project does not control mirror content."}
+              </p>
+            </div>
+            <div>
+              <div className="eyebrow mb-1 text-indigo">{isZh ? "自行部署" : "Self-deployed"}</div>
+              <p>
+                {isZh
+                  ? "自行部署的网站副本、镜像站和第三方包不受 DeepSeek 项目控制。请验证下载来源和校验和。"
+                  : "Self-deployed website copies, mirror sites, and third-party packages are not controlled by the DeepSeek project. Verify download sources and checksums."}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ⑧ NEXT STEPS */}
       <section className="bg-paper-deep hairline-t hairline-b">
         <div className="mx-auto max-w-[1100px] px-6 py-12">
           <div className="flex items-baseline gap-4 mb-5">
             <Seal char="续" />
-            <div className="eyebrow">{isZh ? "07 · 下一步" : "07 · Next steps"}</div>
+            <div className="eyebrow">{isZh ? "08 · 下一步" : "08 · Next steps"}</div>
           </div>
           <div className="grid md:grid-cols-3 gap-0 col-rule hairline-t hairline-b">
             <Link
-              href={isZh ? "/zh/docs" : "/docs"}
+              href={isZh ? "/zh/docs" : "/en/docs"}
               className="p-6 hover:bg-paper-deep transition-colors"
             >
               <div className="font-display text-xl mb-2">Docs</div>

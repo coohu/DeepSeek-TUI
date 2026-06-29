@@ -9,16 +9,13 @@ DeepSeek provider integration changed — only the local CLI / TUI brand.
 
 ```bash
 # 1. Uninstall the old wrapper or binaries.
-npm uninstall -g       # or cargo uninstall -cli 
-                                    # or brew uninstall 
+npm uninstall -g deepseek-tui      # or:
+cargo uninstall deepseek-tui-cli 2>/dev/null || true
+cargo uninstall deepseek-tui 2>/dev/null || true
+                                    # legacy Homebrew installs may use:
+                                    # brew upgrade deepseek-tui
 
-# 2. Install under the new name.
-npm install -g deepseek            # or cargo install deepseek-cli deepseek-tui --locked
-                                    # legacy Homebrew installs may still use
-                                    # brew install deepseek-tui until the tap
-                                    # formula is renamed.
-
-# 3. Run with the new command.
+# 2. Run with the new command.
 deepseek doctor
 deepseek
 ```
@@ -96,8 +93,10 @@ npm install -g deepseek
 ### Cargo
 
 ```bash
-cargo uninstall -cli  2>/dev/null || true
-cargo install deepseek-cli deepseek-tui --locked
+cargo uninstall deepseek-tui-cli 2>/dev/null || true
+cargo uninstall deepseek-tui 2>/dev/null || true
+cargo install deepseek-cli --locked
+cargo install deepseek-tui --locked
 ```
 
 Or in a checkout:
@@ -106,6 +105,19 @@ Or in a checkout:
 cargo install --path crates/cli --locked --force
 cargo install --path crates/tui --locked --force
 ```
+
+### Legacy `deepseek update`
+
+Current v0.8.x compatibility binaries recognize when they are running under a
+legacy `deepseek` or `deepseek-tui` filename. In that case, `deepseek update`
+or `deepseek-tui update` downloads the canonical DeepSeek release assets and
+installs them beside the legacy binary as `deepseek` and `deepseek-tui` when
+the install directory is writable.
+
+If that update path cannot write to the install directory, use the npm, Cargo,
+Homebrew, or manual reinstall commands above. The legacy npm package
+`deepseek-tui` remains deprecated and is not republished; npm users should move
+to `npm install -g deepseek`.
 
 ### Homebrew
 

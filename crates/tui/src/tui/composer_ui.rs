@@ -121,6 +121,26 @@ pub(crate) fn is_word_cursor_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT)
 }
 
+/// On macOS, map `SUPER` (Cmd ⌘) to `CONTROL` when `CONTROL` is not already
+/// set, so that terminal emulators that don't pass Ctrl faithfully still work.
+/// On all other platforms this is a no-op.
+#[cfg(target_os = "macos")]
+pub(crate) fn normalize_macos_modifiers(modifiers: KeyModifiers) -> KeyModifiers {
+    // Strip SUPER and add CONTROL so that exact modifier equality checks
+    // (e.g. `modifiers == KeyModifiers::CONTROL` in Ctrl+S stashing) work
+    // correctly after normalization.
+    if modifiers.contains(KeyModifiers::SUPER) {
+        (modifiers - KeyModifiers::SUPER) | KeyModifiers::CONTROL
+    } else {
+        modifiers
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn normalize_macos_modifiers(modifiers: KeyModifiers) -> KeyModifiers {
+    modifiers
+}
+
 pub(crate) fn handle_composer_alt_word_motion_key(app: &mut App, key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::CONTROL) {
         return false;
@@ -148,6 +168,20 @@ pub(crate) fn is_composer_newline_key(key: KeyEvent) -> bool {
             key.modifiers.contains(KeyModifiers::ALT)
                 || (key.modifiers.contains(KeyModifiers::SHIFT)
                     && !key.modifiers.contains(KeyModifiers::CONTROL))
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_forced_submit_key(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter => key.modifiers.contains(KeyModifiers::CONTROL),
+        // Several terminals encode Ctrl+Enter / Cmd+Enter as Ctrl+J. Keep
+        // Ctrl+J available as a newline while idle, but let the event loop use
+        // this helper to force a live steer when a turn is already running.
+        KeyCode::Char('j') | KeyCode::Char('J') => {
+            key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
         }
         _ => false,
     }

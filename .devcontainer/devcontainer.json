@@ -1,5 +1,5 @@
 {
-  "name": "DeepSeek TUI",
+  "name": "DeepSeek",
   "dockerFile": "../Dockerfile",
   "build": {
     "args": {

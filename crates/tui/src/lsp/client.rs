@@ -39,7 +39,6 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use super::diagnostics::{Diagnostic, Severity};
-use super::registry::Language;
 use crate::utils::spawn_supervised;
 
 /// Trait the LSP manager talks to. A real LSP server speaks this via stdio;
@@ -85,7 +84,7 @@ pub struct StdioLspTransport {
     #[allow(dead_code)]
     next_id: AsyncMutex<i64>,
     /// Language id passed in `textDocument/didOpen` (e.g. "rust").
-    language_id: &'static str,
+    language_id: String,
     /// Track which files we have opened so the second touch sends
     /// `didChange` instead of `didOpen`.
     opened: AsyncMutex<HashMap<PathBuf, i64>>,
@@ -97,7 +96,7 @@ impl StdioLspTransport {
     pub async fn spawn(
         command: &str,
         args: &[String],
-        language: Language,
+        language_id: &str,
         workspace: PathBuf,
     ) -> Result<Self> {
         let mut cmd = Command::new(command);
@@ -186,7 +185,7 @@ impl StdioLspTransport {
             diagnostics_rx: AsyncMutex::new(rx_diag),
             pending,
             next_id: AsyncMutex::new(2),
-            language_id: language.language_id(),
+            language_id: language_id.to_string(),
             opened: AsyncMutex::new(HashMap::new()),
         })
     }

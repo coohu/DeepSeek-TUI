@@ -25,6 +25,7 @@
 //! — probing a binary involves a `Command::output` per candidate and
 //! we'd rather not pay that on every model turn.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
@@ -51,6 +52,18 @@ pub const PYTHON_CANDIDATES: &[&str] = &["python3", "python", "py -3"];
 /// once per process.
 #[must_use]
 pub fn probe_executable(spec: &str) -> bool {
+    probe_executable_with_flag(spec, "--version")
+}
+
+/// Probe a single executable using an explicit version/help flag.
+///
+/// Most tools report their presence via `--version`, but some do not:
+/// Poppler's `pdftotext` treats `--version` as an input *filename* and
+/// exits non-zero ("I/O Error: Couldn't open file '--version'"), so the
+/// default probe reports it missing even when it is installed (#1667).
+/// Such tools pass their own flag (e.g. `-v`) here.
+#[must_use]
+pub fn probe_executable_with_flag(spec: &str, version_flag: &str) -> bool {
     let mut parts = spec.split_whitespace();
     let Some(program) = parts.next() else {
         return false;
@@ -59,15 +72,70 @@ pub fn probe_executable(spec: &str) -> bool {
     for arg in parts {
         cmd.arg(arg);
     }
-    cmd.arg("--version");
+    cmd.arg(version_flag);
 
-    // Silence the subprocess's stdout/stderr — `--version` would
+    // Silence the subprocess's stdout/stderr — the version banner would
     // otherwise print to our terminal during startup, which is
     // confusing on the TUI's first frame.
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
 
     matches!(cmd.status(), Ok(status) if status.success())
+}
+
+fn executable_path_candidates(program: &str) -> Vec<PathBuf> {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 {
+        return vec![program_path.to_path_buf()];
+    }
+
+    let Some(path) = std::env::var_os("PATH") else {
+        return vec![PathBuf::from(program)];
+    };
+
+    let mut candidates = Vec::new();
+    for dir in std::env::split_paths(&path) {
+        let bare = dir.join(program);
+        candidates.push(bare.clone());
+
+        #[cfg(windows)]
+        if Path::new(program).extension().is_none() {
+            let pathext =
+                std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+            for ext in pathext.to_string_lossy().split(';') {
+                if ext.is_empty() {
+                    continue;
+                }
+                candidates.push(bare.with_extension(ext.trim_start_matches('.')));
+            }
+        }
+    }
+
+    candidates
+}
+
+fn resolve_executable_path(spec: &str, version_flag: &str) -> Option<String> {
+    let mut parts = spec.split_whitespace();
+    let program = parts.next()?;
+    let args: Vec<&str> = parts.collect();
+
+    for candidate in executable_path_candidates(program) {
+        if !candidate.is_file() {
+            continue;
+        }
+
+        let mut cmd = Command::new(&candidate);
+        cmd.args(&args)
+            .arg(version_flag)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        if matches!(cmd.status(), Ok(status) if status.success()) {
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    None
 }
 
 /// Resolve the Python interpreter once per process. Returns the
@@ -110,7 +178,10 @@ pub fn resolve_pdftotext() -> Option<String> {
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            if probe_executable("pdftotext") {
+            // Poppler's `pdftotext` rejects `--version` (it is parsed as an
+            // input filename and exits non-zero), so probe with `-v`, which
+            // prints the version banner and exits 0 (#1667).
+            if probe_executable_with_flag("pdftotext", "-v") {
                 Some("pdftotext".to_string())
             } else {
                 None
@@ -154,12 +225,12 @@ pub fn resolve_pandoc() -> Option<String> {
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            if probe_executable("pandoc") {
+            if let Some(path) = resolve_executable_path("pandoc", "--version") {
                 tracing::info!(
                     target: "tool_dependencies",
                     "Resolved pandoc binary for pandoc_convert",
                 );
-                Some("pandoc".to_string())
+                Some(path)
             } else {
                 tracing::warn!(
                     target: "tool_dependencies",
@@ -456,6 +527,40 @@ mod tests {
         // most non-Windows machines (no `py` launcher), which is
         // fine — we're checking that the *split* doesn't crash.
         let _ = probe_executable("py -3");
+    }
+
+    #[test]
+    fn probe_executable_with_flag_returns_false_for_unknown_binary() {
+        assert!(!probe_executable_with_flag(
+            "deepseek-tui-imaginary-binary-xyz123",
+            "-v"
+        ));
+    }
+
+    #[test]
+    fn probe_executable_delegates_to_double_dash_version() {
+        // `probe_executable` must remain exactly
+        // `probe_executable_with_flag(.., "--version")`.
+        let spec = "deepseek-tui-imaginary-binary-xyz123";
+        assert_eq!(
+            probe_executable(spec),
+            probe_executable_with_flag(spec, "--version")
+        );
+    }
+
+    #[test]
+    fn pdftotext_resolver_detects_installed_poppler_via_dash_v() {
+        // Regression for #1667: Poppler's `pdftotext` rejects `--version`
+        // (it is parsed as an input filename and exits non-zero), so the
+        // generic `--version` probe reports it missing even when installed.
+        // The resolver must probe with `-v`. Gated on pdftotext actually
+        // being installed so CI without Poppler stays green.
+        if probe_executable_with_flag("pdftotext", "-v") {
+            assert!(
+                resolve_pdftotext().is_some(),
+                "an installed pdftotext must be detected via -v (#1667)"
+            );
+        }
     }
 
     #[test]

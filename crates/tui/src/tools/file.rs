@@ -10,6 +10,7 @@ use super::spec::{
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::fmt::Display;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,7 +29,7 @@ impl ToolSpec for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is; PDFs are auto-extracted via the bundled pure-Rust extractor (no Poppler install required). Image screenshots are OCR-extracted when local OCR is available. Cannot read other non-PDF binaries.\n\nFor large files, use `start_line` and `max_lines` to read in chunks. By default, returns at most 200 lines (~16KB). If `truncated=\"true\"` in the response, use `next_start_line` to continue reading. For PDFs, use `pages` instead — `start_line`/`max_lines` only apply to text files."
+        "Read a UTF-8 file from the workspace. Use this instead of `cat`, `head`, `tail`, or `sed -n '..p'` in `exec_shell` — it's faster, sandbox-aware, and skips the approval prompt. Plain text is returned as-is and records the file snapshot required before `edit_file` will make a narrow in-place edit. PDFs are auto-extracted via the bundled pure-Rust extractor (no Poppler install required). Image screenshots are OCR-extracted when local OCR is available. Cannot read other non-PDF binaries.\n\nFor large files, use `start_line` and `max_lines` to read in chunks. By default, returns at most 200 lines (~16KB). If `truncated=\"true\"` in the response, use `next_start_line` to continue reading. For PDFs, use `pages` instead — `start_line`/`max_lines` only apply to text files."
     }
 
     fn input_schema(&self) -> Value {
@@ -93,6 +94,7 @@ impl ToolSpec for ReadFileTool {
         let contents = fs::read_to_string(&file_path).map_err(|e| {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
         })?;
+        context.note_file_read(&file_path);
 
         let total_lines = contents.lines().count();
         let total_bytes = contents.len();
@@ -333,7 +335,8 @@ fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
     // path). Users with column-heavy / complex-table PDFs (academic
     // papers, financial filings) can opt into the historical
     // `pdftotext -layout` route by setting
-    // `prefer_external_pdftotext = true` in `~/.config/deepseek/settings.toml`.
+    // `prefer_external_pdftotext = true` in `~/.deepseek/settings.toml`
+    // (legacy: `~/.config/deepseek/settings.toml`).
     let prefer_external = crate::settings::Settings::load()
         .map(|s| s.prefer_external_pdftotext)
         .unwrap_or(false);
@@ -355,7 +358,7 @@ fn read_pdf_via_pdf_extract(
         // pdf-extract returns pages in document order; `start`/`end` are
         // 1-indexed inclusive (validated above), so we convert to a
         // 0-indexed half-open slice with bounds clamping.
-        let pages = pdf_extract::extract_text_by_pages(path).map_err(|e| {
+        let pages = guard_pdf_extract(|| pdf_extract::extract_text_by_pages(path)).map_err(|e| {
             ToolError::execution_failed(format!(
                 "pdf-extract failed on {}: {e} (set `prefer_external_pdftotext = true` in settings.toml to retry via pdftotext)",
                 path.display()
@@ -374,14 +377,45 @@ fn read_pdf_via_pdf_extract(
             }
         }
     } else {
-        pdf_extract::extract_text(path).map_err(|e| {
-            ToolError::execution_failed(format!(
-                "pdf-extract failed on {}: {e} (set `prefer_external_pdftotext = true` in settings.toml to retry via pdftotext)",
-                path.display()
-            ))
-        })?
+        // Call extract_text_by_pages even when the caller wants every page:
+        // extract_text uses an internal codepath that can hang on certain PDF
+        // cross-reference tables or font encodings (#2641). The per-page path
+        // avoids that hang and produces identical output when joined.
+        guard_pdf_extract(|| pdf_extract::extract_text_by_pages(path))
+            .map(|pages| pages.join("\n"))
+            .map_err(|e| {
+                ToolError::execution_failed(format!(
+                    "pdf-extract failed on {}: {e} (set `prefer_external_pdftotext = true` in settings.toml to retry via pdftotext)",
+                    path.display()
+                ))
+            })?
     };
     Ok(ToolResult::success(clean_pdf_text(&text)))
+}
+
+fn guard_pdf_extract<T, E, F>(extract: F) -> Result<T, String>
+where
+    E: Display,
+    F: FnOnce() -> Result<T, E>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(extract)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(payload) => Err(format!(
+            "extractor panicked: {}",
+            panic_payload_message(payload.as_ref())
+        )),
+    }
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 fn read_pdf_via_pdftotext(
@@ -514,6 +548,7 @@ impl ToolSpec for WriteFileTool {
         fs::write(&file_path, file_content).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
+        context.note_file_read(&file_path);
 
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &prior_contents, file_content);
@@ -552,7 +587,7 @@ impl ToolSpec for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Replace text in a single file via exact search/replace. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` matches exactly by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
+        "Replace text in a single file via exact search/replace after the file has been read with `read_file` in this session. Use this instead of `sed -i` in `exec_shell` for one unambiguous in-place edit. `search` must match exactly one location by default; when no exact match is found the tool retries with leading-whitespace-tolerant fuzzy matching automatically. The optional `fuzz` parameter is accepted for backward compatibility and is no longer needed. Returns a compact unified diff, not the full file. For structural, multi-block, or cross-file changes, use `apply_patch` or `write_file` instead."
     }
 
     fn input_schema(&self) -> Value {
@@ -605,6 +640,7 @@ impl ToolSpec for EditFileTool {
         }
 
         let file_path = context.resolve_path(path_str)?;
+        context.require_fresh_file_read(&file_path, path_str)?;
 
         let contents = fs::read_to_string(&file_path).map_err(|e| {
             ToolError::execution_failed(format!("Failed to read {}: {}", file_path.display(), e))
@@ -630,8 +666,8 @@ impl ToolSpec for EditFileTool {
                     match punct_matches.as_slice() {
                         [] => {
                             return Err(ToolError::execution_failed(format!(
-                                "Search string not found in {}",
-                                file_path.display()
+                                "Search string not found in {}. Recovery: call read_file with path=\"{path_str}\" to inspect the current contents, then retry with a search string copied from the file.",
+                                file_path.display(),
                             )));
                         }
                         [(start, end)] => {
@@ -641,7 +677,7 @@ impl ToolSpec for EditFileTool {
                         }
                         _ => {
                             return Err(ToolError::execution_failed(format!(
-                                "Fuzzy punctuation search matched {} locations in {}; refine search text",
+                                "edit_file search is non-unique after punctuation normalization: matched {} locations in {}. Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                                 punct_matches.len(),
                                 file_path.display()
                             )));
@@ -650,12 +686,18 @@ impl ToolSpec for EditFileTool {
                 }
                 _ => {
                     return Err(ToolError::execution_failed(format!(
-                        "Fuzzy search matched {} locations in {}; refine search text",
+                        "edit_file search is non-unique after indentation normalization: matched {} locations in {}. Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                         indent_matches.len(),
                         file_path.display()
                     )));
                 }
             }
+        } else if count > 1 {
+            return Err(ToolError::execution_failed(format!(
+                "edit_file search is non-unique: matched {count} locations in {}. \
+                 Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
+                file_path.display()
+            )));
         } else {
             (contents.replace(search, replace), count, None)
         };
@@ -663,26 +705,19 @@ impl ToolSpec for EditFileTool {
         fs::write(&file_path, &updated).map_err(|e| {
             ToolError::execution_failed(format!("Failed to write {}: {}", file_path.display(), e))
         })?;
+        context.note_file_read(&file_path);
 
         let display = file_path.display().to_string();
         let diff = make_unified_diff(&display, &contents, &updated);
-        let summary = if count > 1 {
-            format!(
-                "Replaced {count} occurrence(s) in {display}\n\
-                 Warning: multiple matches were replaced with the same substitution. \
-                 Verify the result with read_file before proceeding."
-            )
-        } else {
-            let fuzz_note = match fuzz_kind {
-                Some("indentation") => " (fuzzy indentation match)",
-                Some("punctuation") => {
-                    " (fuzzy punctuation match — typographic quotes/dashes normalized)"
-                }
-                Some(other) => other,
-                None => "",
-            };
-            format!("Replaced 1 occurrence in {display}{fuzz_note}")
+        let fuzz_note = match fuzz_kind {
+            Some("indentation") => " (fuzzy indentation match)",
+            Some("punctuation") => {
+                " (fuzzy punctuation match — typographic quotes/dashes normalized)"
+            }
+            Some(other) => other,
+            None => "",
         };
+        let summary = format!("Replaced {count} occurrence in {display}{fuzz_note}");
         let body = if diff.is_empty() {
             format!("{summary}\n(no textual changes)")
         } else {
@@ -969,6 +1004,13 @@ fn list_dir_timeout(timeout: Duration) -> ToolError {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    async fn read_before_edit(ctx: &ToolContext, path: &str) {
+        ReadFileTool
+            .execute(json!({"path": path}), ctx)
+            .await
+            .expect("read before edit");
+    }
 
     #[tokio::test]
     async fn test_read_file_tool() {
@@ -1373,6 +1415,17 @@ mod tests {
         assert!(single.content.contains("Recursive Language Models"));
     }
 
+    #[test]
+    fn pdf_extract_panic_is_returned_as_tool_error_text() {
+        let err = guard_pdf_extract(|| -> Result<String, &'static str> {
+            panic!("assertion failed: name == \"Identity-H\"");
+        })
+        .expect_err("panic should become an error");
+
+        assert!(err.contains("extractor panicked"));
+        assert!(err.contains("Identity-H"));
+    }
+
     #[tokio::test]
     async fn read_file_pdf_path_uses_pdf_extract_by_default() {
         if !sample_pdf_present() {
@@ -1542,7 +1595,8 @@ mod tests {
 
         // Create a file to edit
         let test_file = tmp.path().join("edit_me.txt");
-        fs::write(&test_file, "hello world hello").expect("write");
+        fs::write(&test_file, "hello world").expect("write");
+        read_before_edit(&ctx, "edit_me.txt").await;
 
         let tool = EditFileTool;
         let result = tool
@@ -1554,29 +1608,93 @@ mod tests {
             .expect("execute");
 
         assert!(result.success);
-        assert!(result.content.contains("2 occurrence(s)"));
-        assert!(
-            result.content.contains("multiple matches were replaced"),
-            "{}",
-            result.content
-        );
+        assert!(result.content.contains("Replaced 1 occurrence"));
         // Inline diff (#505) — the unified diff lands above the summary
         // line so the TUI's diff-aware renderer kicks in.
         assert!(result.content.contains("--- a/"), "{}", result.content);
         assert!(
-            result.content.contains("-hello world hello"),
+            result.content.contains("-hello world"),
             "{}",
             result.content
         );
-        assert!(
-            result.content.contains("+hi world hi"),
-            "{}",
-            result.content
-        );
+        assert!(result.content.contains("+hi world"), "{}", result.content);
 
         // Verify edit was applied
         let edited = fs::read_to_string(&test_file).expect("read");
-        assert_eq!(edited, "hi world hi");
+        assert_eq!(edited, "hi world");
+    }
+
+    #[tokio::test]
+    async fn edit_file_requires_prior_read() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("blind.txt");
+        fs::write(&test_file, "hello world").expect("write");
+
+        let err = EditFileTool
+            .execute(
+                json!({"path": "blind.txt", "search": "hello", "replace": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect_err("edit without read should fail");
+        let message = err.to_string();
+        assert!(message.contains("not been read"), "{message}");
+        assert!(message.contains("read_file"), "{message}");
+
+        let unchanged = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(unchanged, "hello world");
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_stale_prior_read() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("stale.txt");
+        fs::write(&test_file, "alpha beta").expect("write");
+        read_before_edit(&ctx, "stale.txt").await;
+        fs::write(&test_file, "alpha beta gamma").expect("external write");
+
+        let err = EditFileTool
+            .execute(
+                json!({"path": "stale.txt", "search": "alpha", "replace": "omega"}),
+                &ctx,
+            )
+            .await
+            .expect_err("stale read should fail");
+        let message = err.to_string();
+        assert!(message.contains("changed since"), "{message}");
+        assert!(message.contains("read_file"), "{message}");
+
+        let unchanged = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(unchanged, "alpha beta gamma");
+    }
+
+    #[tokio::test]
+    async fn edit_file_rejects_non_unique_exact_match() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        let test_file = tmp.path().join("multi.txt");
+        fs::write(&test_file, "hello world hello").expect("write");
+        read_before_edit(&ctx, "multi.txt").await;
+
+        let err = EditFileTool
+            .execute(
+                json!({"path": "multi.txt", "search": "hello", "replace": "hi"}),
+                &ctx,
+            )
+            .await
+            .expect_err("non-unique exact match should fail");
+        let message = err.to_string();
+        assert!(message.contains("non-unique"), "{message}");
+        assert!(message.contains("matched 2"), "{message}");
+        assert!(message.contains("read_file"), "{message}");
+
+        let unchanged = fs::read_to_string(&test_file).expect("read");
+        assert_eq!(unchanged, "hello world hello");
     }
 
     #[tokio::test]
@@ -1592,6 +1710,7 @@ mod tests {
         ] {
             let test_file = tmp.path().join(file_name);
             fs::write(&test_file, "hello world").expect("write");
+            read_before_edit(&ctx, file_name).await;
 
             let mut input = serde_json::Map::from_iter([
                 ("path".to_string(), json!(file_name)),
@@ -1621,6 +1740,7 @@ mod tests {
 
         let test_file = tmp.path().join("single.txt");
         fs::write(&test_file, "hello world").expect("write");
+        read_before_edit(&ctx, "single.txt").await;
 
         let tool = EditFileTool;
         let result = tool
@@ -1647,6 +1767,7 @@ mod tests {
             "fn main() {\n    if true {\n        let value = 1;\n    }\n}\n",
         )
         .expect("write");
+        read_before_edit(&ctx, "fuzzy.txt").await;
 
         let tool = EditFileTool;
         let result = tool
@@ -1681,6 +1802,7 @@ mod tests {
 
         let test_file = tmp.path().join("smart.rs");
         fs::write(&test_file, "let s = \"hello world\";\n").expect("write");
+        read_before_edit(&ctx, "smart.rs").await;
 
         let tool = EditFileTool;
         let result = tool
@@ -1715,6 +1837,7 @@ mod tests {
         let test_file = tmp.path().join("dash.md");
         // File has an ASCII hyphen and ASCII space.
         fs::write(&test_file, "alpha - beta\n").expect("write");
+        read_before_edit(&ctx, "dash.md").await;
 
         let tool = EditFileTool;
         let result = tool
@@ -1745,6 +1868,7 @@ mod tests {
         // Create a file without the search string
         let test_file = tmp.path().join("no_match.txt");
         fs::write(&test_file, "foo bar baz").expect("write");
+        read_before_edit(&ctx, "no_match.txt").await;
 
         let tool = EditFileTool;
         let result = tool
@@ -1757,6 +1881,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
+        assert!(err.to_string().contains("read_file"));
     }
 
     #[tokio::test]

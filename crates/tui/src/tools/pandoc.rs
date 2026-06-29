@@ -209,6 +209,24 @@ mod tests {
         crate::dependencies::resolve_pandoc().is_some()
     }
 
+    fn pandoc_environment_unavailable(err: &ToolError) -> bool {
+        let msg = err.to_string();
+        msg.contains("getXdgDirectory") || msg.contains("sHGetFolderPath")
+    }
+
+    // Test-only skip diagnostic; the module-wide print_stderr deny targets prod code.
+    #[allow(clippy::print_stderr)]
+    async fn execute_pandoc_or_skip(input: Value, ctx: &ToolContext) -> Option<ToolResult> {
+        match PandocConvertTool.execute(input, ctx).await {
+            Ok(result) => Some(result),
+            Err(err) if pandoc_environment_unavailable(&err) => {
+                eprintln!("skipping pandoc integration assertion: {err}");
+                None
+            }
+            Err(err) => panic!("execute: {err:?}"),
+        }
+    }
+
     #[test]
     fn supported_target_formats_match_schema_enum() {
         let tool = PandocConvertTool;
@@ -293,13 +311,14 @@ mod tests {
         let src = tmp.path().join("note.md");
         fs::write(&src, "# Title\n\nA paragraph with `inline code`.\n").unwrap();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
-        let result = PandocConvertTool
-            .execute(
-                json!({"source_path": "note.md", "target_format": "html"}),
-                &ctx,
-            )
-            .await
-            .expect("execute");
+        let Some(result) = execute_pandoc_or_skip(
+            json!({"source_path": "note.md", "target_format": "html"}),
+            &ctx,
+        )
+        .await
+        else {
+            return;
+        };
         assert!(result.success);
         assert!(
             result.content.contains("<h1") && result.content.contains("Title"),
@@ -322,17 +341,18 @@ mod tests {
         let src = tmp.path().join("note.md");
         fs::write(&src, "# Title\n").unwrap();
         let ctx = ToolContext::new(tmp.path().to_path_buf());
-        let result = PandocConvertTool
-            .execute(
-                json!({
-                    "source_path": "note.md",
-                    "target_format": "html",
-                    "output_path": "out.html",
-                }),
-                &ctx,
-            )
-            .await
-            .expect("execute");
+        let Some(result) = execute_pandoc_or_skip(
+            json!({
+                "source_path": "note.md",
+                "target_format": "html",
+                "output_path": "out.html",
+            }),
+            &ctx,
+        )
+        .await
+        else {
+            return;
+        };
         assert!(result.success);
         assert!(result.content.contains("wrote"));
         let written = fs::read_to_string(tmp.path().join("out.html")).expect("read");

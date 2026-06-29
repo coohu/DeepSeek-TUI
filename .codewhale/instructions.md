@@ -108,7 +108,7 @@ DIR: integrations
 DIR: nix
   FILE: package.nix
 DIR: npm
-  DIR: codewhale
+  DIR: deepseek
   DIR: deepseek-tui
 FILE: package-lock.json
 FILE: package.json

@@ -27,7 +27,11 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::skills::{Skill, discover_in_workspace, skills_directories};
+use crate::skills::{
+    Skill, SkillDiscoveryMode, discover_for_workspace_and_dir_with_mode,
+    discover_in_workspace_with_mode, skill_directories_for_workspace_and_dir,
+    skills_directories_for_mode,
+};
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
@@ -91,17 +95,40 @@ impl ToolSpec for LoadSkillTool {
         // tool's lookup mirrors what the system-prompt skills block
         // already lists, so the model never asks for a name it
         // can't find.
-        let registry = discover_in_workspace(&context.workspace);
+        let discovery_mode =
+            SkillDiscoveryMode::from_deepseek_only(context.skills_scan_deepseek_only);
+        let registry = if let Some(skills_dir) = context.skills_dir.as_deref() {
+            discover_for_workspace_and_dir_with_mode(&context.workspace, skills_dir, discovery_mode)
+        } else {
+            discover_in_workspace_with_mode(&context.workspace, discovery_mode)
+        };
         let Some(skill) = registry.get(name) else {
             let available: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
             let hint = if available.is_empty() {
-                let dirs: Vec<String> = skills_directories(&context.workspace)
+                let dirs: Vec<String> = context
+                    .skills_dir
+                    .as_deref()
+                    .map(|skills_dir| {
+                        skill_directories_for_workspace_and_dir(
+                            &context.workspace,
+                            skills_dir,
+                            discovery_mode,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        skills_directories_for_mode(&context.workspace, discovery_mode)
+                    })
                     .iter()
                     .map(|p| p.display().to_string())
                     .collect();
                 if dirs.is_empty() {
-                    "no skills directories found; install skills under `<workspace>/.agents/skills/<name>/SKILL.md`, `~/.deepseek/skills/<name>/SKILL.md`, or `~/.deepseek/skills/<name>/SKILL.md`"
-                        .to_string()
+                    if context.skills_scan_deepseek_only {
+                        "no skills directories found; install skills under `<workspace>/.deepseek/skills/<name>/SKILL.md` or `~/.deepseek/skills/<name>/SKILL.md`"
+                            .to_string()
+                    } else {
+                        "no skills directories found; install skills under `<workspace>/.agents/skills/<name>/SKILL.md`, `~/.deepseek/skills/<name>/SKILL.md`, or `~/.deepseek/skills/<name>/SKILL.md`"
+                            .to_string()
+                    }
                 } else {
                     format!("no skills installed. Searched: {}", dirs.join(", "))
                 }
@@ -336,6 +363,44 @@ mod tests {
         assert!(
             path_str.contains(".opencode"),
             "skill_path should point at the .opencode dir: {path_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_respects_deepseek_only_skill_discovery() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        write_skill(
+            &workspace.join(".claude").join("skills"),
+            "claude-only",
+            "Claude skill",
+            "Body content marker.",
+        );
+        let deepseek_dir = workspace.join(".deepseek").join("skills");
+        write_skill(
+            &deepseek_dir,
+            "deepseek-only",
+            "DeepSeek skill",
+            "Body content marker.",
+        );
+
+        let context = ToolContext::new(workspace).with_skills_config(deepseek_dir, true);
+        let tool = LoadSkillTool;
+
+        let result = tool
+            .execute(json!({"name": "deepseek-only"}), &context)
+            .await
+            .expect("DeepSeek skill should load");
+        assert!(result.success);
+
+        let err = tool
+            .execute(json!({"name": "claude-only"}), &context)
+            .await
+            .expect_err("Claude skill should be hidden in DeepSeek-only mode");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("claude-only") && msg.contains("deepseek-only"),
+            "error should name the missing skill and available strict catalog: {msg}"
         );
     }
 

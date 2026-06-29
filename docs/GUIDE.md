@@ -183,9 +183,9 @@ The interactive TUI has a few stable regions:
 The footer status line is configurable. Run `/statusline` to choose which
 footer chips are visible, or set `[tui].status_items` in `config.toml` to
 control both selection and order. Supported keys currently include `mode`,
-`model`, `cost`, `balance` (DeepSeek / DeepSeekCN only), `status`, `coherence`,
-`agents`, `reasoning_replay`, `prefix_stability`, `cache`, `context_percent`,
-`git_branch`, `last_tool_elapsed` (placeholder), `rate_limit` (placeholder),
+`model`, `cost`, `balance` (DeepSeek / DeepSeekCN only), `status`, `agents`,
+`reasoning_replay`, `prefix_stability`, `cache`, `context_percent`,
+`git_branch`, `last_tool_elapsed` (reserved), `rate_limit` (reserved),
 and `tokens`. Omit `status_items` to keep the built-in default order; set it to
 `[]` to hide configurable chips.
 
@@ -267,15 +267,18 @@ Common commands for first-time users:
 | --- | --- |
 | `/mode` | Open the mode picker or switch with `/mode agent` |
 | `/model` | Select a model or use `/model auto` |
-| `/models` | Fetch or list models from the active endpoint |
 | `/provider` | Pick the active API provider |
+| `/fleet` | Configure Fleet roles or open worker status |
 | `/config` | Edit runtime and provider settings |
 | `/statusline` | Choose which footer status chips are visible |
-| `/settings` | Inspect persistent UI preferences |
 | `/compact` | Summarize long context to recover token budget |
 | `/review` | Ask for a structured review workflow |
 | `/memory` | Inspect or manage memory when enabled |
 | `/mcp` | Configure or inspect MCP server integration |
+
+Toolbox commands stay searchable when you type them directly: `/models`
+fetches live endpoint IDs, `/modeldb` opens the bundled model reference, and
+`/rlm` opens a manual persistent RLM context.
 
 Use `/provider` when you want to switch away from the default DeepSeek route.
 Provider IDs, environment variables, model defaults, and capability notes are
@@ -345,11 +348,10 @@ Sub-agents are background child agents. The parent session gives a child a
 focused task, receives an agent id, and can continue working while the child
 runs.
 
-The main orchestration tools are:
+The main orchestration tool is:
 
-- `agent_open`: start a child with a task and role.
-- `agent_eval`: wait for and collect the child result.
-- `agent_close`: cancel a running child.
+- `agent`: start a focused child with a task and role. The child runs in the
+  background and returns a compact receipt plus transcript handle.
 
 You normally do not need to call these tools directly. Ask for parallel work in
 plain language:
@@ -404,8 +406,9 @@ work. Read the local guidance before editing, and keep any contribution within
 the repository's conventions.
 
 Next: see [SKILL_INVOCATION_DESIGN.md](SKILL_INVOCATION_DESIGN.md) for skill
-activation behavior and [CONFIGURATION.md](CONFIGURATION.md) for config paths
-and project authority.
+activation behavior, [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) for
+Claude Code skill/plugin compatibility, and [CONFIGURATION.md](CONFIGURATION.md)
+for config paths and project authority.
 
 ## 10. Getting Help
 

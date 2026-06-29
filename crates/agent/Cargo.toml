@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Model/provider registry and fallback strategy for DeepSeek workspace architecture"
+description = "Model/provider registry and fallback strategy for DeepSeek"
 
 [dependencies]
-deepseek-config = { path = "../config", version = "0.8.54" }
+deepseek-config = { path = "../config", version = "0.8.65" }
 serde.workspace = true

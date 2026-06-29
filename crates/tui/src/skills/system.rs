@@ -4,13 +4,14 @@
 use std::fs;
 use std::path::Path;
 
-const BUNDLED_SKILL_VERSION: &str = "3";
+const BUNDLED_SKILL_VERSION: &str = "4";
 const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator/SKILL.md");
 const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md");
 const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");
 const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets/skills/plugin-creator/SKILL.md");
 const SKILL_INSTALLER_BODY: &str = include_str!("../../assets/skills/skill-installer/SKILL.md");
 const MCP_BUILDER_BODY: &str = include_str!("../../assets/skills/mcp-builder/SKILL.md");
+const FLEET_MANAGER_BODY: &str = include_str!("../../assets/skills/fleet-manager/SKILL.md");
 const DOCUMENTS_BODY: &str = include_str!("../../assets/skills/documents/SKILL.md");
 const PRESENTATIONS_BODY: &str = include_str!("../../assets/skills/presentations/SKILL.md");
 const SPREADSHEETS_BODY: &str = include_str!("../../assets/skills/spreadsheets/SKILL.md");
@@ -53,6 +54,11 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "mcp-builder",
         body: MCP_BUILDER_BODY,
         introduced_in: 3,
+    },
+    BundledSkill {
+        name: "fleet-manager",
+        body: FLEET_MANAGER_BODY,
+        introduced_in: 4,
     },
     BundledSkill {
         name: "documents",
@@ -370,7 +376,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Simulate v2 where older bundled skills had been deliberately removed
-        // before v3 introduced more system skills.
+        // before later versions introduced more system skills.
         fs::write(marker_file(&tmp), "2").unwrap();
 
         install_system_skills(tmp.path()).unwrap();

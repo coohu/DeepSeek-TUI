@@ -25,7 +25,7 @@ use thiserror::Error;
 pub const DEFAULT_SERVICE: &str = "deepseek";
 /// Select the secret storage backend. Supported values are `file` (default)
 /// and `system`/`keyring` for the OS credential store.
-pub const SECRET_BACKEND_ENV: &str = "CODEWHALE_SECRET_BACKEND";
+pub const SECRET_BACKEND_ENV: &str = "DEEPSEEK_SECRET_BACKEND";
 /// Legacy alias for [`SECRET_BACKEND_ENV`].
 pub const LEGACY_SECRET_BACKEND_ENV: &str = "DEEPSEEK_SECRET_BACKEND";
 const FILE_BACKEND_LABEL: &str = "file-based (~/.deepseek/secrets/)";
@@ -127,7 +127,11 @@ impl DefaultKeyringStore {
         #[cfg(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         ))]
         {
             // `Entry::new` is enough to validate the native macOS/Windows
@@ -156,7 +160,11 @@ impl DefaultKeyringStore {
         #[cfg(not(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         )))]
         {
             let _ = &self.service;
@@ -170,7 +178,11 @@ impl KeyringStore for DefaultKeyringStore {
         #[cfg(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         ))]
         {
             let entry = keyring::Entry::new(&self.service, key)
@@ -184,7 +196,11 @@ impl KeyringStore for DefaultKeyringStore {
         #[cfg(not(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         )))]
         {
             let _ = key;
@@ -196,7 +212,11 @@ impl KeyringStore for DefaultKeyringStore {
         #[cfg(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         ))]
         {
             let entry = keyring::Entry::new(&self.service, key)
@@ -208,7 +228,11 @@ impl KeyringStore for DefaultKeyringStore {
         #[cfg(not(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         )))]
         {
             let _ = (key, value);
@@ -220,7 +244,11 @@ impl KeyringStore for DefaultKeyringStore {
         #[cfg(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         ))]
         {
             let entry = keyring::Entry::new(&self.service, key)
@@ -233,7 +261,11 @@ impl KeyringStore for DefaultKeyringStore {
         #[cfg(not(any(
             target_os = "macos",
             target_os = "windows",
-            all(target_os = "linux", not(target_env = "ohos"))
+            all(
+                target_os = "linux",
+                not(target_env = "ohos"),
+                not(target_env = "musl")
+            )
         )))]
         {
             let _ = key;
@@ -249,7 +281,11 @@ impl KeyringStore for DefaultKeyringStore {
 #[cfg(not(any(
     target_os = "macos",
     target_os = "windows",
-    all(target_os = "linux", not(target_env = "ohos"))
+    all(
+        target_os = "linux",
+        not(target_env = "ohos"),
+        not(target_env = "musl")
+    )
 )))]
 fn unsupported_keyring_message() -> String {
     "system keyring backend is unsupported on this platform".to_string()
@@ -336,7 +372,7 @@ impl FileKeyringStore {
     }
 
     /// Default path: `<home>/.deepseek/secrets/secrets.json`. Honours
-    /// `CODEWHALE_HOME`, then `HOME`, `USERPROFILE`, and finally the platform
+    /// `DEEPSEEK_HOME`, then `HOME`, `USERPROFILE`, and finally the platform
     /// home directory from the `dirs` crate. On first use, non-conflicting
     /// entries from the legacy `<home>/.deepseek/secrets/secrets.json` file are
     /// copied into the DeepSeek store.
@@ -444,7 +480,7 @@ impl FileKeyringStore {
             }
         }
         let body = serde_json::to_string_pretty(blob)?;
-        fs::write(&self.path, body)?;
+        write_private_file(&self.path, body.as_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -462,6 +498,28 @@ impl FileKeyringStore {
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsError> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(body)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_private_file(path: &Path, body: &[u8]) -> Result<(), SecretsError> {
+    fs::write(path, body)?;
+    Ok(())
 }
 
 impl KeyringStore for FileKeyringStore {
@@ -495,7 +553,7 @@ impl KeyringStore for FileKeyringStore {
 }
 
 fn default_deepseek_secrets_path() -> Result<PathBuf, SecretsError> {
-    if let Ok(value) = std::env::var("CODEWHALE_HOME") {
+    if let Ok(value) = std::env::var("DEEPSEEK_HOME") {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed).join("secrets").join("secrets.json"));
@@ -701,6 +759,44 @@ impl Secrets {
     pub fn get(&self, name: &str) -> Result<Option<String>, SecretsError> {
         self.store.get(name)
     }
+
+    /// Resolve a secret by key name with an optional source constraint.
+    ///
+    /// This is the fleet-worker secret resolution path. Unlike
+    /// [`resolve`](Secrets::resolve), this does NOT map provider names
+    /// to their canonical env vars — the caller controls the exact key
+    /// and resolution order.
+    ///
+    /// `source_hint` controls the resolution order:
+    /// - `Some("env")` — only check environment variables
+    /// - `Some("keyring")` — only check the keyring/file store
+    /// - `None` — try the store first, then fall back to environment
+    #[must_use]
+    pub fn resolve_direct(&self, key: &str, source_hint: Option<&str>) -> Option<String> {
+        match source_hint {
+            Some("env") => {
+                // Only check process environment — skip the store entirely.
+                std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+            }
+            Some("keyring") | Some("file") => {
+                // Only check the store backend.
+                self.store
+                    .get(key)
+                    .ok()
+                    .flatten()
+                    .filter(|v| !v.trim().is_empty())
+            }
+            Some(_) | None => {
+                // Default: store first, then env fallback.
+                if let Ok(Some(v)) = self.store.get(key)
+                    && !v.trim().is_empty()
+                {
+                    return Some(v);
+                }
+                std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+            }
+        }
+    }
 }
 
 /// Map a canonical provider name to its environment variable(s), returning
@@ -754,6 +850,7 @@ pub fn env_for(name: &str) -> Option<String> {
         "vllm" | "v-llm" => &["VLLM_API_KEY"],
         "ollama" | "ollama-local" => &["OLLAMA_API_KEY"],
         "openai" => &["OPENAI_API_KEY"],
+        "anthropic" | "claude" => &["ANTHROPIC_API_KEY"],
         "atlascloud" | "atlas-cloud" | "atlas_cloud" | "atlas" => &["ATLASCLOUD_API_KEY"],
         "volcengine" | "volcengine-ark" | "volcengine_ark" | "ark" | "volc-ark"
         | "volcengineark" => &[
@@ -767,6 +864,7 @@ pub fn env_for(name: &str) -> Option<String> {
             "WANJIE_API_KEY",
             "WANJIE_MAAS_API_KEY",
         ],
+        "sakana" | "sakana-ai" | "sakana_ai" | "fugu" => &["FUGU_API_KEY", "SAKANA_API_KEY"],
         _ => return None,
     };
     for var in candidates {
@@ -795,7 +893,7 @@ mod tests {
 
     fn clear_known_envs() {
         for var in [
-            "CODEWHALE_HOME",
+            "DEEPSEEK_HOME",
             "DEEPSEEK_API_KEY",
             "OPENROUTER_API_KEY",
             "NOVITA_API_KEY",
@@ -815,6 +913,8 @@ mod tests {
             "XIAOMI_MIMO_API_KEY",
             "XIAOMI_API_KEY",
             "MIMO_API_KEY",
+            "FUGU_API_KEY",
+            "SAKANA_API_KEY",
             SECRET_BACKEND_ENV,
             LEGACY_SECRET_BACKEND_ENV,
         ] {
@@ -947,7 +1047,7 @@ mod tests {
         let custom = tmp.path().join("custom-deepseek");
         let _home = EnvVarGuard::set("HOME", tmp.path());
         let _userprofile = EnvVarGuard::set("USERPROFILE", tmp.path());
-        let _deepseek_home = EnvVarGuard::set("CODEWHALE_HOME", &custom);
+        let _deepseek_home = EnvVarGuard::set("DEEPSEEK_HOME", &custom);
 
         let path = FileKeyringStore::default_path().unwrap();
 
@@ -1123,6 +1223,24 @@ mod tests {
         assert_eq!(env_for("atlascloud").as_deref(), Some("atlas-key"));
         assert_eq!(env_for("atlas").as_deref(), Some("atlas-key"));
         assert_eq!(env_for("atlas-cloud").as_deref(), Some("atlas-key"));
+
+        clear_known_envs();
+    }
+
+    #[test]
+    fn sakana_env_aliases_resolve() {
+        let _guard = env_lock();
+        clear_known_envs();
+        unsafe { std::env::set_var("FUGU_API_KEY", "fugu-key") };
+
+        assert_eq!(env_for("sakana").as_deref(), Some("fugu-key"));
+        assert_eq!(env_for("sakana-ai").as_deref(), Some("fugu-key"));
+        assert_eq!(env_for("sakana_ai").as_deref(), Some("fugu-key"));
+        assert_eq!(env_for("fugu").as_deref(), Some("fugu-key"));
+
+        clear_known_envs();
+        unsafe { std::env::set_var("SAKANA_API_KEY", "sakana-key") };
+        assert_eq!(env_for("sakana").as_deref(), Some("sakana-key"));
 
         clear_known_envs();
     }

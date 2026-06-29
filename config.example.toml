@@ -15,12 +15,12 @@
 # `/provider nvidia-nim` (or `--provider openai`, `--provider wanjie-ark`,
 # `--provider volcengine`, `--provider openrouter`, `--provider xiaomi-mimo`,
 # `--provider fireworks`, `--provider siliconflow`, `--provider siliconflow-CN`,
-# `/provider arcee`, `/provider moonshot`, `/provider sglang`, `/provider vllm`,
-# `/provider ollama`, `/provider huggingface`) toggle without having to re-enter keys. Top-level
+# `/provider arcee`, `/provider moonshot`, `/provider qianfan`, `/provider sglang`, `/provider vllm`,
+# `/provider ollama`, `/provider huggingface`, `/provider stepfun`, `/provider openmodel`) toggle without having to re-enter keys. Top-level
 # `api_key` / `base_url` are
 # still read as DeepSeek defaults when `[providers.deepseek]` is absent
 # (backward compatibility).
-provider = "deepseek" # deepseek | deepseek-cn | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | sglang | vllm | ollama | huggingface
+provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | huggingface | together | qianfan | openai-codex | anthropic | openmodel | deepinfra | sakana
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
 base_url = "https://api.deepseek.com/beta"
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
@@ -41,6 +41,13 @@ base_url = "https://api.deepseek.com/beta"
 #   arcee-ai/trinity-large-thinking — OpenRouter Arcee Trinity Large Thinking
 #   xiaomi/mimo-v2.5-pro          — OpenRouter Xiaomi MiMo 2.5 Pro
 #   xiaomi/mimo-v2.5              — OpenRouter Xiaomi MiMo 2.5
+#   z-ai/glm-5.1                  — OpenRouter Z.AI GLM 5.1
+#   z-ai/glm-5.2                  — OpenRouter Z.AI GLM 5.2 (default)
+#   z-ai/glm-5-turbo              — OpenRouter Z.AI GLM 5 Turbo (faster/explore sub-agent sibling)
+#   GLM-5.2                       — default direct Z.AI Coding Plan model
+#   GLM-5.1                       — direct Z.AI smaller model
+#   GLM-5-Turbo                   — direct Z.AI fast model (faster/explore sub-agent sibling)
+#   step-3.7-flash                — default direct StepFun / StepFlash model ID
 #   kimi-k2.6                       — default Moonshot/Kimi model ID
 #   gpt-4.1                         — default generic OpenAI-compatible model ID
 #   deepseek-ai/deepseek-v4-flash   — default AtlasCloud model ID
@@ -97,7 +104,9 @@ check_for_updates = true
 #   5 mode.yolo         6 palette.open      7 sidebar.toggle   8 trust.toggle
 #
 # Invalid slots are skipped with a warning, duplicate slots use the last entry,
-# and unknown actions are preserved so the UI can show a disabled placeholder.
+# and unknown actions are preserved so the UI can show a disabled entry.
+# Slash commands can be bound as slash.<name>, for example slash.mode. Commands
+# that require arguments pre-fill the composer instead of running incomplete.
 #
 # [[hotbar]]
 # slot = 1
@@ -107,6 +116,11 @@ check_for_updates = true
 # [[hotbar]]
 # slot = 2
 # action = "session.compact"
+#
+# [[hotbar]]
+# slot = 3
+# label = "mode"
+# action = "slash.mode"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Paths
@@ -167,20 +181,63 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 # prompt_suggestion = true  # opt-in: show ghost-text follow-up question in composer after each turn
 
 # Typed permission rules live in a sibling `permissions.toml` file, not in
-# config.toml. This shape is ask-only and feeds the execution policy engine;
-# allow/deny records, glob expansion, and UI persistence are intentionally out
-# of scope here.
+# config.toml. Each `[[rules]]` entry accepts `tool`, optional `command`
+# or `path`, and an `action` field: `"deny"`, `"ask"` (default), or `"allow"`.
+# Deny always wins over ask, which wins over allow.  Globs, broad directory
+# rules, and a rule editor/deleter UI are future work.
+#
+# In supported approval cards, press `S` to approve once and save exact rules
+# (currently saved as ask-only; deny/allow UI save is future work):
+#   exec_shell  -> exact approved command string
+#   write_file  -> exact workspace-relative target path
+#   edit_file   -> exact workspace-relative target path
+#   apply_patch -> one exact workspace-relative path per validated touched file
+# `read_file` rules can be written manually, but the approval UI does not save
+# them.
 #
 # Example ~/.deepseek/permissions.toml:
 #
 # [[rules]]
 # tool = "exec_shell"
 # command = "cargo test"
+# action = "ask"
+#
+# # Block dangerous commands
+# [[rules]]
+# tool = "exec_shell"
+# command = "sed"
+# action = "deny"
+#
+# [[rules]]
+# tool = "exec_shell"
+# command = "awk"
+# action = "deny"
+#
+# # Allow trusted commands without asking
+# [[rules]]
+# tool = "exec_shell"
+# command = "git status"
+# action = "allow"
+#
+# # Path-based deny
+# [[rules]]
+# tool = "write_file"
+# path = "src/main.rs"
+# action = "deny"
+#
+# [[rules]]
+# tool = "edit_file"
+# path = "src/lib.rs"
+# action = "ask"
+#
+# [[rules]]
+# tool = "apply_patch"
+# path = "src/patch-target.rs"
 #
 # [[rules]]
 # tool = "read_file"
 # path = "secrets/api_key.txt"
-
+# action = "deny"
 # ─────────────────────────────────────────────────────────────────────────────────
 # External Sandbox Backend (pluggable remote execution)
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -239,6 +296,15 @@ max_subagents = 10 # optional (1-20)
 # [subagents]
 # max_concurrent = 10
 # api_timeout_secs = 120 # per-step API timeout, clamped to 1..=1800
+#
+# How many levels of nested sub-agents the `agent` tool may spawn:
+#   max_depth = 0   # opt out completely — the agent never spawns sub-agents
+#   max_depth = 1   # the agent may spawn sub-agents, but those may not spawn more
+#   max_depth = 2   # one more level of nesting, etc.
+# Unset defaults to 3; any value is clamped to the hard ceiling (3). The depth
+# limit is enforced in code, not requested of the model — a sub-agent past the
+# limit cannot be spawned regardless of what the model decides.
+# max_depth = 3
 
 # Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
 # managed_config_path = "/etc/deepseek/managed_config.toml"
@@ -253,6 +319,7 @@ max_subagents = 10 # optional (1-20)
 # `--provider siliconflow` / `/provider arcee` / `/provider moonshot`
 # switches between them without having to re-enter keys. Env vars override anything set here:
 #   DeepSeek: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+#   DeepSeek Anthropic-compatible: DEEPSEEK_API_KEY, DEEPSEEK_ANTHROPIC_BASE_URL
 #   NIM:      NVIDIA_API_KEY (or NVIDIA_NIM_API_KEY), NIM_BASE_URL
 #             (or NVIDIA_NIM_BASE_URL / NVIDIA_BASE_URL), NVIDIA_NIM_MODEL
 #   OpenAI-compatible: OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
@@ -269,7 +336,8 @@ max_subagents = 10 # optional (1-20)
 #   SGLang:    SGLANG_BASE_URL, SGLANG_MODEL, optional SGLANG_API_KEY
 #   vLLM:      VLLM_BASE_URL, VLLM_MODEL, optional VLLM_API_KEY
 #   Ollama:    OLLAMA_BASE_URL, OLLAMA_MODEL, optional OLLAMA_API_KEY
-#   Hugging Face: HUGGINGFACE_API_KEY (or HF_TOKEN), HUGGINGFACE_BASE_URL (or HF_BASE_URL), HUGGINGFACE_MODEL (or HF_MODEL)
+#   Hugging Face: HUGGINGFACE_API_KEY (or HF_TOKEN), HUGGINGFACE_BASE_URL (or HF_BASE_URL),
+#                 HUGGINGFACE_MODEL (or HF_MODEL)
 #
 # Custom DeepSeek-compatible APIs usually do not need a new provider table:
 # set `provider = "deepseek"` and override [providers.deepseek].base_url/model.
@@ -295,6 +363,17 @@ max_subagents = 10 # optional (1-20)
 # model = "deepseek-ai/DeepSeek-V4-Pro"
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" } # optional custom request headers
 # path_suffix = "/chat/completions" # override the API path; skips /v1 versioning when set
+# reasoning_stream_style = "inline_tags" # route <think>...</think> content into Thinking cells
+
+# DeepSeek Anthropic-compatible Messages route (opt-in)
+# [providers.deepseek_anthropic]
+# api_key = "YOUR_DEEPSEEK_API_KEY"
+# base_url = "https://api.deepseek.com/anthropic"
+# model = "deepseek-v4-pro"
+# [providers.deepseek.auth] # provider-scoped auth source metadata; command execution lands in a follow-up slice
+# source = "command"
+# command = ["secret-tool", "lookup", "service", "deepseek-deepseek"]
+# timeout_ms = 2000
 # insecure_skip_tls_verify = true # last resort for private gateways; prefer SSL_CERT_FILE
 
 # NVIDIA NIM-hosted DeepSeek V4 (https://build.nvidia.com)
@@ -314,6 +393,10 @@ max_subagents = 10 # optional (1-20)
 # Gateway example:
 # base_url = "https://gateway.example/v1"
 # model = "your-deepseek-compatible-model"
+# Alibaba Bailian / Model Studio DashScope OpenAI-compatible example:
+# base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+# model = "qwen-plus"
+# context_window = 1000000 # set the gateway/model's real total context window
 # insecure_skip_tls_verify = true # last resort for private gateways; prefer SSL_CERT_FILE
 
 # AtlasCloud OpenAI-compatible endpoint (https://www.atlascloud.ai/docs/models/llm)
@@ -339,11 +422,16 @@ max_subagents = 10 # optional (1-20)
 # api_key = "YOUR_OPENROUTER_API_KEY"
 # base_url = "https://openrouter.ai/api/v1"
 # model = "deepseek/deepseek-v4-pro"
+# OpenRouter-compatible gateways can reuse this provider so reasoning/cache
+# parsing stays on the OpenRouter-compatible path instead of generic OpenAI:
+# base_url = "https://openrouter-compatible.example/v1"
+# model = "deepseek/deepseek-v4-pro"
 # Recent large model IDs also accepted here include arcee-ai/trinity-large-thinking,
-# xiaomi/mimo-v2.5-pro, qwen/qwen3.6-flash, qwen/qwen3.6-35b-a3b,
-# qwen/qwen3.6-max-preview, qwen/qwen3.6-27b, qwen/qwen3.6-plus,
-# google/gemma-4-31b-it, z-ai/glm-5.1, moonshotai/kimi-k2.6, and
-# nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free.
+# minimax/minimax-m3, minimax/minimax-m2.7, xiaomi/mimo-v2.5-pro, qwen/qwen3.6-flash,
+# qwen/qwen3.6-35b-a3b, qwen/qwen3.6-max-preview, qwen/qwen3.6-27b, qwen/qwen3.6-plus,
+# qwen/qwen3.7-max, google/gemma-4-31b-it, z-ai/glm-5.1, z-ai/glm-5.2,
+# moonshotai/kimi-k2.6,
+# nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free, and nvidia/nemotron-3-ultra.
 
 # Xiaomi MiMo OpenAI-compatible endpoint (https://platform.xiaomimimo.com)
 [providers.xiaomi_mimo]
@@ -363,7 +451,7 @@ max_subagents = 10 # optional (1-20)
 # Novita AI-hosted inference (https://novita.ai)
 [providers.novita]
 # api_key = "YOUR_NOVITA_API_KEY"
-# base_url = "https://api.novita.ai/v1"
+# base_url = "https://api.novita.ai/openai/v1"
 # model = "deepseek/deepseek-v4-pro"         # or deepseek/deepseek-v4-flash
 
 # Fireworks AI-hosted DeepSeek V4 (https://fireworks.ai)
@@ -377,6 +465,13 @@ max_subagents = 10 # optional (1-20)
 # api_key = "YOUR_SILICONFLOW_API_KEY"
 # base_url = "https://api.siliconflow.com/v1"
 # model = "deepseek-ai/DeepSeek-V4-Pro"     # or deepseek-ai/DeepSeek-V4-Flash
+
+# SiliconFlow China-hosted DeepSeek V4 (https://siliconflow.cn)
+# Falls back to [providers.siliconflow] for api_key / base_url / model when unset.
+[providers.siliconflow-CN]
+# api_key = "YOUR_SILICONFLOW_API_KEY"
+# base_url = "https://api.siliconflow.cn/v1"
+# model = "deepseek-ai/DeepSeek-V4-Pro"
 
 # Arcee AI direct OpenAI-compatible endpoint (https://docs.arcee.ai)
 [providers.arcee]
@@ -392,7 +487,29 @@ max_subagents = 10 # optional (1-20)
 # # Kimi Code path:
 # # base_url = "https://api.kimi.com/coding/v1"
 # # model = "kimi-for-coding"
-# # auth_mode = "kimi_oauth"                   # reads Kimi CLI OAuth credentials
+# # auth_mode = "kimi_oauth"                   # reads Kimi Code OAuth credentials
+
+# Z.AI GLM Coding Plan endpoint (https://docs.z.ai)
+[providers.zai]
+# api_key = "YOUR_ZAI_API_KEY"                 # or Z_AI_API_KEY
+# base_url = "https://api.z.ai/api/coding/paas/v4"
+# # General API endpoint, if you are not using the Coding Plan:
+# # base_url = "https://api.z.ai/api/paas/v4"
+# model = "GLM-5.2"                             # default; GLM-5.1 is the smaller model, GLM-5-Turbo the fast sub-agent sibling
+
+# StepFun / StepFlash direct OpenAI-compatible endpoint (https://platform.stepfun.com)
+[providers.stepfun]
+# api_key = "YOUR_STEPFUN_API_KEY"               # or STEP_API_KEY
+# base_url = "https://api.stepfun.ai/v1"          # or STEP_BASE_URL
+# model = "step-3.7-flash"                       # or STEPFUN_MODEL / STEP_MODEL
+
+# MiniMax direct OpenAI-compatible endpoint (https://platform.minimax.io)
+[providers.minimax]
+# api_key = "YOUR_MINIMAX_API_KEY"
+# base_url = "https://api.minimax.io/v1"
+# model = "MiniMax-M3"                          # or MiniMax-M2.7, MiniMax-M2.7-highspeed
+# # MiniMax also publishes Anthropic-compatible endpoints:
+# # global https://api.minimax.io/anthropic, China https://api.minimaxi.com/anthropic.
 
 # Self-hosted SGLang OpenAI-compatible server
 [providers.sglang]
@@ -417,6 +534,7 @@ max_subagents = 10 # optional (1-20)
 # base_url = "https://router.shengsuanyun.com/api/v1"
 # model = "deepseek/deepseek-v4-pro"
 # Hugging Face Inference Providers (https://huggingface.co/docs/api-inference)
+# Provider aliases: huggingface, hugging-face, hugging_face, hf
 # Env var aliases: HUGGINGFACE_API_KEY / HF_TOKEN, HUGGINGFACE_BASE_URL / HF_BASE_URL,
 #                  HUGGINGFACE_MODEL / HF_MODEL
 [providers.huggingface]
@@ -424,37 +542,106 @@ max_subagents = 10 # optional (1-20)
 # base_url = "https://router.huggingface.co/v1"
 # model = "deepseek-ai/DeepSeek-V4-Pro"     # or deepseek-ai/DeepSeek-V4-Flash
 
+# DeepInfra — AI inference cloud (https://deepinfra.com)
+[providers.deepinfra]
+# api_key = "YOUR_DEEPINFRA_TOKEN"
+# base_url = "https://api.deepinfra.com/v1/openai"
+# model = "deepseek-ai/DeepSeek-V4-Pro"     # or deepseek-ai/DeepSeek-V4-Flash
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Sakana AI Fugu Provider (https://api.sakana.ai)
+# Provider aliases: sakana, sakana-ai, sakana_ai, fugu
+# Env var aliases: FUGU_API_KEY, SAKANA_API_KEY
+[providers.sakana]
+# api_key = "YOUR_FUGU_API_KEY"
+# base_url = "https://api.sakana.ai/v1"
+# model = "fugu"                            # or fugu-ultra-20260615
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Together AI Provider (https://www.together.ai/)
+# Env var aliases: TOGETHER_API_KEY, TOGETHER_BASE_URL, TOGETHER_MODEL
+[providers.together]
+# api_key = "YOUR_TOGETHER_API_KEY"
+# base_url = "https://api.together.xyz/v1"
+# model = "deepseek-ai/DeepSeek-V4-Pro"     # or deepseek-ai/DeepSeek-V4-Flash
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Baidu Qianfan Provider (https://intl.cloud.baidu.com/product/qianfan.html)
+# Provider aliases: qianfan, baidu-qianfan, baidu_qianfan, baidu
+# Env var aliases: QIANFAN_API_KEY / BAIDU_QIANFAN_API_KEY,
+#                  QIANFAN_BASE_URL / BAIDU_QIANFAN_BASE_URL,
+#                  QIANFAN_MODEL / BAIDU_QIANFAN_MODEL
+[providers.qianfan]
+# api_key = "YOUR_QIANFAN_API_KEY"
+# base_url = "https://api.baiduqianfan.ai/v1"
+# model = "ernie-4.0-turbo-8k"              # or your Qianfan service/model id
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# OpenAI Codex (ChatGPT) Provider — EXPERIMENTAL
+# Reuses your existing ChatGPT/Codex CLI OAuth login. Run `codex login` first;
+# DeepSeek reads and refreshes the access token from ~/.codex/auth.json. No API
+# key is stored here. Talks to the OpenAI Responses API at /codex/responses.
+# Env var aliases: OPENAI_CODEX_ACCESS_TOKEN / CODEX_ACCESS_TOKEN (token override),
+#   OPENAI_CODEX_BASE_URL / CODEX_BASE_URL, OPENAI_CODEX_MODEL / CODEX_MODEL,
+#   OPENAI_CODEX_ACCOUNT_ID / CODEX_ACCOUNT_ID, OPENAI_CODEX_AUTH_FILE, CODEX_HOME
+[providers.openai_codex]
+# base_url = "https://chatgpt.com/backend-api"
+# model = "gpt-5.5"
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Anthropic Provider (native Messages API)
+# Talks to https://api.anthropic.com/v1/messages with x-api-key auth — not an
+# OpenAI-compatible route. Models: claude-opus-4-8, claude-sonnet-4-6 (default),
+# claude-haiku-4-5. Env vars: ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL,
+# ANTHROPIC_MODEL.
+[providers.anthropic]
+# api_key = "sk-ant-..."
+# base_url = "https://api.anthropic.com"
+# model = "claude-sonnet-4-6"
+
+# OpenModel Provider (Anthropic-compatible Messages API)
+# Talks to https://api.openmodel.ai/v1/messages with Bearer auth. OpenModel
+# routes DeepSeek, DashScope, Xiaomi, Claude, and other models by model id.
+# Env vars: OPENMODEL_API_KEY, OPENMODEL_BASE_URL, OPENMODEL_MODEL.
+[providers.openmodel]
+# api_key = "om-..."
+# base_url = "https://api.openmodel.ai"
+# model = "deepseek-v4-flash"
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Web Search Provider
 # ─────────────────────────────────────────────────────────────────────────────────
 # Choose which backend `web_search` uses. Default is DuckDuckGo HTML scraping
 # with Bing fallback — no API key needed. Bing remains selectable for users who
-# explicitly prefer it. Switch to Tavily, Bocha, Metaso, or Baidu for
-# API-backed search.
+# explicitly prefer it. Switch to Tavily, Bocha, Metaso, Baidu, Volcengine,
+# Sofya, or a trusted SearXNG instance for API-backed search.
 #
 # [search]
-# provider = "duckduckgo"  # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine | sofya
+# provider = "duckduckgo"  # duckduckgo | bing | tavily | bocha | metaso | searxng | baidu | volcengine | sofya
 #                            # duckduckgo: HTML scrape with Bing fallback
 #                            # bing:       HTML scrape, no API key
 #                            # tavily:     https://tavily.com — AI search, needs api_key
 #                            # bocha:      https://bochaai.com — 博查AI搜索，国内友好，需api_key
 #                            # metaso:     https://metaso.cn — 秘塔AI搜索，每天 100 次免费
 #                            #             设置 METASO_API_KEY 或 [search] api_key 可提升额度
+#                            # searxng:    https://docs.searxng.org — trusted/self-hosted JSON API,
+#                            #             set base_url; no public instance is used by default
 #                            # baidu:      百度 AI Search via qianfan.baidubce.com，需 api_key
 #                            # volcengine: 火山引擎 Ark web_search (免费 2 万次/月), 需 api_key
 #                            #             也回退到 VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY 环境变量
 #                            # sofya:      https://sofya.co — AI search returning full page
 #                            #             content (not snippets), needs api_key (ay_live_...);
 #                            #             also falls back to the SOFYA_API_KEY env var
-# base_url = "https://search.example/html/" # optional DuckDuckGo-compatible HTML endpoint
-# api_key = "YOUR_SEARCH_KEY" # required for tavily, bocha, baidu, volcengine, and sofya; optional for metaso
+# base_url = "https://search.example/" # optional DuckDuckGo-compatible HTML endpoint;
+#                                      # required SearXNG root or /search endpoint
+# api_key = "YOUR_SEARCH_KEY" # required for tavily, bocha, baidu, volcengine, and sofya; optional for metaso; unused by searxng
 #                             # WARNING: treat config.toml like a secret file when
 #                             # storing API keys. Prefer env vars for local smoke tests.
 #
 # Env-var overrides:
 #   DEEPSEEK_SEARCH_PROVIDER → search.provider
 #   DEEPSEEK_SEARCH_API_KEY  → search.api_key
-#   CODEWHALE_SEARCH_BASE_URL → search.base_url
+#   DEEPSEEK_SEARCH_BASE_URL → search.base_url
 #   DEEPSEEK_SEARCH_BASE_URL  → search.base_url (legacy alias)
 #   METASO_API_KEY           → metaso key fallback
 #   BAIDU_SEARCH_API_KEY     → baidu key fallback
@@ -485,6 +672,17 @@ max_subagents = 10 # optional (1-20)
 # audit = true            # one line per call to ~/.deepseek/audit.log
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Verifier preview (#2093)
+# ─────────────────────────────────────────────────────────────────────────────────
+# Enables automatic claim-of-done verifier preview once the runtime trigger is
+# active. Manual `run_verifiers` remains available even when this is false.
+# The shipped policy maps pass/partial/fail to hunted/wounded/escaped.
+#
+# [verifier]
+# enabled = false
+# verdict_policy = "hunt"
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Skills (#140)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Settings for the `/skill install <spec>` community-skill installer.
@@ -502,6 +700,7 @@ max_subagents = 10 # optional (1-20)
 # [skills]
 # registry_url = "https://raw.githubusercontent.com/coohu/deepseek-skills/main/index.json"
 # max_install_size_bytes = 5_242_880
+# scan_deepseek_only = false # true: ignore Claude/OpenCode/Cursor/agentskills.io skill dirs
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # TUI
@@ -516,9 +715,9 @@ osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTer
 # built-in default; set [] to hide all configurable chips. You can also edit
 # this interactively with `/statusline`.
 # Supported keys: mode, model, cost, balance (DeepSeek / DeepSeekCN only),
-# status, coherence, agents,
+# status, agents,
 # reasoning_replay, prefix_stability, cache, context_percent, git_branch,
-# last_tool_elapsed (placeholder), rate_limit (placeholder), tokens.
+# last_tool_elapsed (reserved), rate_limit (reserved), tokens.
 # status_items = ["mode", "model", "status", "git_branch", "tokens", "cache"]
 # notification_condition = "always" # always | never — overrides [notifications].threshold_secs.
 #                                    "always" = notify on every successful turn (no threshold);
@@ -742,6 +941,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 #   python     → pyright-langserver --stdio
 #   typescript → typescript-language-server --stdio
 #   java       → jdtls
+#   php        → intelephense --stdio
 #   vue        → vue-language-server --stdio
 #   c, cpp     → clangd
 #
@@ -749,6 +949,23 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # not required, and installing IntelliJ IDEA alone does not install `jdtls`.
 #
 # Override the defaults via the `servers` table below.
+#
+# For languages not in the built-in list (Ruby, C#, Swift, etc.), use
+# `[lsp.custom.<ext>]` to register a language server:
+#
+# [lsp.custom.rb]
+# command = "ruby-lsp"
+# args = ["--stdio"]
+# language_id = "ruby"
+#
+# [lsp.custom.cs]
+# command = "csharp-ls"
+# args = []
+# language_id = "csharp"
+#
+# [lsp.custom.swift]
+# command = "sourcekit-lsp"
+# language_id = "swift"
 [lsp]
 # enabled = true
 # poll_after_edit_ms = 5000
@@ -758,6 +975,7 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # rust = ["rust-analyzer"]
 # go = ["gopls", "serve"]
 # java = ["jdtls"]
+# php = ["intelephense", "--stdio"]
 # vue = ["vue-language-server", "--stdio"]
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -876,8 +1094,59 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # LOGFILE="$LOGDIR/exec_shell.log"
 # input=$(cat)
 # echo "[$(date -Iseconds)] $input" >> "$LOGFILE"
-# printf '%s\n' '{"content":"audit wrapper placeholder: configure an executor","success":false}'
+# printf '%s\n' '{"content":"audit wrapper dry run: configure an executor","success":false}'
 # ```
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Agent Fleet trust, security, and role registry (#3165, #3167)
+# ─────────────────────────────────────────────────────────────────────────────────
+# [fleet]
+# # Default trust level for fleet workers: "sandbox" | "local" | "remote-verified" | "operator"
+# default_trust_level = "sandbox"
+# # Require SSH host-key verification before granting remote-verified trust
+# require_identity_verification = true
+# # Maximum trust level any worker may have
+# max_trust_level = "operator"
+#
+# # Headless worker execution hardening (#3027)
+# [fleet.exec]
+# # Tools always allowed regardless of role
+# allowed_tools = []
+# # Tools always disallowed (overrides role and task spec)
+# disallowed_tools = ["exec_shell"]
+# # Hard ceiling on worker steps (tool calls + model turns)
+# max_turns = 500
+# # Recursive child-agent depth for fleet workers. Shares ONE recursion axis
+# # with standalone sub-agents (a fleet worker IS a headless sub-agent).
+# # 0 blocks child agents (the root worker still runs); 3 is the default and the
+# # cap, affording at least three nested delegation levels.
+# max_spawn_depth = 3
+# # Extra system prompt injected into every headless worker
+# append_system_prompt = "Never modify .git/config or change remotes."
+# # Output format: "text" (default) or "stream-json" for ndjson events
+# output_format = "text"
+#
+# # Built-in role presets are always available: smoke-runner, reviewer, builder, read-only.
+# # User-defined roles here override or extend the built-in set. Any key under
+# # [fleet.roles] becomes a valid role name that task specs can reference.
+# [fleet.roles.ci-linter]
+# description = "Runs linters and formatters"
+# tool_profile = "read-only"
+# tools = ["cargo", "cargo-clippy", "cargo-fmt"]
+# capabilities = ["rust"]
+# max_tokens = 12000
+# max_tool_calls = 20
+# timeout_seconds = 600
+#
+# [fleet.roles.pr-reviewer]
+# description = "Reviews PRs with GitHub access"
+# tool_profile = "read-only"
+# tools = ["git", "gh", "rg"]
+# capabilities = ["git", "github"]
+# max_tokens = 16000
+# max_tool_calls = 30
+# timeout_seconds = 900
+# trust_level = "local"
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Requirements (admin constraints) example file

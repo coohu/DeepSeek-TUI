@@ -106,7 +106,7 @@ impl HarnessBuilder {
                 .env("XDG_DATA_HOME", home.join(".local/share").to_string_lossy())
                 .env("XDG_CACHE_HOME", home.join(".cache").to_string_lossy())
                 .env("USERPROFILE", home.to_string_lossy())
-                .env("CODEWHALE_CONFIG_PATH", deepseek_config.to_string_lossy())
+                .env("DEEPSEEK_CONFIG_PATH", deepseek_config.to_string_lossy())
                 .env("DEEPSEEK_CONFIG_PATH", deepseek_config.to_string_lossy());
         }
         for (k, v) in &self.env {
@@ -236,6 +236,11 @@ impl Harness {
     /// Best-effort cooperative shutdown.
     pub fn shutdown(self) -> Option<i32> {
         self.pty.shutdown(Duration::from_secs(2))
+    }
+
+    /// Wait for the child process to exit without sending it a signal.
+    pub fn wait_for_exit(&mut self, timeout: Duration) -> Option<i32> {
+        self.pty.wait_until(Instant::now() + timeout)
     }
 
     pub fn debug_dump(&mut self) -> String {

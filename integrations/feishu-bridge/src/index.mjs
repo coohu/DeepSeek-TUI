@@ -1,5 +1,3 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
 
 import {
@@ -20,67 +18,11 @@ import {
   splitMessage,
   stripGroupPrefix
 } from "./lib.mjs";
+import { ThreadStore as CoreThreadStore } from "../../bridge-core/src/lib.mjs";
 
-class ThreadStore {
-  static async open(filePath) {
-    const store = new ThreadStore(filePath);
-    await store.load();
-    return store;
-  }
-
+class ThreadStore extends CoreThreadStore {
   constructor(filePath) {
-    this.filePath = filePath;
-    this.data = { chats: {} };
-  }
-
-  async load() {
-    try {
-      const raw = await fs.readFile(this.filePath, "utf8");
-      this.data = JSON.parse(raw);
-      if (!this.data.chats) this.data.chats = {};
-      if (!this.data.messages) this.data.messages = [];
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-  }
-
-  async recordMessage(messageId) {
-    if (!messageId) return false;
-    if (!Array.isArray(this.data.messages)) this.data.messages = [];
-    if (this.data.messages.includes(messageId)) return true;
-    this.data.messages.push(messageId);
-    this.data.messages = this.data.messages.slice(-200);
-    await this.save();
-    return false;
-  }
-
-  async getChat(chatId) {
-    return this.data.chats[chatId] || null;
-  }
-
-  listChats() {
-    return Object.entries(this.data.chats || {});
-  }
-
-  async setChat(chatId, state) {
-    this.data.chats[chatId] = state;
-    await this.save();
-    return state;
-  }
-
-  async patchChat(chatId, patch) {
-    const current = this.data.chats[chatId] || {};
-    this.data.chats[chatId] = { ...current, ...patch };
-    await this.save();
-    return this.data.chats[chatId];
-  }
-
-  async save() {
-    const dir = path.dirname(this.filePath);
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${this.filePath}.tmp`;
-    await fs.writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
-    await fs.rename(tmp, this.filePath);
+    super(filePath, { messageLimit: 200 });
   }
 }
 
@@ -88,16 +30,16 @@ const config = {
   appId: requiredEnv("FEISHU_APP_ID"),
   appSecret: requiredEnv("FEISHU_APP_SECRET"),
   domain: process.env.FEISHU_DOMAIN || "feishu",
-  runtimeUrl: (process.env.DEEPSEEK_RUNTIME_URL || "http://127.0.0.1:7878").replace(/\/+$/, ""),
-  runtimeToken: requiredEnv("DEEPSEEK_RUNTIME_TOKEN"),
-  workspace: process.env.DEEPSEEK_WORKSPACE || process.cwd(),
-  model: process.env.DEEPSEEK_MODEL || "auto",
-  mode: process.env.DEEPSEEK_MODE || "agent",
-  allowShell: parseBool(process.env.DEEPSEEK_ALLOW_SHELL, true),
-  trustMode: parseBool(process.env.DEEPSEEK_TRUST_MODE, false),
-  autoApprove: parseBool(process.env.DEEPSEEK_AUTO_APPROVE, false),
-  allowlist: parseList(process.env.DEEPSEEK_CHAT_ALLOWLIST),
-  allowUnlisted: parseBool(process.env.DEEPSEEK_ALLOW_UNLISTED, false),
+  runtimeUrl: (process.env.DEEPSEEK_RUNTIME_URL || process.env.DEEPSEEK_RUNTIME_URL || "http://127.0.0.1:7878").replace(/\/+$/, ""),
+  runtimeToken: process.env.DEEPSEEK_RUNTIME_TOKEN || process.env.DEEPSEEK_RUNTIME_TOKEN || requiredEnv("DEEPSEEK_RUNTIME_TOKEN"),
+  workspace: process.env.DEEPSEEK_WORKSPACE || process.env.DEEPSEEK_WORKSPACE || process.cwd(),
+  model: process.env.DEEPSEEK_MODEL || process.env.DEEPSEEK_MODEL || "auto",
+  mode: process.env.DEEPSEEK_MODE || process.env.DEEPSEEK_MODE || "agent",
+  allowShell: parseBool(process.env.DEEPSEEK_ALLOW_SHELL ?? process.env.DEEPSEEK_ALLOW_SHELL, true),
+  trustMode: parseBool(process.env.DEEPSEEK_TRUST_MODE ?? process.env.DEEPSEEK_TRUST_MODE, false),
+  autoApprove: parseBool(process.env.DEEPSEEK_AUTO_APPROVE ?? process.env.DEEPSEEK_AUTO_APPROVE, false),
+  allowlist: parseList(process.env.DEEPSEEK_CHAT_ALLOWLIST || process.env.DEEPSEEK_CHAT_ALLOWLIST),
+  allowUnlisted: parseBool(process.env.DEEPSEEK_ALLOW_UNLISTED ?? process.env.DEEPSEEK_ALLOW_UNLISTED, false),
   threadMapPath:
     process.env.FEISHU_THREAD_MAP_PATH ||
     "/var/lib/deepseek-feishu-bridge/thread-map.json",
@@ -105,7 +47,7 @@ const config = {
   requirePrefixInGroup: parseBool(process.env.FEISHU_REQUIRE_PREFIX_IN_GROUP, true),
   groupPrefix: process.env.FEISHU_GROUP_PREFIX || "/ds",
   maxReplyChars: Number(process.env.FEISHU_MAX_REPLY_CHARS || 3500),
-  turnTimeoutMs: Number(process.env.DEEPSEEK_TURN_TIMEOUT_MS || 900000)
+  turnTimeoutMs: Number(process.env.DEEPSEEK_TURN_TIMEOUT_MS || process.env.DEEPSEEK_TURN_TIMEOUT_MS || 900000)
 };
 
 const sdkConfig = {

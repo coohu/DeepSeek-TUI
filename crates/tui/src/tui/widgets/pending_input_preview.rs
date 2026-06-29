@@ -24,9 +24,8 @@ use crate::tui::widgets::Renderable;
 
 /// Per-item line cap before we collapse the rest into a `…` overflow row.
 const PREVIEW_LINE_LIMIT: usize = 3;
-const PENDING_STEER_PREFIX: &str = "  ↳ Steer pending: ";
-const REJECTED_STEER_PREFIX: &str = "  ↳ Rejected steer: ";
-const QUEUED_MESSAGE_PREFIX: &str = "  ↳ Queued follow-up: ";
+const PENDING_STEER_PREFIX: &str = "  ↳ Live steer pending: ";
+const REJECTED_STEER_PREFIX: &str = "  ↳ Rejected live steer: ";
 const EDITING_QUEUED_PREFIX: &str = "  ↳ Editing queued follow-up: ";
 
 /// Description of the keybinding the hint line at the bottom should advertise
@@ -153,20 +152,29 @@ impl PendingInputPreview {
                     dim,
                 )]));
             }
-            let queued_message_indent = continuation_indent(QUEUED_MESSAGE_PREFIX);
-            for message in &self.queued_messages {
+            for (idx, message) in self.queued_messages.iter().enumerate() {
+                let row_number = idx + 1;
+                let queued_prefix = format!("  ↳ Queued follow-up #{row_number}: ");
+                let queued_message_indent = continuation_indent(&queued_prefix);
                 push_truncated_item(
                     &mut lines,
                     message,
                     width,
                     dim_italic,
-                    QUEUED_MESSAGE_PREFIX,
+                    &queued_prefix,
                     &queued_message_indent,
                 );
+                lines.push(Line::from(vec![Span::styled(
+                    format!("    /queue send {row_number} · drop {row_number} · clear"),
+                    dim,
+                )]));
             }
             if !self.queued_messages.is_empty() {
                 lines.push(Line::from(vec![Span::styled(
-                    format!("    {} edit last queued message", self.edit_binding.label),
+                    format!(
+                        "    Ctrl+S send now · {} edit last queued",
+                        self.edit_binding.label
+                    ),
                     dim,
                 )]));
             }
@@ -383,11 +391,15 @@ mod tests {
         let mut preview = PendingInputPreview::new();
         preview.queued_messages.push("Hello, world!".to_string());
         let rows = render_to_string(&preview, 40);
-        // Expect: header line, message line, hint line.
-        assert_eq!(rows.len(), 3, "got rows: {rows:?}");
+        // Expect: header line, message line, action line, hint line.
+        assert_eq!(rows.len(), 4, "got rows: {rows:?}");
         assert!(rows[0].contains("Pending inputs"));
         assert!(rows[1].contains("Hello, world!"));
-        assert!(rows[2].contains("edit last queued message"));
+        assert!(rows[2].contains("/queue send 1"));
+        assert!(rows[2].contains("drop 1"));
+        assert!(rows[2].contains("clear"));
+        assert!(rows[3].contains("Ctrl+S send now"));
+        assert!(rows[3].contains("edit last queued"));
     }
 
     #[test]
@@ -409,9 +421,7 @@ mod tests {
             "missing restore hint: {rows:?}"
         );
         assert!(
-            !rows
-                .iter()
-                .any(|row| row.contains("edit last queued message")),
+            !rows.iter().any(|row| row.contains("edit last queued")),
             "editing mode should not also advertise opening a queued edit: {rows:?}"
         );
     }
@@ -476,7 +486,7 @@ mod tests {
             "unexpected Esc hint: {rows:?}"
         );
         assert!(
-            !rows.iter().any(|r| r.contains("edit last queued message")),
+            !rows.iter().any(|r| r.contains("edit last queued")),
             "unexpected edit hint in pending-steer-only view: {rows:?}"
         );
     }
@@ -497,6 +507,7 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("rejected")));
         assert!(rows.iter().any(|r| r.contains("queued")));
         assert!(rows.iter().any(|r| r.contains("↑")));
+        assert!(rows.iter().any(|r| r.contains("Ctrl+S")));
     }
 
     #[test]
@@ -510,17 +521,18 @@ mod tests {
         let rows = render_to_string(&preview, 80);
 
         assert!(
-            rows.iter().any(|row| row.contains("Steer pending: steer")),
+            rows.iter()
+                .any(|row| row.contains("Live steer pending: steer")),
             "missing pending-steer label: {rows:?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("Rejected steer: rejected")),
+                .any(|row| row.contains("Rejected live steer: rejected")),
             "missing rejected-steer label: {rows:?}"
         );
         assert!(
             rows.iter()
-                .any(|row| row.contains("Queued follow-up: queued")),
+                .any(|row| row.contains("Queued follow-up #1: queued")),
             "missing queued-follow-up label: {rows:?}"
         );
         assert!(
@@ -539,9 +551,9 @@ mod tests {
 
         let rows = render_to_string(&preview, 34);
 
-        assert!(rows[1].contains("Queued follow-up: alpha"));
+        assert!(rows[1].contains("Queued follow-up #1: alpha"));
         assert!(
-            rows[2].starts_with(&continuation_indent(QUEUED_MESSAGE_PREFIX)),
+            rows[2].starts_with(&continuation_indent("  ↳ Queued follow-up #1: ")),
             "continuation should align under label: {rows:?}"
         );
         assert!(
@@ -557,14 +569,16 @@ mod tests {
             .queued_messages
             .push("line1\nline2\nline3\nline4\nline5".to_string());
         let rows = render_to_string(&preview, 40);
-        // Header + 3 visible lines + ellipsis row + hint = 6 rows.
-        assert_eq!(rows.len(), 6, "got rows: {rows:?}");
+        // Header + 3 visible lines + ellipsis row + actions + hint = 7 rows.
+        assert_eq!(rows.len(), 7, "got rows: {rows:?}");
         assert!(rows[0].contains("Pending inputs"));
         assert!(rows[1].contains("line1"));
         assert!(rows[2].contains("line2"));
         assert!(rows[3].contains("line3"));
         assert!(rows[4].contains("…"));
-        assert!(rows[5].contains("edit last queued message"));
+        assert!(rows[5].contains("/queue send 1"));
+        assert!(rows[6].contains("Ctrl+S send now"));
+        assert!(rows[6].contains("edit last queued"));
     }
 
     #[test]
@@ -575,9 +589,9 @@ mod tests {
                 .to_string(),
         );
         let rows = render_to_string(&preview, 36);
-        // Header + URL row + hint = 3 rows; the URL must NOT cause a chain of
-        // wrapped-ellipsis rows.
-        assert_eq!(rows.len(), 3, "got rows: {rows:?}");
+        // Header + URL row + action row + hint = 4 rows; the URL must NOT
+        // cause a chain of wrapped-ellipsis rows.
+        assert_eq!(rows.len(), 4, "got rows: {rows:?}");
         assert!(!rows.iter().any(|r| r.contains("…")));
     }
 

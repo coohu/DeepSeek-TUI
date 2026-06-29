@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 :: DeepSeek Windows installer
-:: Copies deepseek.exe and deepseek-tui.exe to %USERPROFILE%\bin
+:: Copies deepseek.exe, codew.exe, and deepseek-tui.exe to %USERPROFILE%\bin
 
 set "BIN_DIR=%USERPROFILE%\bin"
 set "SCRIPT_DIR=%~dp0"
@@ -16,6 +16,12 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
+copy /Y "%SCRIPT_DIR%codew.exe" "%BIN_DIR%\codew.exe" >nul
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Failed to copy codew.exe
+    exit /b 1
+)
+
 copy /Y "%SCRIPT_DIR%deepseek-tui.exe" "%BIN_DIR%\deepseek-tui.exe" >nul
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Failed to copy deepseek-tui.exe
@@ -23,7 +29,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo.
-echo Done. Both binaries installed to %BIN_DIR%.
+echo Done. Commands installed to %BIN_DIR%.
 echo.
 echo Add %BIN_DIR% to your PATH:
 echo   1. Open Start, search "environment variables"

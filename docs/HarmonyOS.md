@@ -46,35 +46,35 @@ CMake toolchain variables for `aarch64-unknown-linux-ohos`.
 
 ## Compiler Wrappers
 
-For ad-hoc compiler calls, use the root wrappers. They read the same
+For ad-hoc compiler calls, use the wrappers in `scripts/ohos/`. They read the same
 `OHOS_NATIVE_SDK` variable and do not contain local paths.
 
 Windows PowerShell:
 
 ```powershell
-.\ohos-clang.ps1 --version
-.\ohos-clangxx.ps1 --version
+.\scripts\ohos\ohos-clang.ps1 --version
+.\scripts\ohos\ohos-clangxx.ps1 --version
 ```
 
 Linux or macOS:
 
 ```bash
-sh ./ohos-clang.sh --version
-sh ./ohos-clangxx.sh --version
+sh ./scripts/ohos/ohos-clang.sh --version
+sh ./scripts/ohos/ohos-clangxx.sh --version
 ```
 
-If you want to run the POSIX wrappers directly as `./ohos-clang.sh`, make them
+If you want to run the POSIX wrappers directly as `./scripts/ohos/ohos-clang.sh`, make them
 executable first:
 
 ```bash
-chmod +x ./ohos-clang.sh ./ohos-clangxx.sh
+chmod +x ./scripts/ohos/ohos-clang.sh ./scripts/ohos/ohos-clangxx.sh
 ```
 
-## Cargo Config
+## Linker And Toolchain Paths
 
-`.cargo/config.toml` intentionally does not set a checked-in linker path.
+The repository does not check in a Cargo linker path or CMake toolchain path.
 Cargo cannot expand environment variables inside `linker` or CMake toolchain
-path values there, so those values are exported by `scripts/ohos-env.ps1` and
+path values, so those values are exported by `scripts/ohos-env.ps1` and
 `scripts/ohos-env.sh` instead.
 
 ## Dependency Guard

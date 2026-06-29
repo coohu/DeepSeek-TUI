@@ -577,6 +577,13 @@ impl ModalView for LiveTranscriptOverlay {
             .block(block)
             .wrap(Wrap { trim: false });
         paragraph.render(popup_area, buf);
+
+        // #3029: same in-band OSC 8 recovery as the main transcript — extract
+        // link regions from the rendered buffer and blank the payload cells.
+        // Append (not replace) so a same-frame main transcript's regions
+        // survive alongside the overlay's.
+        let regions = crate::tui::osc8::extract_buffer_link_regions(buf, popup_area);
+        crate::tui::osc8::append_frame_links(regions);
     }
 }
 

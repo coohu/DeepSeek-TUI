@@ -646,6 +646,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn update_plan_description_keeps_checklist_as_primary_work_progress() {
+        let tool = UpdatePlanTool::new(new_shared_plan_state());
+        let description = tool.description();
+
+        assert!(description.contains("Use checklist_write for primary Work progress"));
+        assert!(description.contains("not duplicate checklist items"));
+        assert!(description.contains("high-level strategy metadata"));
+    }
+
+    #[test]
     fn plan_state_treats_every_artifact_field_as_non_empty() {
         let cases = vec![
             UpdatePlanArgs {

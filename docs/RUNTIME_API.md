@@ -1,22 +1,38 @@
 # Runtime API & Integration Contract
 
-deepseek exposes a local runtime API through `deepseek serve --http` and
-machine-readable health via `deepseek doctor --json`. It also exposes
-`deepseek serve --acp` for editor clients that speak the Agent Client Protocol
-over stdio. This document is the stable integration contract for native macOS
-workbench applications (and other local supervisors) that embed the DeepSeek
-engine without screen-scraping terminal output.
+`deepseek app-server` is the canonical local runtime API and control plane.
+Local SDKs, mobile/remote-control clients, and editor integrations talk to it
+instead of screen-scraping terminal output. It serves the full HTTP/SSE runtime
+API (`/v1/*`), a JSON-RPC control transport over stdio, and the phone-friendly
+mobile page. `deepseek doctor --json` provides machine-readable health, and
+`deepseek serve --acp` speaks the Agent Client Protocol over stdio for editors
+such as Zed.
+
+`deepseek serve --http` / `serve --mobile` remain as **compatibility aliases**
+for `deepseek app-server --http` / `--mobile`; both launch the identical
+server. New integrations should target `app-server`.
+
+`deepseek exec` is the separate one-shot headless worker path (stream-json,
+fleet worker subprocess, CI primitive). It is not part of this API, but it
+shares the same runtime, provider/model resolution, permission profiles, and
+event vocabulary.
+
+This document is the stable integration contract for native workbench
+applications (and other local supervisors) that embed the DeepSeek engine.
 
 ## Architecture
 
 ```
-macOS workbench (or any local supervisor)
+local supervisor / SDK / automation harness
         │
-        ├─ deepseek doctor --json   → machine-readable health & capability
-        ├─ deepseek serve --http    → HTTP/SSE runtime API
-        ├─ deepseek serve --acp     → ACP stdio agent for editors such as Zed
-        ├─ deepseek serve --mcp     → MCP stdio server
-        └─ deepseek [args]          → interactive TUI session
+        ├─ deepseek app-server --http     → HTTP/SSE runtime API (/v1/*)        [canonical]
+        ├─ deepseek app-server --mobile   → runtime API + mobile control page
+        ├─ deepseek app-server --stdio    → JSON-RPC control transport over stdio
+        ├─ deepseek doctor --json         → machine-readable health & capability
+        ├─ deepseek serve --acp           → ACP stdio agent for editors such as Zed
+        ├─ deepseek serve --mcp           → MCP stdio server
+        ├─ deepseek serve --http/--mobile → legacy aliases for `app-server --http/--mobile`
+        └─ deepseek exec [args]           → one-shot headless worker (stream-json)
 ```
 
 The engine runs as a local-only process. All APIs bind to `localhost` by
@@ -25,6 +41,86 @@ default. No hosted relay, no provider-token custody, no secret leakage.
 For a proposed read-only audit export over completed turns, see
 [`docs/RECEIPTS.md`](RECEIPTS.md). That document is a protocol note; the receipt
 CLI/API surfaces are not implemented yet.
+
+## Runtime API entrypoints
+
+| Entry | Transport | Use |
+|---|---|---|
+| `deepseek app-server --http` | HTTP/SSE on `127.0.0.1:7878` | Full `/v1/*` runtime API (canonical) |
+| `deepseek app-server --mobile` | HTTP/SSE on `0.0.0.0:7878` + `/mobile` | Runtime API + phone control page |
+| `deepseek app-server --stdio` | JSON-RPC 2.0 over stdio | Local SDK / control probe (no listener) |
+| `deepseek app-server` | HTTP on `127.0.0.1:8787` | Legacy in-process app-server (`/healthz`, `/thread`, `/app`, `/prompt`, `/tool`, `/jobs`) |
+| `deepseek serve --http` / `--mobile` | same server as `app-server --http`/`--mobile` | Compatibility aliases |
+
+`app-server --http` and `--mobile` launch the same mature runtime API server
+historically reached through `serve --http` — no routes or behavior changed, so
+every endpoint documented below is identical across both entrypoints. The
+runtime API token is read from `--auth-token`, then `DEEPSEEK_RUNTIME_TOKEN`,
+then `DEEPSEEK_RUNTIME_TOKEN`; use `--insecure-no-auth` only with a loopback
+bind. The `serve` compatibility aliases keep their `--insecure` flag.
+The legacy in-process `deepseek app-server` also requires an explicit
+`--auth-token` or `DEEPSEEK_APP_SERVER_TOKEN` before binding a non-loopback
+host; its generated one-time `cwapp_*` token is loopback-only.
+
+The `--stdio` control transport is newline-delimited JSON-RPC 2.0. Probe it
+without spending model tokens:
+
+```bash
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"healthz"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"capabilities"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"shutdown"}' \
+  | deepseek app-server --stdio
+```
+
+`capabilities` returns the advertised method families (`thread/*`, `app/*`,
+`prompt/*`) and the full method list; `thread/capabilities`,
+`app/capabilities`, and `prompt/capabilities` scope it per family. The method
+set is pinned by a drift test in `crates/app-server/src/lib.rs`, so SDK and
+local integration clients can rely on it not changing silently.
+
+## SDK contract
+
+The app-server exists so an external SDK can answer — without scraping TUI
+output — *what route ran, which provider/model/reasoning/permission profile was
+effective, what events happened, how many tokens were used, and how the run
+finished.* The durable Thread/Turn/Item data model already carries most of
+this; the table maps each integration need to where a local client reads it.
+
+| Integration need | Where it comes from | Status |
+|---|---|---|
+| Route / effective model | `TurnRecord` + thread `model`; per-run `--provider`/`--model` overrides | available |
+| Permission / sandbox / approval profile | thread `auto_approve`, sandbox + approval policy | available |
+| Run / thread / turn IDs | `thread_id`, `turn_id`, SSE event envelope | available |
+| Event stream | `GET /v1/threads/{id}/events` (replay + live SSE) | available |
+| Turn status / terminal classification | `TurnRecord.status` + error summary | available |
+| Token usage | `TurnRecord.usage`; aggregate via `GET /v1/usage` | available |
+| Single-read run receipt (route + usage + cost) | `GET /v1/threads/{id}/turns/{turn_id}/receipt` | proposed ([RECEIPTS.md](RECEIPTS.md)) |
+
+For one-shot/headless automation, prefer `deepseek exec` with explicit
+`--provider <id> --model <id>` so a failure identifies the exact provider/model
+pair. Use `app-server` when a local integration needs to start, resume, steer,
+or interrupt turns, list models/capabilities, follow the event stream, or read
+usage. Both paths share the same runtime, so route-effective model resolution
+and the event vocabulary match.
+
+### Release smoke
+
+`scripts/release/app-server-smoke.sh` is the committed pre-release check:
+
+```bash
+scripts/release/app-server-smoke.sh                 # stdio health/capabilities probe (no tokens)
+scripts/release/app-server-smoke.sh --matrix        # + print the configured provider/model matrix
+scripts/release/app-server-smoke.sh --matrix --real # + exec a cheap sentinel per provider
+```
+
+The stdio probe runs against a throwaway config, so it never reads real keys.
+The matrix discovers configured providers from `deepseek auth list`, maps each
+to a cheap model (override per provider with `SMOKE_MODEL_<SLUG>`), skips
+unconfigured providers, and fails loudly on unmapped ones. `auth list` reports
+presence flags only and exec output is passed through a redactor, so secrets are
+never printed. The parser is covered by
+`scripts/release/app-server-smoke.test.sh` against a fake `deepseek` binary.
 
 ## ACP stdio adapter: `deepseek serve --acp`
 
@@ -62,6 +158,12 @@ deepseek doctor --json
 | `config_path` | string | Resolved config file path |
 | `config_present` | bool | Whether the config file exists |
 | `workspace` | string | Default workspace directory |
+| `legacy_state.primary_root` | string | Primary DeepSeek state root inspected for known state paths |
+| `legacy_state.legacy_root` | string | Legacy `.deepseek` state root inspected for known state paths |
+| `legacy_state.needs_attention` | bool | Whether known `~/.deepseek` state paths are unmigrated or also present beside `~/.deepseek` |
+| `legacy_state.legacy_only_count` | number | Count of known state paths present only under the legacy root |
+| `legacy_state.dual_present_count` | number | Count of known state paths present under both primary and legacy roots |
+| `legacy_state.entries` | array | Per-path migration status: `{name, primary_present, legacy_present, status}` |
 | `api_key.source` | string | `env`, `config`, or `missing` |
 | `base_url` | string | API base URL |
 | `default_text_model` | string | Default model |
@@ -117,11 +219,16 @@ deepseek doctor --json
 }
 ```
 
-## HTTP/SSE runtime API: `deepseek serve --http`
+## HTTP/SSE runtime API: `deepseek app-server --http`
 
 ```bash
-deepseek serve --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN]
-deepseek serve --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
+deepseek app-server --http [--host 127.0.0.1] [--port 7878] [--workers 2] [--auth-token TOKEN] [--insecure-no-auth]
+deepseek app-server --mobile [--host 0.0.0.0] [--port 7878] [--auth-token TOKEN]
+deepseek app-server --mobile --host 127.0.0.1 [--port 7878] [--insecure-no-auth]
+
+# Compatibility aliases — identical server, serve flag names:
+deepseek serve --http   [...] [--insecure]
+deepseek serve --mobile [...] [--insecure]
 ```
 
 Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
@@ -129,7 +236,12 @@ Defaults: host `127.0.0.1`, port `7878`, 2 workers (clamped 1–8).
 The server binds to `localhost` by default. Configuration is via CLI flags —
 there is no `[app_server]` config section.
 
-`/v1/*` routes require a bearer token unless `--insecure` is explicitly set.
+`/v1/*` routes require a bearer token unless `deepseek app-server` is started
+with `--insecure-no-auth` on a loopback bind such as `127.0.0.1`. Do not combine
+no-auth mode with the `--mobile` default host `0.0.0.0`; use a token for LAN
+mobile access, or add `--host 127.0.0.1` for local-only no-auth testing. The
+`deepseek serve` compatibility aliases use `--insecure` for the same loopback
+escape hatch.
 Pass `--auth-token TOKEN` or set `DEEPSEEK_RUNTIME_TOKEN=TOKEN` before starting
 the server. If neither is set, the process generates a one-time token and prints
 it at startup. `/health` and `/v1/runtime/info` remain public for local
@@ -341,7 +453,7 @@ tokens but `0.0` cost. Added in v0.8.10 (#564).
 The runtime uses a durable Thread/Turn/Item lifecycle.
 
 - **ThreadRecord** — `id`, `created_at`, `updated_at`, `model`, `workspace`,
-  `mode`, `task_id`, `coherence_state`, `system_prompt`, `latest_turn_id`,
+  `mode`, `task_id`, `system_prompt`, `latest_turn_id`,
   `latest_response_bookmark`, `archived`
 - **TurnRecord** — `id`, `thread_id`, `status` (`queued|in_progress|completed|
   failed|interrupted|canceled`), timestamps, duration, usage, error summary
@@ -405,7 +517,11 @@ Common event names: `thread.started`, `thread.forked`, `turn.started`,
 `turn.lifecycle`, `turn.steered`, `turn.interrupt_requested`,
 `turn.completed`, `item.started`, `item.delta`, `item.completed`,
 `item.failed`, `item.interrupted`, `approval.required`, `approval.decided`,
-`approval.timeout`, `sandbox.denied`, `coherence.state`.
+`approval.timeout`, `sandbox.denied`.
+
+`approval.required` events may include a `matched_rule` string when an
+execution-policy rule caused the prompt. This field is explanatory metadata for
+clients and does not grant or persist permissions.
 
 ## Security boundary
 
@@ -446,6 +562,72 @@ User-supplied origins **stack on top of** the built-in defaults; they do not
 replace them. Wildcard origins are not supported — the explicit allow-list
 model is preserved. Added in v0.8.10 (#561).
 
+## Runtime SDK Fleet Helpers
+
+The v0.8.60 Runtime SDK fixture lives in `npm/runtime-sdk` and is exposed as
+the `@deepseek/runtime-sdk` workspace package. It is deliberately thin: every
+helper calls the local Rust Runtime API and therefore cannot bypass DeepSeek's
+sandbox, approval prompts, provider configuration, or fleet ledger authority.
+
+```js
+import { createRuntimeClient } from "@deepseek/runtime-sdk";
+
+const client = createRuntimeClient({
+  baseUrl: "http://127.0.0.1:7878",
+  token: process.env.DEEPSEEK_RUNTIME_TOKEN,
+});
+
+const { runs } = await client.listFleetRuns();
+const workers = await client.listFleetWorkers(runs[0].id);
+await client.restartWorker(workers.workers[0].worker_id);
+```
+
+Fleet helpers cover the v0.8.60 HTTP surface:
+
+| Helper | Runtime API route |
+|---|---|
+| `listFleetRuns()` | `GET /v1/fleet/runs` |
+| `getFleetRun(runId)` | `GET /v1/fleet/runs/{run_id}` |
+| `listFleetWorkers(runId)` | `GET /v1/fleet/runs/{run_id}/workers` |
+| `getFleetWorker(workerId)` | `GET /v1/fleet/workers/{worker_id}` |
+| `interruptWorker(workerId)` | `POST /v1/fleet/workers/{worker_id}/interrupt` |
+| `restartWorker(workerId)` | `POST /v1/fleet/workers/{worker_id}/restart` |
+| `stopFleetRun(runId)` | `POST /v1/fleet/runs/{run_id}/stop` |
+
+`createFleetRun(spec)` and `fleetEvents(runId)` are typed ahead of the current
+Rust routes so editor/web clients can code against the intended SDK contract.
+Until the Runtime API exposes `POST /v1/fleet/runs` and a fleet event stream,
+the SDK raises `RuntimeCapabilityError` with stable capability strings
+(`fleet_run_create`, `fleet_event_stream`) instead of surfacing those gaps as
+generic fetch failures.
+
+Verification:
+
+```bash
+npm test --workspace @deepseek/runtime-sdk
+```
+
+## Agent Run Receipts
+
+Sub-agent lanes persist compact run receipts in
+`.deepseek/state/subagents.v1.json`. The Runtime API exposes those receipts as
+a read-only inspection surface:
+
+| Operation | Endpoint |
+|---|---|
+| List persisted agent runs | `GET /v1/agent-runs` |
+| Inspect one run | `GET /v1/agent-runs/{run_id}` |
+
+The response is the same worker-record shape surfaced by `agent` receipts:
+`spec.run_id`, `actor_kind`, lifecycle `status`, bounded `events`,
+`follow_up`, `takeover`, `artifacts`, `usage`, and `verification`. `run_id`
+falls back to the worker id for older records, and `{run_id}` may be either the
+run id or the worker id.
+
+These endpoints do not start, cancel, or steer sub-agents. The API surface
+exists so app/editor/headless clients can inspect the same handoff receipts that
+the TUI and parent model see.
+
 ## Session lifecycle (native UI supervision)
 
 | Operation | Endpoint |
@@ -472,3 +654,18 @@ cargo test -p deepseek-protocol --test parity_protocol --locked
 
 This validates that the app-server's event schema hasn't drifted from the
 documented contract. CI runs this on every push to `main` and on release tags.
+
+The app-server stdio control surface has its own drift guard — the advertised
+`capabilities` method set is pinned in `crates/app-server/src/lib.rs`:
+
+```bash
+cargo test -p deepseek-app-server capabilities
+```
+
+Before a release, run the headless smoke (stdio probe + optional provider
+matrix, no secrets leaked):
+
+```bash
+scripts/release/app-server-smoke.sh --matrix        # dry-run plan
+bash scripts/release/app-server-smoke.test.sh       # parser self-test (fake binary)
+```

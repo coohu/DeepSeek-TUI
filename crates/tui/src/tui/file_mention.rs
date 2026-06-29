@@ -185,10 +185,11 @@ pub fn find_file_mention_browser_completions(
 /// captures the process CWD so the resolver and completion walker honor the
 /// user's launch directory when it differs from `--workspace`.
 fn workspace_for_app(app: &App) -> Workspace {
-    Workspace::with_cwd_and_depth(
+    Workspace::with_cwd_depth_and_follow_links(
         app.workspace.clone(),
         std::env::current_dir().ok(),
         app.mention_walk_depth,
+        app.workspace_follow_symlinks,
     )
 }
 
@@ -222,6 +223,7 @@ pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> 
     let cwd = std::env::current_dir().ok();
     let walk_depth = app.mention_walk_depth;
     let behavior = app.mention_menu_behavior.clone();
+    let follow_links = app.workspace_follow_symlinks;
     if let Some(ref cache) = app.composer.mention_completion_cache
         && cache.workspace == workspace
         && cache.cwd == cwd
@@ -229,11 +231,17 @@ pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> 
         && cache.limit == limit
         && cache.walk_depth == walk_depth
         && cache.behavior == behavior
+        && cache.follow_links == follow_links
     {
         return cache.entries.clone();
     }
 
-    let ws = Workspace::with_cwd_and_depth(workspace.clone(), cwd.clone(), walk_depth);
+    let ws = Workspace::with_cwd_depth_and_follow_links(
+        workspace.clone(),
+        cwd.clone(),
+        walk_depth,
+        app.workspace_follow_symlinks,
+    );
     let entries = if behavior == "browser" {
         find_file_mention_browser_completions(&ws, &partial, limit)
     } else {
@@ -247,6 +255,7 @@ pub fn visible_mention_menu_entries(app: &mut App, limit: usize) -> Vec<String> 
         limit,
         walk_depth,
         behavior,
+        follow_links,
         entries: entries.clone(),
     });
 

@@ -1,10 +1,10 @@
 //! Sub-agent and background-task routing helpers for the TUI loop.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
-use crate::tui::app::{App, AppMode, TaskPanelEntry};
+use crate::tui::app::{AgentProgressMeta, App, AppMode, TaskPanelEntry, TaskPanelEntryKind};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::pager::PagerView;
 use crate::tui::tool_routing::refreshes_workspace_context_on_completion;
@@ -12,6 +12,9 @@ use crate::tui::widgets::agent_card::{
     AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
 };
 use crate::tui::workspace_context;
+
+const SUBAGENT_TERMINAL_CARD_TTL: Duration = Duration::from_secs(5 * 60);
+const SUBAGENT_TERMINAL_CARD_MAX_RETAINED: usize = 24;
 
 pub(super) fn running_agent_count(app: &App) -> usize {
     let mut ids: std::collections::HashSet<&str> =
@@ -29,7 +32,7 @@ pub(super) fn running_agent_count(app: &App) -> usize {
 pub(super) fn active_fanout_counts(app: &App) -> Option<(usize, usize)> {
     // Read running count from the canonical slot states on the active
     // FanoutCard, if one exists. Used by `rlm` and any future multi-child
-    // dispatch the parent agent makes via repeated `agent_spawn`.
+    // dispatch the parent agent makes via repeated `agent`.
     if let Some(idx) = app.last_fanout_card_index
         && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get(idx)
     {
@@ -44,6 +47,13 @@ pub(super) fn active_fanout_counts(app: &App) -> Option<(usize, usize)> {
 }
 
 pub(super) fn reconcile_subagent_activity_state(app: &mut App) {
+    reconcile_subagent_activity_state_at(app, Instant::now());
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn reconcile_subagent_activity_state_at(app: &mut App, now: Instant) {
+    reconcile_terminal_subagent_card_retention(app, now);
+
     let running_agents: Vec<(String, String)> = app
         .subagent_cache
         .iter()
@@ -60,14 +70,144 @@ pub(super) fn reconcile_subagent_activity_state(app: &mut App) {
         running_agents.iter().map(|(id, _)| id.clone()).collect();
     app.agent_progress
         .retain(|id, _| running_ids.contains(id.as_str()));
+    app.agent_progress_meta
+        .retain(|id, _| running_ids.contains(id.as_str()));
     for (id, objective) in running_agents {
-        app.agent_progress.entry(id).or_insert(objective);
+        app.agent_progress.entry(id.clone()).or_insert(objective);
+        if let Some(agent) = app.subagent_cache.iter().find(|agent| agent.agent_id == id) {
+            app.agent_progress_meta
+                .entry(id.clone())
+                .or_insert_with(|| AgentProgressMeta {
+                    parent_run_id: agent.parent_run_id.clone(),
+                    spawn_depth: agent.spawn_depth,
+                });
+        }
     }
 
     if running_ids.is_empty() {
         app.agent_activity_started_at = None;
     } else if app.agent_activity_started_at.is_none() {
         app.agent_activity_started_at = Some(Instant::now());
+    }
+
+    reconcile_cards_with_snapshots(app);
+}
+
+fn reconcile_terminal_subagent_card_retention(app: &mut App, now: Instant) {
+    let current_ids: std::collections::HashSet<String> = app
+        .subagent_cache
+        .iter()
+        .map(|agent| agent.agent_id.clone())
+        .collect();
+    app.subagent_terminal_seen_at
+        .retain(|id, _| current_ids.contains(id));
+
+    for agent in &app.subagent_cache {
+        if matches!(agent.status, SubAgentStatus::Running) {
+            app.subagent_terminal_seen_at.remove(&agent.agent_id);
+        } else {
+            app.subagent_terminal_seen_at
+                .entry(agent.agent_id.clone())
+                .or_insert(now);
+        }
+    }
+
+    app.subagent_cache.retain(|agent| {
+        if matches!(agent.status, SubAgentStatus::Running) {
+            return true;
+        }
+        app.subagent_terminal_seen_at
+            .get(&agent.agent_id)
+            .and_then(|seen_at| now.checked_duration_since(*seen_at))
+            .is_none_or(|age| age <= SUBAGENT_TERMINAL_CARD_TTL)
+    });
+
+    let mut terminal_seen: Vec<(String, Instant)> = app
+        .subagent_cache
+        .iter()
+        .filter(|agent| !matches!(agent.status, SubAgentStatus::Running))
+        .filter_map(|agent| {
+            app.subagent_terminal_seen_at
+                .get(&agent.agent_id)
+                .map(|seen_at| (agent.agent_id.clone(), *seen_at))
+        })
+        .collect();
+    terminal_seen.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let keep_terminal_ids: std::collections::HashSet<String> = terminal_seen
+        .into_iter()
+        .take(SUBAGENT_TERMINAL_CARD_MAX_RETAINED)
+        .map(|(id, _)| id)
+        .collect();
+    app.subagent_cache.retain(|agent| {
+        matches!(agent.status, SubAgentStatus::Running)
+            || keep_terminal_ids.contains(agent.agent_id.as_str())
+    });
+
+    let kept_ids: std::collections::HashSet<String> = app
+        .subagent_cache
+        .iter()
+        .map(|agent| agent.agent_id.clone())
+        .collect();
+    app.subagent_terminal_seen_at
+        .retain(|id, _| kept_ids.contains(id));
+}
+
+/// Sync in-transcript card slots that still render as running against the
+/// canonical manager snapshot statuses. A card can miss its terminal mailbox
+/// envelope (e.g. API-timeout interruption observed only via `AgentList`),
+/// which would otherwise leave the fanout/delegate UI counting the agent as
+/// running indefinitely.
+fn reconcile_cards_with_snapshots(app: &mut App) {
+    let non_running: Vec<(String, AgentLifecycle)> = app
+        .subagent_cache
+        .iter()
+        .filter_map(|agent| {
+            let lifecycle = match &agent.status {
+                SubAgentStatus::Running => return None,
+                SubAgentStatus::Interrupted(_) => AgentLifecycle::Interrupted,
+                SubAgentStatus::Completed => AgentLifecycle::Completed,
+                SubAgentStatus::Failed(_) => AgentLifecycle::Failed,
+                SubAgentStatus::Cancelled => AgentLifecycle::Cancelled,
+                SubAgentStatus::BudgetExhausted => AgentLifecycle::Failed,
+            };
+            Some((agent.agent_id.clone(), lifecycle))
+        })
+        .collect();
+    for (agent_id, lifecycle) in non_running {
+        let Some(&idx) = app.subagent_card_index.get(&agent_id) else {
+            continue;
+        };
+        let updated = match app.history.get_mut(idx) {
+            Some(HistoryCell::SubAgent(SubAgentCell::Delegate(card)))
+                if card.agent_id == agent_id
+                    && matches!(
+                        card.status,
+                        AgentLifecycle::Pending | AgentLifecycle::Running
+                    ) =>
+            {
+                card.status = lifecycle;
+                true
+            }
+            Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) => {
+                match card.workers.iter_mut().find(|slot| {
+                    slot.agent_id == agent_id
+                        && matches!(
+                            slot.status,
+                            AgentLifecycle::Pending | AgentLifecycle::Running
+                        )
+                }) {
+                    Some(slot) => {
+                        slot.status = lifecycle;
+                        true
+                    }
+                    None => false,
+                }
+            }
+            _ => false,
+        };
+        if updated {
+            app.bump_history_cell(idx);
+        }
     }
 }
 
@@ -78,6 +218,7 @@ fn subagent_status_rank(status: &SubAgentStatus) -> u8 {
         SubAgentStatus::Failed(_) => 2,
         SubAgentStatus::Completed => 3,
         SubAgentStatus::Cancelled => 4,
+        SubAgentStatus::BudgetExhausted => 2,
     }
 }
 
@@ -100,7 +241,7 @@ pub(super) fn subagent_message_refreshes_workspace_context(message: &MailboxMess
 
 /// Route a `MailboxMessage` envelope to the matching in-transcript card,
 /// allocating a `DelegateCard` or `FanoutCard` on first sight (issue #128).
-pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &MailboxMessage) {
+pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &MailboxMessage) -> bool {
     // Accumulate sub-agent token costs for the real-time footer counter (#166).
     if let MailboxMessage::TokenUsage { model, usage, .. } = message {
         if app.session.subagent_cost_event_seqs.insert(seq)
@@ -109,7 +250,7 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
         {
             app.accrue_subagent_cost_estimate(cost);
         }
-        return; // No card visual change needed; the footer handles display.
+        return false; // No card visual change needed; the footer handles display.
     }
 
     // Resolve (or allocate) the target cell for this envelope. ChildSpawned
@@ -124,10 +265,12 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
         && let Some(idx) = app.last_fanout_card_index
         && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx)
     {
-        apply_to_fanout(card, message);
+        let updated = apply_to_fanout(card, message);
         app.subagent_card_index.insert(agent_id, idx);
-        app.bump_history_cell(idx);
-        return;
+        if updated {
+            app.bump_history_cell(idx);
+        }
+        return updated;
     }
 
     // Existing card for this agent_id? Mutate in place.
@@ -146,14 +289,14 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
             // `if let Some(&idx) = app.subagent_card_index.get(&agent_id)`.
             app.bump_history_cell(idx);
         }
-        return;
+        return updated;
     }
 
     // No existing card — only `Started` reasonably opens one. Anything else
     // for an unknown agent_id is dropped (likely arrived after the cell was
     // cleared, e.g. session-resume edge cases).
     let MailboxMessage::Started { agent_type, .. } = message else {
-        return;
+        return false;
     };
 
     let dispatch_kind = app.pending_subagent_dispatch.as_deref();
@@ -166,9 +309,12 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
             && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) =
                 app.history.get_mut(idx)
         {
-            card.claim_pending_worker(&agent_id, AgentLifecycle::Running);
+            let updated = card.claim_pending_worker(&agent_id, AgentLifecycle::Running);
             app.subagent_card_index.insert(agent_id, idx);
-            app.bump_history_cell(idx);
+            if updated {
+                app.bump_history_cell(idx);
+            }
+            updated
         } else {
             let mut card = FanoutCard::new(
                 dispatch_kind.unwrap_or("rlm_eval").to_string(),
@@ -180,9 +326,11 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
             app.last_fanout_card_index = Some(idx);
             app.subagent_card_index.insert(agent_id, idx);
             app.bump_history_cell(idx);
+            true
         }
     } else {
-        let card = DelegateCard::new(agent_id.clone(), agent_type.clone());
+        let mut card = DelegateCard::new(agent_id.clone(), agent_type.clone());
+        apply_to_delegate(&mut card, message);
         app.add_message(HistoryCell::SubAgent(SubAgentCell::Delegate(card)));
         let idx = app.history.len().saturating_sub(1);
         app.subagent_card_index.insert(agent_id.clone(), idx);
@@ -191,6 +339,7 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
         app.pending_subagent_dispatch = None;
         // idx was just inserted on the line above — no need to re-query.
         app.bump_history_cell(idx);
+        true
     }
 }
 
@@ -204,6 +353,11 @@ pub(super) fn task_summary_to_panel_entry(summary: TaskSummary) -> TaskPanelEntr
         status: task_status_label(summary.status).to_string(),
         prompt_summary: summary.prompt_summary,
         duration_ms: summary.duration_ms,
+        kind: TaskPanelEntryKind::Background,
+        stale: false,
+        elapsed_since_output_ms: None,
+        owner_agent_id: None,
+        owner_agent_name: None,
     }
 }
 
@@ -217,28 +371,53 @@ fn task_status_label(status: TaskStatus) -> &'static str {
     }
 }
 
+fn hunt_verdict_glyph(verdict: Option<&str>) -> &'static str {
+    match verdict {
+        Some("hunting") => "·",
+        Some("hunted") => "✓",
+        Some("wounded") => "!",
+        Some("escaped") => "×",
+        Some(_) => "?",
+        None => "-",
+    }
+}
+
 pub(super) fn format_task_list(tasks: &[TaskSummary]) -> String {
     if tasks.is_empty() {
         return "No tasks found.".to_string();
     }
 
-    let mut lines = vec![
-        format!("Tasks ({})", tasks.len()),
-        "ID             Status        Time  Title".to_string(),
-        "------------------------------------------------------------".to_string(),
-    ];
+    let show_verdict = tasks.iter().any(|task| task.hunt_verdict.is_some());
+    let mut lines = vec![format!("Tasks ({})", tasks.len())];
+    if show_verdict {
+        lines.push("ID             Status     Verdict     Time  Title".to_string());
+    } else {
+        lines.push("ID             Status        Time  Title".to_string());
+    }
+    lines.push("------------------------------------------------------------".to_string());
     for task in tasks {
         let duration = task
             .duration_ms
             .map(|ms| format!("{:.2}s", ms as f64 / 1000.0))
             .unwrap_or_else(|| "-".to_string());
-        lines.push(format!(
-            "{:<13}  {:<9}  {:>8}  {}",
-            task.id,
-            task_status_label(task.status),
-            duration,
-            task.prompt_summary
-        ));
+        if show_verdict {
+            lines.push(format!(
+                "{:<13}  {:<9}  {:<7}  {:>8}  {}",
+                task.id,
+                task_status_label(task.status),
+                hunt_verdict_glyph(task.hunt_verdict.as_deref()),
+                duration,
+                task.prompt_summary
+            ));
+        } else {
+            lines.push(format!(
+                "{:<13}  {:<9}  {:>8}  {}",
+                task.id,
+                task_status_label(task.status),
+                duration,
+                task.prompt_summary
+            ));
+        }
     }
     lines.push("Use /task show <id> for timeline details.".to_string());
     lines.join("\n")
@@ -357,8 +536,36 @@ fn format_task_detail(task: &TaskRecord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::task_manager::{TaskStatus, TaskSummary};
+    use crate::tools::subagent::SubAgentType;
+    use crate::tui::app::{InitialInput, TuiOptions};
     use chrono::Utc;
+    use std::path::PathBuf;
+
+    fn test_options() -> TuiOptions {
+        TuiOptions {
+            model: "test-model".to_string(),
+            workspace: PathBuf::from("."),
+            config_path: None,
+            config_profile: None,
+            allow_shell: true,
+            use_alt_screen: true,
+            use_mouse_capture: false,
+            use_bracketed_paste: true,
+            max_subagents: 4,
+            skills_dir: PathBuf::from("."),
+            memory_path: PathBuf::from("memory.md"),
+            notes_path: PathBuf::from("notes.txt"),
+            mcp_config_path: PathBuf::from("mcp.json"),
+            use_memory: false,
+            start_in_agent_mode: true,
+            skip_onboarding: true,
+            yolo: false,
+            resume_session_id: None,
+            initial_input: None::<InitialInput>,
+        }
+    }
 
     fn task_summary(id: &str, status: TaskStatus, duration_ms: Option<u64>) -> TaskSummary {
         TaskSummary {
@@ -371,6 +578,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             duration_ms,
+            hunt_verdict: None,
             error: None,
             thread_id: None,
             turn_id: None,
@@ -387,5 +595,49 @@ mod tests {
         assert!(output.contains("ID             Status        Time  Title"));
         assert!(output.contains("task_12345678  running           -  Fix task list output"));
         assert!(output.contains("task_abcdef12  completed     1.23s  Fix task list output"));
+    }
+
+    #[test]
+    fn task_list_renders_hunt_verdict_glyphs_when_present() {
+        let mut hunted = task_summary("task_hunted", TaskStatus::Completed, Some(1200));
+        hunted.hunt_verdict = Some("hunted".to_string());
+        let mut wounded = task_summary("task_wounded", TaskStatus::Completed, Some(2300));
+        wounded.hunt_verdict = Some("wounded".to_string());
+        let mut escaped = task_summary("task_escaped", TaskStatus::Failed, Some(3400));
+        escaped.hunt_verdict = Some("escaped".to_string());
+
+        let output = format_task_list(&[hunted, wounded, escaped]);
+
+        assert!(output.contains("ID             Status     Verdict"));
+        assert!(output.contains("task_hunted    completed  ✓"));
+        assert!(output.contains("task_wounded   completed  !"));
+        assert!(output.contains("task_escaped   failed     ×"));
+    }
+
+    #[test]
+    fn mailbox_progress_reports_transcript_change_only_for_visible_card_updates() {
+        let mut app = App::new(test_options(), &Config::default());
+        let started = MailboxMessage::started("agent_live", SubAgentType::General);
+        assert!(
+            handle_subagent_mailbox(&mut app, 1, &started),
+            "first started envelope creates a visible card"
+        );
+
+        let progress =
+            MailboxMessage::progress("agent_live", "step 1/100: requesting model response");
+        assert!(
+            !handle_subagent_mailbox(&mut app, 2, &progress),
+            "low-signal progress for an already-running card is a no-op"
+        );
+
+        let tool = MailboxMessage::ToolCallStarted {
+            agent_id: "agent_live".to_string(),
+            tool_name: "read_file".to_string(),
+            step: 1,
+        };
+        assert!(
+            handle_subagent_mailbox(&mut app, 3, &tool),
+            "tool progress still updates the visible transcript card"
+        );
     }
 }

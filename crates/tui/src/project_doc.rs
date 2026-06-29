@@ -3,6 +3,8 @@
 //! Supports auto-discovery of project instructions like Claude Code.
 //! Priority: AGENTS.md > WHALE.md (deprecated) > .claude/instructions.md > CLAUDE.md > .deepseek/instructions.md > .deepseek/instructions.md
 
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 /// Document filenames to search for (in priority order).
@@ -40,7 +42,7 @@ pub fn discover_paths(cwd: &Path) -> Vec<PathBuf> {
     loop {
         for filename in DOC_FILENAMES {
             let doc_path = current.join(filename);
-            if doc_path.exists() && doc_path.is_file() {
+            if is_regular_file_path(&doc_path) {
                 paths.push(doc_path);
             }
         }
@@ -96,7 +98,7 @@ pub fn read_project_docs(paths: &[PathBuf], max_bytes: usize) -> Option<String> 
             break;
         }
 
-        if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(content) = read_regular_file_to_string(path) {
             let remaining = max_bytes.saturating_sub(total_bytes);
             let content = if content.len() > remaining {
                 // Truncate to remaining bytes at a word boundary if possible
@@ -136,4 +138,84 @@ pub fn format_instructions(path: &Path, content: &str) -> String {
 pub fn load_from_workspace(workspace: &Path) -> Option<String> {
     let paths = discover_paths(workspace);
     read_project_docs(&paths, DEFAULT_MAX_BYTES)
+}
+
+fn is_regular_file_path(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        let file_type = metadata.file_type();
+        file_type.is_file() && !file_type.is_symlink()
+    })
+}
+
+fn read_regular_file_to_string(path: &Path) -> io::Result<String> {
+    let metadata = fs::symlink_metadata(path)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("refusing non-regular project doc {}", path.display()),
+        ));
+    }
+
+    let mut file = open_regular_file(path)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
+}
+
+#[cfg(unix)]
+fn open_regular_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_regular_file(path: &Path) -> io::Result<fs::File> {
+    fs::File::open(path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_paths_ignores_symlinked_project_docs() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        let outside_agents = outside.path().join("AGENTS.md");
+        fs::write(&outside_agents, "outside instructions").expect("write outside agents");
+        std::os::unix::fs::symlink(&outside_agents, workspace.path().join("AGENTS.md"))
+            .expect("symlink agents");
+
+        let paths = discover_paths(workspace.path());
+
+        assert!(
+            paths.is_empty(),
+            "symlinked project docs must not be discovered: {paths:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_project_docs_rejects_symlinked_paths() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        let outside_agents = outside.path().join("AGENTS.md");
+        let linked_agents = workspace.path().join("AGENTS.md");
+        fs::write(&outside_agents, "outside instructions").expect("write outside agents");
+        std::os::unix::fs::symlink(&outside_agents, &linked_agents).expect("symlink agents");
+
+        let docs = read_project_docs(&[linked_agents], DEFAULT_MAX_BYTES);
+
+        assert!(
+            docs.is_none(),
+            "symlinked project docs must not be read: {docs:?}"
+        );
+    }
 }

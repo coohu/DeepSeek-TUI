@@ -161,7 +161,7 @@ seatbelt profile is generated dynamically based on the `SandboxPolicy`.
 
 **What is deferred (v2):**
 - WFP (Windows Filtering Platform) firewall rules — network is open in v1
-- Filesystem ACL integration at spawn time (stub exists)
+- Filesystem ACL integration at spawn time (deferred)
 - AppContainer isolation
 - Registry key isolation
 

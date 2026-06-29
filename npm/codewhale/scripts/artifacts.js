@@ -14,7 +14,7 @@ const ASSET_MATRIX = {
     arm64: ["deepseek-macos-arm64", "deepseek-tui-macos-arm64"],
   },
   win32: {
-    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe", "deepseek.bat"],
+    x64: ["deepseek-windows-x64.exe", "deepseek-tui-windows-x64.exe"],
   },
 };
 
@@ -50,6 +50,7 @@ function detectBinaryNames() {
     arch,
     deepseek: pair[0],
     tui: pair[1],
+    codew: pair[2],
   };
 }
 
@@ -59,7 +60,7 @@ function unsupportedBuildHint() {
     "You can still run deepseek by building from source with Cargo:",
     "",
     "  # Requires Rust 1.88+ (https://rustup.rs)",
-    "  cargo install deepseek-cli --locked   # provides `deepseek`",
+    "  cargo install deepseek-cli --locked   # provides `deepseek` and `codew`",
     "  cargo install deepseek-tui --locked   # provides `deepseek-tui`",
     "",
     "Or build from a checkout:",
@@ -80,16 +81,16 @@ function executableName(base, platform) {
 
 function releaseBaseUrl(version, repo = "coohu/DeepSeek-TUI") {
   const override =
-    process.env.CODEWHALE_RELEASE_BASE_URL ||
+    process.env.DEEPSEEK_RELEASE_BASE_URL ||
     process.env.DEEPSEEK_TUI_RELEASE_BASE_URL ||
     process.env.DEEPSEEK_RELEASE_BASE_URL;
   if (override) {
     const trimmed = String(override).trim();
     return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
   }
-  // When CODEWHALE_USE_CNB_MIRROR is set, use the CNB (China-friendly)
+  // When DEEPSEEK_USE_CNB_MIRROR is set, use the CNB (China-friendly)
   // mirror that already builds and publishes binary release assets.
-  if (process.env.CODEWHALE_USE_CNB_MIRROR) {
+  if (process.env.DEEPSEEK_USE_CNB_MIRROR) {
     return `https://cnb.cool/coohu/deepseek-tui/-/releases/v${version}/`;
   }
   return `https://github.com/${repo}/releases/download/v${version}/`;

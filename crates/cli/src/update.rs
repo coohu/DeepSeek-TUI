@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use deepseek_release::{
     CHECKSUM_MANIFEST_ASSET, ReleaseChannel, ReleaseQuery, UPDATE_USER_AGENT,
     compare_release_versions, is_beta_tag, mirror_asset_url, resolve_release_query,
@@ -17,17 +17,23 @@ use deepseek_release::{
 };
 use reqwest::Proxy;
 use std::io::Write;
+use std::time::Duration;
+
+const GITHUB_LATEST_RELEASE_PAGE_URL: &str =
+    "https://github.com/coohu/deepseek-tui/releases/latest";
+const GITHUB_RELEASE_DOWNLOAD_BASE_URL: &str =
+    "https://github.com/coohu/deepseek-tui/releases/download";
+const UPDATE_HTTP_ATTEMPTS: usize = 3;
+const UPDATE_HTTP_RETRY_DELAY_MS: u64 = 100;
 
 /// Run the self-update workflow.
+///
+/// OpenHarmony (HarmonyOS) won't compile this file, so no need to handle
 pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Result<()> {
-    #[cfg(target_env = "ohos")]
-    {
-        let _ = (beta, check_only, proxy_arg);
-        bail!("self-update is not supported on HarmonyOS/OpenHarmony yet");
-    }
-
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
+    let legacy_binary = is_legacy_binary(&current_exe);
+
     let targets = update_targets_for_exe(&current_exe);
     let channel = ReleaseChannel::from_beta_flag(beta);
     let current_version = env!("CARGO_PKG_VERSION");
@@ -39,6 +45,10 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     println!("Checking for {} updates...", channel.label());
     println!("Current binary: {}", current_exe.display());
     println!("Current version: v{current_version}");
+    if legacy_binary {
+        println!();
+        println!("{}", legacy_binary_message(&current_exe));
+    }
 
     if check_only {
         let latest_tag = latest_release_tag(channel, proxy.as_ref())
@@ -69,8 +79,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
     if let UpdateReleaseSource::Mirror { base_url } = &fetched.source {
         if channel == ReleaseChannel::Beta {
             println!(
-                "Using release mirror {}; --beta does not select GitHub beta releases in mirror mode.",
-                base_url
+                "Using release mirror {base_url}; --beta does not select GitHub beta releases in mirror mode."
             );
         }
     } else if !update_is_needed(channel, current_version, latest_tag)? {
@@ -140,6 +149,7 @@ pub fn run_update(beta: bool, check_only: bool, proxy_arg: Option<String>) -> Re
             }
         }
 
+        preflight_downloaded_binary(&asset.name, &bytes)?;
         downloads.push((target.path.clone(), asset.name.clone(), bytes));
     }
 
@@ -187,12 +197,58 @@ pub(crate) fn release_arch_for_rust_arch(arch: &str) -> &str {
     }
 }
 
+/// Returns true when the binary name belongs to the pre-rebrand `deepseek-tui` era.
+pub(crate) fn is_legacy_binary(current_exe: &Path) -> bool {
+    let exe_name = current_exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    exe_name.starts_with("deepseek")
+}
+
+fn legacy_binary_message(current_exe: &Path) -> String {
+    format!(
+        "\
+this binary ({exe}) is using the legacy deepseek/deepseek-tui command name.
+
+The package has been renamed to `deepseek`. This update will install canonical
+DeepSeek binaries (`deepseek` and, when present, `deepseek-tui`) beside the
+legacy command when the install directory is writable. DeepSeek provider support
+is unchanged.
+
+If this update cannot write to the install directory, reinstall using your
+original install method:
+
+  npm:
+    npm uninstall -g deepseek-tui
+    npm install -g deepseek
+
+  Cargo:
+    cargo uninstall deepseek-tui-cli 2>/dev/null || true
+    cargo uninstall deepseek-tui 2>/dev/null || true
+    cargo install deepseek-cli --locked
+    cargo install deepseek-tui --locked
+
+  Homebrew:
+    brew upgrade deepseek-tui
+
+  Manual binary:
+    download the matched deepseek and deepseek-tui assets from
+    https://github.com/coohu/DeepSeek-TUI/releases/latest
+
+Once `deepseek` is on your PATH, run `deepseek update` for future updates.",
+        exe = current_exe.display(),
+    )
+}
+
 pub(crate) fn binary_prefix_for_exe(current_exe: &Path) -> &'static str {
     let exe_name = current_exe
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("deepseek");
-    if exe_name.contains("deepseek-tui") {
+        .unwrap_or("deepseek")
+        .to_ascii_lowercase();
+    if exe_name.contains("deepseek-tui") || exe_name.contains("deepseek-tui") {
         "deepseek-tui"
     } else {
         "deepseek"
@@ -211,6 +267,40 @@ fn sibling_binary_path(current_exe: &Path, sibling_prefix: &str) -> PathBuf {
     current_exe.with_file_name(format!("{sibling_prefix}{}", std::env::consts::EXE_SUFFIX))
 }
 
+fn canonical_binary_path_for_prefix(current_exe: &Path, prefix: &str) -> PathBuf {
+    if is_legacy_binary(current_exe) {
+        current_exe.with_file_name(format!("{prefix}{}", std::env::consts::EXE_SUFFIX))
+    } else {
+        current_exe.to_path_buf()
+    }
+}
+
+fn legacy_binary_name_for_prefix(prefix: &str) -> &'static str {
+    if prefix == "deepseek-tui" {
+        "deepseek-tui"
+    } else {
+        "deepseek"
+    }
+}
+
+fn legacy_sibling_binary_path(current_exe: &Path, sibling_prefix: &str) -> PathBuf {
+    current_exe.with_file_name(format!(
+        "{}{}",
+        legacy_binary_name_for_prefix(sibling_prefix),
+        std::env::consts::EXE_SUFFIX
+    ))
+}
+
+fn should_update_sibling(
+    current_exe: &Path,
+    canonical_sibling: &Path,
+    sibling_prefix: &str,
+) -> bool {
+    canonical_sibling.exists()
+        || (is_legacy_binary(current_exe)
+            && legacy_sibling_binary_path(current_exe, sibling_prefix).exists())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateTarget {
     path: PathBuf,
@@ -220,7 +310,7 @@ struct UpdateTarget {
 fn update_targets_for_exe(current_exe: &Path) -> Vec<UpdateTarget> {
     let current_prefix = binary_prefix_for_exe(current_exe);
     let mut targets = vec![UpdateTarget {
-        path: current_exe.to_path_buf(),
+        path: canonical_binary_path_for_prefix(current_exe, current_prefix),
         asset_stem: release_asset_stem_for_prefix(
             current_prefix,
             std::env::consts::OS,
@@ -230,7 +320,7 @@ fn update_targets_for_exe(current_exe: &Path) -> Vec<UpdateTarget> {
 
     let sibling_prefix = sibling_prefix_for(current_prefix);
     let sibling = sibling_binary_path(current_exe, sibling_prefix);
-    if sibling.exists() {
+    if should_update_sibling(current_exe, &sibling, sibling_prefix) {
         targets.push(UpdateTarget {
             path: sibling,
             asset_stem: release_asset_stem_for_prefix(
@@ -367,6 +457,7 @@ fn update_http_client(proxy: Option<&Proxy>) -> Result<reqwest::blocking::Client
     }
     builder
         .user_agent(UPDATE_USER_AGENT)
+        .timeout(Duration::from_secs(5 * 60))
         .build()
         .context("failed to build update HTTP client")
 }
@@ -388,10 +479,23 @@ fn fetch_latest_release(channel: ReleaseChannel, proxy: Option<&Proxy>) -> Resul
             ),
             source: UpdateReleaseSource::Mirror { base_url },
         }),
-        ReleaseQuery::GitHubLatest { url } => Ok(FetchedRelease {
-            release: fetch_latest_release_from_url(url, proxy)?,
-            source: UpdateReleaseSource::GitHub,
-        }),
+        ReleaseQuery::GitHubLatest { url } => match fetch_latest_release_from_url(url, proxy) {
+            Ok(release) => Ok(FetchedRelease {
+                release,
+                source: UpdateReleaseSource::GitHub,
+            }),
+            Err(api_error) => {
+                eprintln!(
+                    "GitHub API release lookup failed; trying github.com releases/latest fallback..."
+                );
+                Ok(FetchedRelease {
+                    release: fetch_latest_stable_release_from_redirect(proxy).with_context(
+                        || format!("GitHub API release lookup failed first: {api_error:#}"),
+                    )?,
+                    source: UpdateReleaseSource::GitHub,
+                })
+            }
+        },
         ReleaseQuery::GitHubReleaseList { url } => Ok(FetchedRelease {
             release: fetch_latest_beta_release_from_url(url, proxy)?,
             source: UpdateReleaseSource::GitHub,
@@ -406,6 +510,21 @@ fn release_from_mirror_base_url(
     rust_arch: &str,
 ) -> Release {
     let tag_name = format!("v{}", version.trim_start_matches('v'));
+    release_from_asset_base_url(&tag_name, base_url, os, rust_arch)
+}
+
+fn release_from_github_download_tag(tag_name: &str, os: &str, rust_arch: &str) -> Release {
+    let tag_name = format!("v{}", tag_name.trim_start_matches('v'));
+    let base_url = format!("{GITHUB_RELEASE_DOWNLOAD_BASE_URL}/{tag_name}");
+    release_from_asset_base_url(&tag_name, &base_url, os, rust_arch)
+}
+
+fn release_from_asset_base_url(
+    tag_name: &str,
+    base_url: &str,
+    os: &str,
+    rust_arch: &str,
+) -> Release {
     let mut assets = vec![Asset {
         name: CHECKSUM_MANIFEST_ASSET.to_string(),
         browser_download_url: mirror_asset_url(base_url, CHECKSUM_MANIFEST_ASSET),
@@ -420,13 +539,17 @@ fn release_from_mirror_base_url(
     }
 
     Release {
-        tag_name,
+        tag_name: tag_name.to_string(),
         prerelease: false,
         assets,
     }
 }
 
-fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Result<String> {
+fn fetch_release_json_once(
+    url: &str,
+    description: &str,
+    proxy: Option<&Proxy>,
+) -> Result<(reqwest::StatusCode, String)> {
     let client = update_http_client(proxy)?;
     let response = client
         .get(url)
@@ -437,10 +560,44 @@ fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Re
     let body = response
         .text()
         .with_context(|| format!("failed to read {description} response body from {url}"))?;
-    if !status.is_success() {
-        bail!("failed to fetch {description} from {url}: HTTP {status}\n{body}");
+    Ok((status, body))
+}
+
+fn fetch_release_json(url: &str, description: &str, proxy: Option<&Proxy>) -> Result<String> {
+    let mut last_error = None;
+    for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
+        match fetch_release_json_once(url, description, proxy) {
+            Ok((status, body)) if status.is_success() => return Ok(body),
+            Ok((status, body)) => {
+                let error =
+                    anyhow!("failed to fetch {description} from {url}: HTTP {status}\n{body}");
+                if should_retry_http_status(status) && attempt < UPDATE_HTTP_ATTEMPTS {
+                    last_error = Some(error);
+                    sleep_before_update_retry(attempt);
+                    continue;
+                }
+                return Err(error);
+            }
+            Err(error) if attempt < UPDATE_HTTP_ATTEMPTS => {
+                last_error = Some(error);
+                sleep_before_update_retry(attempt);
+            }
+            Err(error) => return Err(error),
+        }
     }
-    Ok(body)
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to fetch {description} from {url}")))
+}
+
+fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
+fn sleep_before_update_retry(attempt: usize) {
+    std::thread::sleep(Duration::from_millis(
+        UPDATE_HTTP_RETRY_DELAY_MS * attempt as u64,
+    ));
 }
 
 fn fetch_latest_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Release> {
@@ -450,6 +607,91 @@ fn fetch_latest_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Rel
     })?;
 
     Ok(release)
+}
+
+fn fetch_latest_stable_release_from_redirect(proxy: Option<&Proxy>) -> Result<Release> {
+    let tag_name =
+        fetch_latest_stable_tag_from_redirect_url(GITHUB_LATEST_RELEASE_PAGE_URL, proxy)?;
+    Ok(release_from_github_download_tag(
+        &tag_name,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    ))
+}
+
+fn fetch_latest_stable_tag_from_redirect_url(url: &str, proxy: Option<&Proxy>) -> Result<String> {
+    let client = update_http_client(proxy)?;
+    let mut last_error = None;
+    for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
+        match fetch_latest_stable_tag_from_redirect_url_once(&client, url) {
+            Ok(tag_name) => return Ok(tag_name),
+            Err(error) if attempt < UPDATE_HTTP_ATTEMPTS => {
+                last_error = Some(error);
+                sleep_before_update_retry(attempt);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to resolve latest stable release from {url}")))
+}
+
+fn fetch_latest_stable_tag_from_redirect_url_once(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<String> {
+    let response = client
+        .get(url)
+        .send()
+        .with_context(|| format!("failed to fetch release redirect from {url}"))?;
+    let status = response.status();
+    let final_url = response.url().clone();
+    if status.is_success() {
+        if let Some(tag_name) = release_tag_from_github_release_url(&final_url) {
+            return Ok(tag_name);
+        }
+        let body = response
+            .text()
+            .with_context(|| format!("failed to read release redirect response from {url}"))?;
+        if let Some(tag_name) = release_tag_from_github_release_html(&body) {
+            return Ok(tag_name);
+        }
+        bail!("release redirect did not resolve to a tag URL: {final_url}");
+    }
+
+    let body = response
+        .text()
+        .with_context(|| format!("failed to read release redirect response from {url}"))?;
+    bail!("failed to fetch release redirect from {url}: HTTP {status}\n{body}");
+}
+
+fn release_tag_from_github_release_url(url: &reqwest::Url) -> Option<String> {
+    let segments = url.path_segments()?.collect::<Vec<_>>();
+    segments
+        .windows(3)
+        .find(|window| window[0] == "releases" && window[1] == "tag")
+        .map(|window| window[2].to_string())
+        .filter(|tag| !tag.is_empty())
+}
+
+fn release_tag_from_github_release_html(body: &str) -> Option<String> {
+    const MARKERS: &[&str] = &[
+        "/coohu/deepseek-tui/releases/tag/",
+        "/hmbown/DeepSeek/releases/tag/",
+        "/releases/tag/",
+    ];
+    for marker in MARKERS {
+        for rest in body.split(marker).skip(1) {
+            let tag = rest
+                .split(['"', '\'', '<', '>', '?', '#', '&'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !tag.is_empty() {
+                return Some(tag.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Result<Release> {
@@ -468,6 +710,31 @@ fn fetch_latest_beta_release_from_url(url: &str, proxy: Option<&Proxy>) -> Resul
 
 /// Download a URL to bytes.
 fn download_url(url: &str, proxy: Option<&Proxy>) -> Result<Vec<u8>> {
+    let mut last_error = None;
+    for attempt in 1..=UPDATE_HTTP_ATTEMPTS {
+        match download_url_once(url, proxy) {
+            Ok((status, bytes)) if status.is_success() => return Ok(bytes),
+            Ok((status, bytes)) => {
+                let body = String::from_utf8_lossy(&bytes);
+                let error = anyhow!("download failed with HTTP {status}: {body}");
+                if should_retry_http_status(status) && attempt < UPDATE_HTTP_ATTEMPTS {
+                    last_error = Some(error);
+                    sleep_before_update_retry(attempt);
+                    continue;
+                }
+                return Err(error);
+            }
+            Err(error) if attempt < UPDATE_HTTP_ATTEMPTS => {
+                last_error = Some(error);
+                sleep_before_update_retry(attempt);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("failed to download {url}")))
+}
+
+fn download_url_once(url: &str, proxy: Option<&Proxy>) -> Result<(reqwest::StatusCode, Vec<u8>)> {
     let client = update_http_client(proxy)?;
     let response = client
         .get(url)
@@ -478,19 +745,182 @@ fn download_url(url: &str, proxy: Option<&Proxy>) -> Result<Vec<u8>> {
         .bytes()
         .with_context(|| format!("failed to read response body from {url}"))?;
 
-    if !status.is_success() {
-        let body = String::from_utf8_lossy(&bytes);
-        bail!("download failed with HTTP {status}: {body}");
-    }
-
-    Ok(bytes.to_vec())
+    Ok((status, bytes.to_vec()))
 }
 
 /// Compute the SHA256 hex digest of data.
 fn sha256_hex(data: &[u8]) -> String {
     use sha2::Digest;
     let hash = sha2::Sha256::digest(data);
-    format!("{hash:x}")
+    hex_bytes(hash)
+}
+
+fn hex_bytes(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct GlibcVersion {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl GlibcVersion {
+    fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    fn display(self) -> String {
+        if self.patch == 0 {
+            format!("{}.{}", self.major, self.minor)
+        } else {
+            format!("{}.{}.{}", self.major, self.minor, self.patch)
+        }
+    }
+}
+
+fn parse_glibc_version(text: &str) -> Option<GlibcVersion> {
+    text.split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .filter(|part| part.contains('.'))
+        .find_map(parse_glibc_version_token)
+}
+
+fn parse_glibc_version_token(token: &str) -> Option<GlibcVersion> {
+    let mut parts = token.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0);
+    Some(GlibcVersion::new(major, minor, patch))
+}
+
+fn highest_required_glibc(bytes: &[u8]) -> Option<GlibcVersion> {
+    const MARKER: &[u8] = b"GLIBC_";
+    let mut offset = 0;
+    let mut highest = None;
+
+    while let Some(found) = find_bytes(&bytes[offset..], MARKER) {
+        let start = offset + found + MARKER.len();
+        let mut end = start;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            end += 1;
+        }
+        if end > start
+            && let Ok(token) = std::str::from_utf8(&bytes[start..end])
+            && let Some(version) = parse_glibc_version_token(token)
+            && highest.is_none_or(|current| version > current)
+        {
+            highest = Some(version);
+        }
+        offset = start;
+    }
+
+    highest
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn glibc_check_disabled() -> bool {
+    [
+        "DEEPSEEK_SKIP_GLIBC_CHECK",
+        "DEEPSEEK_TUI_SKIP_GLIBC_CHECK",
+        "DEEPSEEK_SKIP_GLIBC_CHECK",
+    ]
+    .into_iter()
+    .any(|name| std::env::var_os(name).is_some_and(|value| value == std::ffi::OsStr::new("1")))
+}
+
+fn preflight_downloaded_binary(asset_name: &str, bytes: &[u8]) -> Result<()> {
+    if !cfg!(target_os = "linux") || glibc_check_disabled() {
+        return Ok(());
+    }
+
+    let Some(required) = highest_required_glibc(bytes) else {
+        return Ok(());
+    };
+    let host = detect_host_glibc();
+    if host.is_some_and(|host| host >= required) {
+        return Ok(());
+    }
+
+    bail!(
+        "{}",
+        glibc_compatibility_message(asset_name, required, host)
+    );
+}
+
+fn detect_host_glibc() -> Option<GlibcVersion> {
+    let getconf = std::process::Command::new("getconf")
+        .arg("GNU_LIBC_VERSION")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|output| parse_glibc_version(&output));
+    if getconf.is_some() {
+        return getconf;
+    }
+
+    std::process::Command::new("ldd")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| {
+            let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+            if text.trim().is_empty() {
+                text = String::from_utf8_lossy(&output.stderr).to_string();
+            }
+            parse_glibc_version(&text)
+        })
+}
+
+fn glibc_compatibility_message(
+    asset_name: &str,
+    required: GlibcVersion,
+    host: Option<GlibcVersion>,
+) -> String {
+    let host_line = match host {
+        Some(host) => format!(
+            "this system has glibc {}, which is too old for that asset.",
+            host.display()
+        ),
+        None => "this system does not appear to provide GNU libc.".to_string(),
+    };
+    format!(
+        "\
+Prebuilt DeepSeek asset `{asset_name}` requires GLIBC_{required}, but {host_line}
+
+Official Linux release binaries are GNU libc builds. Ubuntu 22.04 ships glibc
+2.35, so it cannot run a binary that was built against Ubuntu 24.04/glibc 2.39.
+
+Install from source on this host instead:
+
+  cargo install deepseek-cli --locked
+  cargo install deepseek-tui --locked
+
+Release engineering follow-up: build Linux GNU assets against an older glibc
+baseline, or add a musl/static Linux asset. Set DEEPSEEK_SKIP_GLIBC_CHECK=1 to
+bypass this preflight at your own risk.",
+        required = required.display(),
+    )
 }
 
 /// Replace the running binary.
@@ -620,6 +1050,10 @@ mod tests {
             "deepseek-tui"
         );
         assert_eq!(
+            binary_prefix_for_exe(Path::new("DeepSeek-TUI.exe")),
+            "deepseek-tui"
+        );
+        assert_eq!(
             binary_prefix_for_exe(Path::new("/usr/local/bin/deepseek-tui")),
             "deepseek-tui"
         );
@@ -634,6 +1068,83 @@ mod tests {
 
         // Fallback for unknown names
         assert_eq!(binary_prefix_for_exe(Path::new("other-binary")), "deepseek");
+
+        // Legacy names still map to the canonical update asset prefixes.
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("deepseek-tui")),
+            "deepseek-tui"
+        );
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("/usr/local/bin/deepseek-tui")),
+            "deepseek-tui"
+        );
+        assert_eq!(
+            binary_prefix_for_exe(Path::new("DeepSeek-TUI.exe")),
+            "deepseek-tui"
+        );
+        assert_eq!(binary_prefix_for_exe(Path::new("deepseek")), "deepseek");
+    }
+
+    #[test]
+    fn legacy_dispatcher_update_targets_canonical_deepseek_pair() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dispatcher = dir
+            .path()
+            .join(format!("deepseek{}", std::env::consts::EXE_SUFFIX));
+        let tui = dir
+            .path()
+            .join(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&dispatcher, b"legacy dispatcher").unwrap();
+        std::fs::write(&tui, b"legacy tui").unwrap();
+
+        let targets = update_targets_for_exe(&dispatcher);
+        let paths = targets
+            .iter()
+            .map(|target| target.path.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                dir.path()
+                    .join(format!("deepseek{}", std::env::consts::EXE_SUFFIX)),
+                dir.path()
+                    .join(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX))
+            ]
+        );
+        assert!(targets[0].asset_stem.starts_with("deepseek-"));
+        assert!(targets[1].asset_stem.starts_with("deepseek-tui-"));
+    }
+
+    #[test]
+    fn legacy_tui_update_targets_canonical_tui_pair() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let dispatcher = dir
+            .path()
+            .join(format!("deepseek{}", std::env::consts::EXE_SUFFIX));
+        let tui = dir
+            .path()
+            .join(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&dispatcher, b"legacy dispatcher").unwrap();
+        std::fs::write(&tui, b"legacy tui").unwrap();
+
+        let targets = update_targets_for_exe(&tui);
+        let paths = targets
+            .iter()
+            .map(|target| target.path.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                dir.path()
+                    .join(format!("deepseek-tui{}", std::env::consts::EXE_SUFFIX)),
+                dir.path()
+                    .join(format!("deepseek{}", std::env::consts::EXE_SUFFIX))
+            ]
+        );
+        assert!(targets[0].asset_stem.starts_with("deepseek-tui-"));
+        assert!(targets[1].asset_stem.starts_with("deepseek-"));
     }
 
     #[test]
@@ -736,6 +1247,44 @@ mod tests {
             hash,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn glibc_version_parser_reads_getconf_and_symbol_text() {
+        assert_eq!(
+            parse_glibc_version("glibc 2.35\n"),
+            Some(GlibcVersion::new(2, 35, 0))
+        );
+        assert_eq!(
+            parse_glibc_version("requires GLIBC_2.39"),
+            Some(GlibcVersion::new(2, 39, 0))
+        );
+        assert_eq!(parse_glibc_version("not glibc"), None);
+    }
+
+    #[test]
+    fn highest_required_glibc_finds_highest_binary_symbol() {
+        let bytes = b"\0GLIBC_2.17\0other\0GLIBC_2.39\0GLIBC_2.35";
+
+        assert_eq!(
+            highest_required_glibc(bytes),
+            Some(GlibcVersion::new(2, 39, 0))
+        );
+    }
+
+    #[test]
+    fn glibc_compatibility_message_is_deepseek_branded_and_actionable() {
+        let message = glibc_compatibility_message(
+            "deepseek-linux-x64",
+            GlibcVersion::new(2, 39, 0),
+            Some(GlibcVersion::new(2, 35, 0)),
+        );
+
+        assert!(message.contains("Prebuilt DeepSeek asset `deepseek-linux-x64`"));
+        assert!(message.contains("requires GLIBC_2.39"));
+        assert!(message.contains("this system has glibc 2.35"));
+        assert!(message.contains("cargo install deepseek-cli --locked"));
+        assert!(message.contains("build Linux GNU assets against an older glibc"));
     }
 
     #[test]
@@ -902,6 +1451,69 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-wind
     }
 
     #[test]
+    fn github_release_url_parser_extracts_tag() {
+        let url = reqwest::Url::parse("https://github.com/coohu/deepseek-tui/releases/tag/v0.8.61")
+            .unwrap();
+
+        assert_eq!(
+            release_tag_from_github_release_url(&url).as_deref(),
+            Some("v0.8.61")
+        );
+    }
+
+    #[test]
+    fn github_release_download_fallback_uses_deterministic_asset_urls() {
+        let release = release_from_github_download_tag("0.8.61", "macos", "aarch64");
+
+        assert_eq!(release.tag_name, "v0.8.61");
+        assert_eq!(
+            release.assets[0].browser_download_url,
+            "https://github.com/coohu/deepseek-tui/releases/download/v0.8.61/deepseek-artifacts-sha256.txt"
+        );
+        let dispatcher =
+            select_platform_asset(&release, "deepseek-macos-arm64").expect("dispatcher asset");
+        assert_eq!(
+            dispatcher.browser_download_url,
+            "https://github.com/coohu/deepseek-tui/releases/download/v0.8.61/deepseek-macos-arm64"
+        );
+        let tui = select_platform_asset(&release, "deepseek-tui-macos-arm64").expect("tui asset");
+        assert_eq!(
+            tui.browser_download_url,
+            "https://github.com/coohu/deepseek-tui/releases/download/v0.8.61/deepseek-tui-macos-arm64"
+        );
+    }
+
+    #[test]
+    fn latest_stable_redirect_fallback_reads_tag_url() {
+        let (url, request_rx, handle) = serve_http_once("200 OK", "text/html", b"<html></html>");
+        let tag_url = url.replace("/release", "/coohu/deepseek-tui/releases/tag/v9.9.9");
+
+        let tag = fetch_latest_stable_tag_from_redirect_url(&tag_url, None)
+            .expect("tag should parse from final URL");
+
+        assert_eq!(tag, "v9.9.9");
+        let request = request_rx.recv().expect("captured request");
+        assert!(
+            request.starts_with("GET /coohu/deepseek-tui/releases/tag/v9.9.9 "),
+            "got {request:?}"
+        );
+        handle.join().expect("test server thread");
+    }
+
+    #[test]
+    fn github_release_html_parser_skips_empty_first_marker() {
+        let body = r#"
+            <a href="/coohu/deepseek-tui/releases/tag/?expanded=true">generic</a>
+            <a href="/coohu/deepseek-tui/releases/tag/v9.9.9">latest</a>
+        "#;
+
+        assert_eq!(
+            release_tag_from_github_release_html(body).as_deref(),
+            Some("v9.9.9")
+        );
+    }
+
+    #[test]
     fn cnb_release_base_url_includes_tag_directory() {
         assert_eq!(
             deepseek_release::cnb_release_base_url("0.8.47"),
@@ -986,33 +1598,41 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-wind
         assert!(hint.contains("deepseek-tui --locked"), "{hint}");
     }
 
-    fn serve_http_once(
-        status: &'static str,
-        content_type: &'static str,
-        body: &'static [u8],
+    fn serve_http_responses(
+        responses: Vec<(&'static str, &'static str, &'static [u8])>,
     ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let addr = listener.local_addr().expect("test server addr");
         let (request_tx, request_rx) = mpsc::channel();
 
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept test request");
-            let mut buf = [0_u8; 4096];
-            let n = stream.read(&mut buf).expect("read test request");
-            request_tx
-                .send(String::from_utf8_lossy(&buf[..n]).to_string())
-                .expect("send captured request");
+            for (status, content_type, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept test request");
+                let mut buf = [0_u8; 4096];
+                let n = stream.read(&mut buf).expect("read test request");
+                request_tx
+                    .send(String::from_utf8_lossy(&buf[..n]).to_string())
+                    .expect("send captured request");
 
-            write!(
-                stream,
-                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .expect("write test response headers");
-            stream.write_all(body).expect("write test response body");
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .expect("write test response headers");
+                stream.write_all(body).expect("write test response body");
+            }
         });
 
         (format!("http://{addr}/release"), request_rx, handle)
+    }
+
+    fn serve_http_once(
+        status: &'static str,
+        content_type: &'static str,
+        body: &'static [u8],
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        serve_http_responses(vec![(status, content_type, body)])
     }
 
     #[test]
@@ -1058,9 +1678,35 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-wind
     }
 
     #[test]
+    fn fetch_latest_release_from_url_retries_transient_gateway_error() {
+        let body = br#"{
+          "tag_name": "v9.9.9",
+          "assets": [
+            { "name": "deepseek-linux-x64", "browser_download_url": "http://example.invalid/deepseek-linux-x64" }
+          ]
+        }"#;
+        let (url, request_rx, handle) = serve_http_responses(vec![
+            ("504 Gateway Timeout", "text/plain", b"gateway timeout"),
+            ("200 OK", "application/json", body),
+        ]);
+        let release = fetch_latest_release_from_url(&url, None)
+            .expect("release JSON should parse after retry");
+
+        assert_eq!(release.tag_name, "v9.9.9");
+        let first = request_rx.recv().expect("first request");
+        let second = request_rx.recv().expect("second request");
+        assert!(first.starts_with("GET /release "), "got {first:?}");
+        assert!(second.starts_with("GET /release "), "got {second:?}");
+        handle.join().expect("test server thread");
+    }
+
+    #[test]
     fn fetch_latest_release_from_url_reports_http_errors() {
-        let (url, _request_rx, handle) =
-            serve_http_once("500 Internal Server Error", "text/plain", b"server broke");
+        let (url, _request_rx, handle) = serve_http_responses(vec![
+            ("500 Internal Server Error", "text/plain", b"server broke"),
+            ("500 Internal Server Error", "text/plain", b"server broke"),
+            ("500 Internal Server Error", "text/plain", b"server broke"),
+        ]);
         let err = fetch_latest_release_from_url(&url, None).expect_err("HTTP 500 should fail");
 
         assert!(
@@ -1110,6 +1756,22 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  *deepseek-wind
             err.to_string().contains("no beta release found"),
             "unexpected error: {err:#}"
         );
+        handle.join().expect("test server thread");
+    }
+
+    #[test]
+    fn download_url_retries_transient_gateway_error() {
+        let (url, request_rx, handle) = serve_http_responses(vec![
+            ("503 Service Unavailable", "text/plain", b"try again"),
+            ("200 OK", "application/octet-stream", b"\0binary bytes"),
+        ]);
+        let bytes = download_url(&url, None).expect("binary download should retry and succeed");
+
+        assert_eq!(bytes, b"\0binary bytes");
+        let first = request_rx.recv().expect("first request");
+        let second = request_rx.recv().expect("second request");
+        assert!(first.starts_with("GET /release "), "got {first:?}");
+        assert!(second.starts_with("GET /release "), "got {second:?}");
         handle.join().expect("test server thread");
     }
 

@@ -163,7 +163,6 @@ fn agent_type(raw: Option<&str>) -> anyhow::Result<AgentType> {
         "review" => Ok(AgentType::Review),
         "implementer" | "implement" => Ok(AgentType::Implementer),
         "verifier" | "verify" => Ok(AgentType::Verifier),
-        "tool_agent" | "tool" => Ok(AgentType::ToolAgent),
         value => Err(StarlarkWorkflowError::InvalidEnum {
             field: "agent_type",
             value: value.to_string(),
@@ -286,7 +285,7 @@ fn workflow_builtins(builder: &mut GlobalsBuilder) {
         encode_node(WorkflowNode::Leaf(leaf_spec(
             id,
             &format!("Search codebase: {query}"),
-            Some("tool"),
+            Some("explore"),
             Some("read_only"),
             Some("shared"),
             file_scope,
@@ -302,7 +301,7 @@ fn workflow_builtins(builder: &mut GlobalsBuilder) {
         encode_node(WorkflowNode::Leaf(leaf_spec(
             id,
             &format!("Run shell command: {command}"),
-            Some("tool"),
+            Some("verifier"),
             Some("read_only"),
             Some("shared"),
             file_scope,
@@ -440,7 +439,7 @@ mod tests {
         let WorkflowNode::Leaf(leaf) = &branch.children[0] else {
             panic!("first branch child should be a leaf");
         };
-        assert_eq!(leaf.agent_type, AgentType::ToolAgent);
+        assert_eq!(leaf.agent_type, AgentType::Explore);
     }
 
     #[test]

@@ -400,7 +400,7 @@ impl ToolSpec for TaskShellStartTool {
     }
 
     fn description(&self) -> &'static str {
-        "Start a long-running shell command in the background and return a shell task_id immediately. Use task_shell_wait to poll and optionally record gate evidence on the active durable task."
+        "Start a long-running shell command in the background and return a shell task_id immediately. Completion is tracked in the task/status surface; use task_shell_wait for early output, explicit barriers, or gate evidence on the active durable task."
     }
 
     fn input_schema(&self) -> Value {
@@ -427,6 +427,10 @@ impl ToolSpec for TaskShellStartTool {
 
     fn approval_requirement(&self) -> ApprovalRequirement {
         ApprovalRequirement::Required
+    }
+
+    fn starts_detached_for(&self, input: &Value) -> bool {
+        input.get("command").and_then(Value::as_str).is_some()
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {

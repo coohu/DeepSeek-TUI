@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::tools::spec::{
@@ -17,8 +17,10 @@ use crate::tools::spec::{
 };
 
 /// Maximum number of automatic goal-continuation prompt injections in one
-/// engine turn. This prevents a missing `update_goal` call from becoming an
-/// unbounded local loop.
+/// engine turn. This is intra-turn granularity only — it prevents a stuck spin
+/// within a single turn from making no progress. The cross-turn loop has **no
+/// cap**: a goal runs until complete/blocked/paused, or an optional budget is
+/// exhausted. See `goal_loop::decide_continuation`.
 pub const MAX_GOAL_CONTINUATIONS_PER_TURN: u32 = 3;
 
 /// Shared reference to the current runtime goal.
@@ -30,15 +32,15 @@ pub fn new_shared_goal_state() -> SharedGoalState {
     Arc::new(Mutex::new(GoalState::default()))
 }
 
-/// Create shared state seeded from the existing `/goal` surface.
+/// Create shared state seeded from the host goal surface with an explicit status.
 #[must_use]
-pub fn new_shared_goal_state_from_host(
+pub fn new_shared_goal_state_from_host_status(
     objective: Option<String>,
     token_budget: Option<u32>,
-    completed: bool,
+    status: GoalStatus,
 ) -> SharedGoalState {
     let mut state = GoalState::default();
-    state.sync_from_host(objective.as_deref(), token_budget, completed);
+    state.sync_from_host_status(objective.as_deref(), token_budget, status);
     Arc::new(Mutex::new(state))
 }
 
@@ -46,6 +48,7 @@ pub fn new_shared_goal_state_from_host(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalStatus {
     Active,
+    Paused,
     Complete,
     Blocked,
 }
@@ -55,6 +58,7 @@ impl GoalStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Paused => "paused",
             Self::Complete => "complete",
             Self::Blocked => "blocked",
         }
@@ -68,10 +72,14 @@ pub struct GoalState {
     objective: Option<String>,
     token_budget: Option<u32>,
     status: Option<GoalStatus>,
+    tokens_used: u64,
+    time_used_seconds: u64,
+    continuation_count: u32,
     started_at: Option<Instant>,
     finished_at: Option<Instant>,
     evidence: Option<String>,
     blocker: Option<String>,
+    completion_verification: Option<GoalCompletionVerification>,
 }
 
 impl GoalState {
@@ -81,37 +89,47 @@ impl GoalState {
     }
 
     #[must_use]
+    pub fn token_budget(&self) -> Option<u32> {
+        self.token_budget
+    }
+
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.objective.is_some() && self.status == Some(GoalStatus::Active)
     }
 
-    pub fn sync_from_host(
+    pub fn sync_from_host_status(
         &mut self,
         objective: Option<&str>,
         token_budget: Option<u32>,
-        completed: bool,
+        status: GoalStatus,
     ) {
         let objective = objective.map(str::trim).filter(|value| !value.is_empty());
         match objective {
             Some(objective) => {
                 let changed = self.objective.as_deref() != Some(objective);
+                let status_changed = self.status != Some(status);
                 if changed {
                     self.objective = Some(objective.to_string());
                     self.token_budget = token_budget;
+                    self.tokens_used = 0;
+                    self.time_used_seconds = 0;
+                    self.continuation_count = 0;
                     self.started_at = Some(Instant::now());
                     self.evidence = None;
                     self.blocker = None;
-                } else if token_budget.is_some() {
+                    self.completion_verification = None;
+                } else if self.token_budget != token_budget {
                     self.token_budget = token_budget;
                 }
 
-                if changed || self.status.is_none() {
-                    self.status = Some(if completed {
-                        GoalStatus::Complete
+                if changed || status_changed || self.status.is_none() {
+                    self.status = Some(status);
+                    self.finished_at = if status == GoalStatus::Active {
+                        None
                     } else {
-                        GoalStatus::Active
-                    });
-                    self.finished_at = completed.then(Instant::now);
+                        Some(Instant::now())
+                    };
                 }
             }
             None => self.clear(),
@@ -122,28 +140,34 @@ impl GoalState {
         self.objective = Some(objective);
         self.token_budget = token_budget;
         self.status = Some(GoalStatus::Active);
+        self.tokens_used = 0;
+        self.time_used_seconds = 0;
+        self.continuation_count = 0;
         self.started_at = Some(Instant::now());
         self.finished_at = None;
         self.evidence = None;
         self.blocker = None;
+        self.completion_verification = None;
     }
 
-    pub fn resume(&mut self, objective: Option<String>) -> Result<(), &'static str> {
-        if let Some(objective) = objective {
-            self.create(objective, self.token_budget);
-            return Ok(());
+    pub fn record_usage(&mut self, token_delta: u64, time_delta_seconds: u64) {
+        if self.is_active() {
+            self.tokens_used = self.tokens_used.saturating_add(token_delta);
+            self.time_used_seconds = self.time_used_seconds.saturating_add(time_delta_seconds);
         }
-        if self.objective.is_none() {
-            return Err("No goal exists to resume.");
-        }
-        self.status = Some(GoalStatus::Active);
-        self.finished_at = None;
-        self.evidence = None;
-        self.blocker = None;
-        Ok(())
     }
 
-    pub fn mark_complete(&mut self, evidence: String) -> Result<(), &'static str> {
+    pub fn record_continuation(&mut self) {
+        if self.is_active() {
+            self.continuation_count = self.continuation_count.saturating_add(1);
+        }
+    }
+
+    pub fn mark_complete(
+        &mut self,
+        evidence: String,
+        verification: GoalCompletionVerification,
+    ) -> Result<(), &'static str> {
         if self.objective.is_none() {
             return Err("No active goal exists to complete.");
         }
@@ -151,6 +175,7 @@ impl GoalState {
         self.finished_at = Some(Instant::now());
         self.evidence = Some(evidence);
         self.blocker = None;
+        self.completion_verification = Some(verification);
         Ok(())
     }
 
@@ -161,6 +186,8 @@ impl GoalState {
         self.status = Some(GoalStatus::Blocked);
         self.finished_at = Some(Instant::now());
         self.blocker = Some(blocker);
+        self.evidence = None;
+        self.completion_verification = None;
         Ok(())
     }
 
@@ -178,9 +205,13 @@ impl GoalState {
                 .unwrap_or("none")
                 .to_string(),
             token_budget: self.token_budget,
+            tokens_used: self.tokens_used,
+            time_used_seconds: self.time_used_seconds,
+            continuation_count: self.continuation_count,
             elapsed_seconds: self.started_at.map(|started| started.elapsed().as_secs()),
             evidence: self.evidence.clone(),
             blocker: self.blocker.clone(),
+            completion_verification: self.completion_verification.clone(),
         }
     }
 }
@@ -191,9 +222,20 @@ pub struct GoalSnapshot {
     pub objective: Option<String>,
     pub status: String,
     pub token_budget: Option<u32>,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+    pub continuation_count: u32,
     pub elapsed_seconds: Option<u64>,
     pub evidence: Option<String>,
     pub blocker: Option<String>,
+    pub completion_verification: Option<GoalCompletionVerification>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalCompletionVerification {
+    pub status: String,
+    pub check: String,
+    pub summary: String,
 }
 
 impl GoalSnapshot {
@@ -201,23 +243,53 @@ impl GoalSnapshot {
     pub fn is_active(&self) -> bool {
         self.objective.is_some() && self.status == GoalStatus::Active.as_str()
     }
+
+    #[must_use]
+    pub fn from_thread_goal(goal: &deepseek_protocol::ThreadGoal) -> Self {
+        Self {
+            objective: Some(goal.objective.clone()),
+            status: thread_goal_status_as_goal_status(goal.status.clone())
+                .as_str()
+                .to_string(),
+            token_budget: goal
+                .token_budget
+                .and_then(|value| u32::try_from(value.max(0)).ok()),
+            tokens_used: u64::try_from(goal.tokens_used.max(0)).unwrap_or(u64::MAX),
+            time_used_seconds: u64::try_from(goal.time_used_seconds.max(0)).unwrap_or(u64::MAX),
+            continuation_count: u32::try_from(goal.continuation_count.max(0)).unwrap_or(u32::MAX),
+            elapsed_seconds: None,
+            evidence: None,
+            blocker: None,
+            completion_verification: None,
+        }
+    }
 }
 
-/// Render the bounded continuation prompt injected when a goal is still active
-/// after an assistant message has no tool calls.
 #[must_use]
-pub fn render_continuation_prompt(
-    snapshot: &GoalSnapshot,
-    continuation_index: u32,
-    max_continuations: u32,
-) -> String {
+pub fn thread_goal_status_as_goal_status(
+    status: deepseek_protocol::ThreadGoalStatus,
+) -> GoalStatus {
+    match status {
+        deepseek_protocol::ThreadGoalStatus::Active => GoalStatus::Active,
+        deepseek_protocol::ThreadGoalStatus::Paused => GoalStatus::Paused,
+        deepseek_protocol::ThreadGoalStatus::Complete => GoalStatus::Complete,
+        deepseek_protocol::ThreadGoalStatus::Blocked
+        | deepseek_protocol::ThreadGoalStatus::UsageLimited
+        | deepseek_protocol::ThreadGoalStatus::BudgetLimited => GoalStatus::Blocked,
+    }
+}
+
+/// Render the continuation prompt injected when a goal is still active after a
+/// turn. There is no run-level cap, so this shows progress (turn count, tokens)
+/// rather than a "N/max" meter — the loop runs until done, blocked, or paused.
+#[must_use]
+pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u32) -> String {
     let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
     format!(
-        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass: {}/{}.\nIf the goal is complete, call `update_goal` with `status: \"complete\"` and concrete evidence. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
+        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass #{}.\nIf the goal is complete, first run or cite a concrete verifier/check, then call `update_goal` with `status: \"complete\"`, concrete evidence, and `verification: {{\"status\":\"passed\",\"check\":\"...\",\"summary\":\"...\"}}`. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
         crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
         goal_json,
         continuation_index,
-        max_continuations,
     )
 }
 
@@ -246,6 +318,32 @@ fn parse_token_budget(input: &Value) -> Result<Option<u32>, ToolError> {
         .map_err(|_| ToolError::invalid_input("token_budget is too large"))
 }
 
+fn parse_completion_verification(input: &Value) -> Result<GoalCompletionVerification, ToolError> {
+    let Some(raw) = input.get("verification") else {
+        return Err(ToolError::invalid_input(
+            "verification is required when status is complete; run a verifier/check and pass verification: {status, check, summary}",
+        ));
+    };
+    let verification: GoalCompletionVerification = serde_json::from_value(raw.clone())
+        .map_err(|err| ToolError::invalid_input(format!("invalid verification: {err}")))?;
+    if verification.status.trim() != "passed" {
+        return Err(ToolError::invalid_input(
+            "verification.status must be 'passed' before update_goal can mark a goal complete",
+        ));
+    }
+    if verification.check.trim().is_empty() {
+        return Err(ToolError::invalid_input("verification.check is required"));
+    }
+    if verification.summary.trim().is_empty() {
+        return Err(ToolError::invalid_input("verification.summary is required"));
+    }
+    Ok(GoalCompletionVerification {
+        status: "passed".to_string(),
+        check: verification.check.trim().to_string(),
+        summary: verification.summary.trim().to_string(),
+    })
+}
+
 fn json_result(snapshot: &GoalSnapshot) -> Result<ToolResult, ToolError> {
     ToolResult::json(snapshot).map_err(|err| ToolError::execution_failed(err.to_string()))
 }
@@ -268,7 +366,7 @@ impl ToolSpec for CreateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Create or replace the current runtime goal. Use this when the user asks for a persistent goal that should be audited before the turn is allowed to finish."
+        "Create the current runtime goal. Use this only when the user explicitly asks to pursue a persistent objective."
     }
 
     fn input_schema(&self) -> Value {
@@ -385,7 +483,7 @@ impl ToolSpec for UpdateGoalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Update the runtime goal. This is the LLM-as-judge completion gate: only mark complete when the objective has been verified against concrete current-state evidence."
+        "Update the runtime goal completion gate. Only mark complete when the objective has verified evidence; mark blocked only after a real blocker prevents progress."
     }
 
     fn input_schema(&self) -> Value {
@@ -394,12 +492,33 @@ impl ToolSpec for UpdateGoalTool {
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["active", "complete", "blocked"],
-                    "description": "Use complete only when the goal is fully satisfied; blocked when meaningful progress cannot continue; active to resume or revise the objective."
+                    "enum": ["complete", "blocked"],
+                    "description": "Use complete only when the goal is fully satisfied; blocked when meaningful progress cannot continue. Pause, resume, and budget-limit states are controlled by the user or system."
                 },
                 "evidence": {
                     "type": "string",
                     "description": "Required when status is complete. Briefly cite the proof that the goal is done."
+                },
+                "verification": {
+                    "type": "object",
+                    "description": "Required when status is complete. A verifier-as-judge receipt from a concrete check, such as run_verifiers or an equivalent project-specific gate.",
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["passed"],
+                            "description": "Must be passed before the goal can be marked complete."
+                        },
+                        "check": {
+                            "type": "string",
+                            "description": "The verifier/check that passed."
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Brief result summary from the verifier/check."
+                        }
+                    },
+                    "required": ["status", "check", "summary"],
+                    "additionalProperties": false
                 },
                 "blocker": {
                     "type": "string",
@@ -407,7 +526,7 @@ impl ToolSpec for UpdateGoalTool {
                 },
                 "objective": {
                     "type": "string",
-                    "description": "Optional replacement objective when status is active."
+                    "description": "Reserved for future host-controlled goal edits; ignored by update_goal."
                 }
             },
             "required": ["status"],
@@ -440,8 +559,9 @@ impl ToolSpec for UpdateGoalTool {
                             "evidence is required when status is complete",
                         ));
                     }
+                    let verification = parse_completion_verification(&input)?;
                     state
-                        .mark_complete(evidence)
+                        .mark_complete(evidence, verification)
                         .map_err(ToolError::invalid_input)?;
                 }
                 "blocked" => {
@@ -460,18 +580,9 @@ impl ToolSpec for UpdateGoalTool {
                         .mark_blocked(blocker)
                         .map_err(ToolError::invalid_input)?;
                 }
-                "active" => {
-                    let objective = input
-                        .get("objective")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string);
-                    state.resume(objective).map_err(ToolError::invalid_input)?;
-                }
                 other => {
                     return Err(ToolError::invalid_input(format!(
-                        "unsupported goal status '{other}'"
+                        "unsupported goal status '{other}'; update_goal can only mark complete or blocked"
                     )));
                 }
             }
@@ -516,7 +627,12 @@ mod tests {
             .execute(
                 json!({
                     "status": "complete",
-                    "evidence": "focused tests passed"
+                    "evidence": "focused tests passed",
+                    "verification": {
+                        "status": "passed",
+                        "check": "cargo test -p deepseek-tui goal_loop",
+                        "summary": "focused tests passed"
+                    }
                 }),
                 &ctx,
             )
@@ -529,8 +645,11 @@ mod tests {
 
     #[tokio::test]
     async fn update_goal_requires_completion_evidence() {
-        let state =
-            new_shared_goal_state_from_host(Some("prove completion".to_string()), None, false);
+        let state = new_shared_goal_state_from_host_status(
+            Some("prove completion".to_string()),
+            None,
+            GoalStatus::Active,
+        );
         let update = UpdateGoalTool::new(state);
         let err = update
             .execute(json!({"status": "complete"}), &ToolContext::new("."))
@@ -540,20 +659,122 @@ mod tests {
         assert!(err.to_string().contains("evidence is required"));
     }
 
+    #[tokio::test]
+    async fn update_goal_requires_passed_verification_to_complete() {
+        let state = new_shared_goal_state_from_host_status(
+            Some("prove completion".to_string()),
+            None,
+            GoalStatus::Active,
+        );
+        let update = UpdateGoalTool::new(state.clone());
+        let err = update
+            .execute(
+                json!({
+                    "status": "complete",
+                    "evidence": "all checks look good"
+                }),
+                &ToolContext::new("."),
+            )
+            .await
+            .expect_err("missing verifier gate should fail");
+
+        assert!(err.to_string().contains("verification is required"));
+        assert!(state.lock().expect("goal lock").is_active());
+    }
+
+    #[tokio::test]
+    async fn update_goal_rejects_model_resume() {
+        let state = new_shared_goal_state_from_host_status(
+            Some("pause remains host controlled".to_string()),
+            None,
+            GoalStatus::Paused,
+        );
+        let update = UpdateGoalTool::new(state);
+        let err = update
+            .execute(json!({"status": "active"}), &ToolContext::new("."))
+            .await
+            .expect_err("model resume should fail");
+
+        assert!(err.to_string().contains("complete or blocked"));
+    }
+
+    #[test]
+    fn paused_host_goal_is_not_active() {
+        let state = new_shared_goal_state_from_host_status(
+            Some("wait for user".to_string()),
+            Some(42),
+            GoalStatus::Paused,
+        );
+        let snapshot = state.lock().expect("goal lock").snapshot();
+
+        assert_eq!(snapshot.status, "paused");
+        assert_eq!(snapshot.token_budget, Some(42));
+        assert!(!snapshot.is_active());
+    }
+
+    #[test]
+    fn goal_state_projects_usage_and_continuations() {
+        let state = new_shared_goal_state_from_host_status(
+            Some("persist accounting".to_string()),
+            Some(1_000),
+            GoalStatus::Active,
+        );
+        {
+            let mut goal = state.lock().expect("goal lock");
+            goal.record_usage(300, 12);
+            goal.record_continuation();
+        }
+
+        let snapshot = state.lock().expect("goal lock").snapshot();
+        assert_eq!(snapshot.tokens_used, 300);
+        assert_eq!(snapshot.time_used_seconds, 12);
+        assert_eq!(snapshot.continuation_count, 1);
+    }
+
+    #[test]
+    fn protocol_thread_goal_converts_to_runtime_snapshot() {
+        let snapshot = GoalSnapshot::from_thread_goal(&deepseek_protocol::ThreadGoal {
+            thread_id: "thread-1".to_string(),
+            goal_id: "goal-1".to_string(),
+            objective: "Bridge the goal models".to_string(),
+            status: deepseek_protocol::ThreadGoalStatus::Active,
+            token_budget: Some(2_000),
+            tokens_used: 750,
+            time_used_seconds: 44,
+            continuation_count: 3,
+            created_at: 1,
+            updated_at: 2,
+        });
+
+        assert_eq!(
+            snapshot.objective.as_deref(),
+            Some("Bridge the goal models")
+        );
+        assert_eq!(snapshot.status, "active");
+        assert_eq!(snapshot.token_budget, Some(2_000));
+        assert_eq!(snapshot.tokens_used, 750);
+        assert_eq!(snapshot.time_used_seconds, 44);
+        assert_eq!(snapshot.continuation_count, 3);
+    }
+
     #[test]
     fn continuation_prompt_includes_bound_and_goal_state() {
         let snapshot = GoalSnapshot {
             objective: Some("finish issue 2199".to_string()),
             status: "active".to_string(),
             token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            continuation_count: 0,
             elapsed_seconds: Some(5),
             evidence: None,
             blocker: None,
+            completion_verification: None,
         };
 
-        let prompt = render_continuation_prompt(&snapshot, 2, 3);
+        let prompt = render_continuation_prompt(&snapshot, 2);
         assert!(prompt.contains("Goal Continuation"));
         assert!(prompt.contains("finish issue 2199"));
-        assert!(prompt.contains("Continuation pass: 2/3"));
+        assert!(prompt.contains("Continuation pass #2"));
     }
 }

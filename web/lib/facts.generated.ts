@@ -18,8 +18,8 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-06-08T14:59:09.707Z",
-  "version": "0.8.54",
+  "generatedAt": "2026-06-24T09:06:20.600Z",
+  "version": "0.8.65",
   "crates": [
     "agent",
     "app-server",
@@ -35,7 +35,6 @@ export const FACTS: RepoFacts = {
     "state",
     "tools",
     "tui",
-    "tui-core",
     "whaleflow"
   ],
   "sandboxBackends": [
@@ -50,6 +49,11 @@ export const FACTS: RepoFacts = {
       "id": "deepseek",
       "label": "DeepSeek",
       "env": "DEEPSEEK_API_KEY"
+    },
+    {
+      "id": "deepseek-anthropic",
+      "label": "DeepSeek Anthropic",
+      "env": "DEEPSEEK_API_KEY / ANTHROPIC_API_KEY"
     },
     {
       "id": "nvidia-nim",
@@ -135,11 +139,51 @@ export const FACTS: RepoFacts = {
       "id": "huggingface",
       "label": "Hugging Face",
       "env": "HUGGINGFACE_API_KEY / HF_TOKEN"
+    },
+    {
+      "id": "together",
+      "label": "Together AI",
+      "env": "TOGETHER_API_KEY"
+    },
+    {
+      "id": "qianfan",
+      "label": "Baidu Qianfan",
+      "env": "QIANFAN_API_KEY / BAIDU_QIANFAN_API_KEY"
+    },
+    {
+      "id": "openai-codex",
+      "label": "OpenAI Codex",
+      "env": "ChatGPT/Codex OAuth via `codex login` (OPENAI_CODEX_ACCESS_TOKEN / CODEX_ACCESS_TOKEN override)"
+    },
+    {
+      "id": "anthropic",
+      "label": "Anthropic",
+      "env": "ANTHROPIC_API_KEY"
+    },
+    {
+      "id": "zai",
+      "label": "Z.ai",
+      "env": "ZAI_API_KEY / Z_AI_API_KEY"
+    },
+    {
+      "id": "stepfun",
+      "label": "StepFun",
+      "env": "STEPFUN_API_KEY / STEP_API_KEY"
+    },
+    {
+      "id": "minimax",
+      "label": "MiniMax",
+      "env": "MINIMAX_API_KEY"
+    },
+    {
+      "id": "deepinfra",
+      "label": "DeepInfra",
+      "env": "DEEPINFRA_API_KEY / DEEPINFRA_TOKEN"
     }
   ],
   "defaultModel": "deepseek-v4-pro",
   "nodeEngines": ">=18",
-  "toolCount": 76,
+  "toolCount": 78,
   "license": "MIT",
   "latestRelease": null
 };

@@ -11,16 +11,19 @@ Bindings are not (yet) user-configurable — tracked for a future release (#436,
 | `F1` or `Ctrl-/`     | Toggle the help overlay                                       |
 | `Ctrl-K`             | Open the command palette (slash-command finder)                |
 | `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
+| `Ctrl-B`             | Background the running foreground shell command (turn continues; the command becomes a `/jobs` background job) |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
 | `Tab`                | Cycle TUI mode: Plan → Agent → YOLO → Plan                     |
-| `Shift-Tab`          | Cycle reasoning effort: off → high → max → off                 |
+| `Shift-Tab`          | Cycle reasoning effort for the active provider. DeepSeek-style providers cycle off → high → max → off; OpenAI Codex cycles low → medium → high → xhigh → low. |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
 | `Ctrl-O`             | Open Activity Detail for selected/live/recent tool work, or the full reasoning timeline for thinking blocks when the composer is empty |
+| `Alt-V` / `Option-V` (macOS) | Open the details pager for the selected, visible, or most recent tool/sub-agent card; terminals that emit the legacy Option-V glyph are also handled |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Alt-G`              | Scroll transcript to top when the composer is empty             |
-| `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` / `Alt-0` | Focus Work / Tasks / Agents / Context / Auto sidebar |
-| `Ctrl-Alt-0`         | Hide the right sidebar                                          |
+| `Alt-1`-`Alt-8`      | Dispatch Hotbar slots 1-8 when no modal or inline picker is open |
+| `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` / `Alt-0` | Focus Pinned / Tasks / Agents / Context / Auto sidebar |
+| `Ctrl-Alt-0`         | Hide/show the pinned sidebar                                    |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast        |
 
 ## Composer
@@ -30,7 +33,8 @@ Editing the message you're about to send.
 | Chord                       | Action                                                  |
 |-----------------------------|---------------------------------------------------------|
 | `Enter`                     | Send the message (or run the slash command)             |
-| `Alt-Enter` / `Ctrl-J`      | Insert a newline without sending                        |
+| `Alt-Enter` / `Ctrl-J`      | Insert a newline without sending (`Ctrl-J` force-steers while a turn is running) |
+| `Ctrl-Enter` / `Cmd-Enter`  | Force a live steer into the current turn when supported by the terminal |
 | `Ctrl-U`                    | Delete to start of line                                 |
 | `Ctrl-W`                    | Delete previous word                                    |
 | `Ctrl-A` / `Home`           | Move to start of line                                   |
@@ -41,11 +45,36 @@ Editing the message you're about to send.
 | `Ctrl-Y`                    | Yank (paste) from kill buffer                           |
 | `↑` / `↓`                   | Cycle composer history (also selects popup/attachment items) |
 | `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
-| `Ctrl-S`                    | Stash current draft (`/stash list`, `/stash pop` to recover) |
+| `Ctrl-S`                    | Stash current draft; with queued follow-ups during a running turn, send the next queued item now |
 | `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
 | `Ctrl-O`                    | Open external editor for the composer draft when it has focus |
 | `! command`                 | Run a shell command through normal approval, sandbox, and output surfaces |
+
+### Hotbar
+
+Hotbar trigger semantics are intentionally `Alt-1` through `Alt-8` only. Bare `1`-`8` is normal text input in the composer and remains owned by pickers, onboarding, approval prompts, and modal views.
+
+Fresh configs resolve to this default bar unless `[[hotbar]]` overrides it or `hotbar = []` disables it:
+
+| Slot | Chord   | Default action     | Label     |
+|------|---------|--------------------|-----------|
+| 1    | `Alt-1` | `voice.toggle`     | `voice`   |
+| 2    | `Alt-2` | `session.compact`  | `compact` |
+| 3    | `Alt-3` | `mode.plan`        | `plan`    |
+| 4    | `Alt-4` | `mode.agent`       | `agent`   |
+| 5    | `Alt-5` | `mode.yolo`        | `yolo`    |
+| 6    | `Alt-6` | `palette.open`     | `palette` |
+| 7    | `Alt-7` | `sidebar.toggle`   | `side`    |
+| 8    | `Alt-8` | `trust.toggle`     | `trust`   |
+
+| Focus state | Hotbar behavior |
+|-------------|-----------------|
+| Composer empty, text, or whitespace | `Alt-1`-`Alt-8` dispatches a configured slot |
+| Sidebar focused, hidden, or auto | `Alt-1`-`Alt-8` still dispatches a configured slot |
+| Slash menu or history search open | Blocked; the inline selector owns the key event |
+| Command palette, help, approval, file picker, session picker, Fleet setup, or any modal stack | Blocked; the modal owns the key event |
+| Onboarding | Blocked; onboarding owns numeric choices |
 
 ### `@` mentions
 
@@ -75,15 +104,16 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `↑` / `↓` / `j` / `k`| Move selection                                     |
 | `Enter`              | Activate the selected item (open / focus / cancel) |
 | `Tab`                | Cycle to next sidebar panel (Work → Tasks → Agents → Context) |
+| `Ctrl-X`             | Cancel all running background shell jobs when the Tasks panel is focused |
 | `Esc`                | Return focus to composer                           |
 
 ## Slash-command palette (after `Ctrl-K` or typing `/`)
 
-| Chord                | Action                                              |
-|----------------------|-----------------------------------------------------|
-| `↑` / `↓`            | Move selection                                     |
-| `Enter` / `Tab`      | Run / complete the highlighted command             |
-| `Esc`                | Dismiss palette                                     |
+| Chord                          | Action                                              |
+|--------------------------------|-----------------------------------------------------|
+| `↑` / `↓` / `Ctrl+P` / `Ctrl+N`| Move selection                                     |
+| `Enter` / `Tab`                | Run / complete the highlighted command             |
+| `Esc`                          | Dismiss palette                                     |
 
 ## Session Picker (`Ctrl-R` or `/sessions`)
 

@@ -10,6 +10,7 @@ const installScript = fs.readFileSync(
   "utf8",
 );
 const { installFailureHint, _internal } = require("../scripts/install");
+const { _internal: glibcInternal } = require("../scripts/preflight-glibc");
 
 function sha256(content) {
   return crypto.createHash("sha256").update(content).digest("hex");
@@ -107,6 +108,50 @@ test("install failure hint checks configured release base when override is alrea
       delete process.env.DEEPSEEK_TUI_RELEASE_BASE_URL;
     } else {
       process.env.DEEPSEEK_TUI_RELEASE_BASE_URL = previous;
+    }
+  }
+});
+
+test("glibc preflight message is DeepSeek-branded and actionable", () => {
+  const message = glibcInternal.glibcCompatibilityMessage([2, 39, 0], [2, 35, 0]);
+
+  assert.match(message, /Prebuilt DeepSeek Linux binaries require GLIBC_2\.39/);
+  assert.match(message, /this system has glibc 2\.35/);
+  assert.match(message, /cargo install deepseek-cli --locked/);
+  assert.match(message, /Linux x64 release asset is a static \(musl\) build/);
+  assert.match(message, /arm64 and riscv64 assets are GNU libc builds/);
+  assert.match(message, /DEEPSEEK_SKIP_GLIBC_CHECK=1/);
+});
+
+test("glibc preflight accepts canonical and legacy skip env vars", () => {
+  const previousCodewhale = process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+  const previousTui = process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK;
+  const previousLegacy = process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+  delete process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+  delete process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK;
+  delete process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+  try {
+    assert.equal(glibcInternal.skipGlibcCheck(), false);
+    process.env.DEEPSEEK_SKIP_GLIBC_CHECK = "1";
+    assert.equal(glibcInternal.skipGlibcCheck(), true);
+    delete process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+    process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK = "1";
+    assert.equal(glibcInternal.skipGlibcCheck(), true);
+  } finally {
+    if (previousCodewhale === undefined) {
+      delete process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+    } else {
+      process.env.DEEPSEEK_SKIP_GLIBC_CHECK = previousCodewhale;
+    }
+    if (previousTui === undefined) {
+      delete process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK;
+    } else {
+      process.env.DEEPSEEK_TUI_SKIP_GLIBC_CHECK = previousTui;
+    }
+    if (previousLegacy === undefined) {
+      delete process.env.DEEPSEEK_SKIP_GLIBC_CHECK;
+    } else {
+      process.env.DEEPSEEK_SKIP_GLIBC_CHECK = previousLegacy;
     }
   }
 });

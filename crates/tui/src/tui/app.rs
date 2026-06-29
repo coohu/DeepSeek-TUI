@@ -1,5 +1,6 @@
 //! Application state for the `DeepSeek` TUI.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -9,23 +10,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use deepseek_config::{ProviderChain, route::RouteLimits};
+
 use crate::artifacts::ArtifactRecord;
 use crate::client::{CacheWarmupKey, PromptInspection};
 use crate::compaction::CompactionConfig;
 use crate::config::{
-    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key,
+    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
     save_active_provider_to_config, save_api_key, save_api_key_for,
 };
 use crate::config_ui::ConfigUiMode;
-use crate::core::coherence::CoherenceState;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{Locale, MessageId, resolve_locale, tr};
-use crate::models::{
-    Message, SystemPrompt, Tool, auto_compact_default_for_model,
-    compaction_threshold_for_model_at_percent,
-};
+use crate::models::{Message, SystemPrompt, Tool};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
+use crate::resource_telemetry::TokenThroughput;
 use crate::session_manager::SessionContextReference;
 use crate::settings::Settings;
 use crate::tools::plan::{SharedPlanState, new_shared_plan_state};
@@ -46,7 +46,6 @@ use crate::tui::sidebar::SidebarWorkSummary;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-
 // === Types ===
 
 /// State machine for onboarding new users.
@@ -65,6 +64,16 @@ pub(crate) fn resolve_skills_dir(
     global_skills_dir: &Path,
     config: &Config,
 ) -> PathBuf {
+    if config.skills_config().scan_deepseek_only() {
+        if config.skills_dir.is_some() {
+            return global_skills_dir.to_path_buf();
+        }
+        if let Some(deepseek_skills_dir) = crate::skills::deepseek_workspace_skills_dir(workspace) {
+            return deepseek_skills_dir;
+        }
+        return global_skills_dir.to_path_buf();
+    }
+
     let agents_skills_dir = workspace.join(".agents").join("skills");
     if agents_skills_dir.exists() {
         return agents_skills_dir;
@@ -86,7 +95,13 @@ pub(crate) fn resolve_skills_dir(
 }
 
 pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
-    let Some(rest) = input.trim_start().strip_prefix('/') else {
+    let trimmed = input.trim_start();
+    // `$skillname` at the start of input is treated like a slash command so the
+    // skill-completion menu appears.
+    let Some(rest) = trimmed
+        .strip_prefix('/')
+        .or_else(|| trimmed.strip_prefix('$'))
+    else {
         return false;
     };
     if rest.chars().next().is_some_and(|ch| ch.is_whitespace()) {
@@ -143,6 +158,8 @@ fn onboarding_is_workspace_trust_gate(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
     Agent,
+    #[allow(dead_code)]
+    Auto,
     Yolo,
     Plan,
 }
@@ -150,6 +167,14 @@ pub enum AppMode {
 /// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
 #[derive(Debug, Clone)]
 pub struct TurnCacheRecord {
+    /// API provider used for the turn. This is recorded so cache misses can be
+    /// correlated with provider/model route changes.
+    pub provider: Option<ApiProvider>,
+    /// Concrete model used for the turn. For auto-model turns this is the
+    /// routed model, not the literal `auto` setting.
+    pub model: Option<String>,
+    /// Whether the route came from the auto-model selector.
+    pub auto_model: bool,
     /// Provider-reported total input tokens for the turn (cache-hit +
     ///   cache-miss + uncategorized). Useful for sanity-checking that hits +
     ///   misses sum back to roughly the prompt size.
@@ -173,13 +198,15 @@ pub struct TurnCacheRecord {
     pub recorded_at: Instant,
 }
 
-/// DeepSeek reasoning-effort tier, mirrored on ChatGPT/Claude effort pickers.
+/// Reasoning-effort tier, mirrored across DeepSeek and Codex effort pickers.
 ///
 /// The config file accepts all five string values for forward-compat with
 /// providers that expose the full spectrum; DeepSeek currently collapses
-/// `Low`/`Medium` → `high` and `Max` → `max` at the API boundary. The
-/// keyboard cycler (Shift+Tab) walks only the three behaviorally distinct
-/// tiers: `Off` → `High` → `Max` → `Off`.
+/// `Low`/`Medium` → `high`. OpenAI Codex normalizes inherited DeepSeek-only
+/// `Off` to `Low` and displays/sends `Max` as `xhigh` at the provider
+/// boundary. The default keyboard cycler walks the three DeepSeek-distinct
+/// tiers: `Off` → `High` → `Max` → `Off`; provider-aware callers should use
+/// [`ReasoningEffort::cycle_next_for_provider`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningEffort {
     Off,
@@ -202,9 +229,14 @@ impl ReasoningEffort {
             "medium" | "mid" => Self::Medium,
             "high" => Self::High,
             "auto" | "automatic" => Self::Auto,
-            "max" | "maximum" | "xhigh" => Self::Max,
+            "max" | "maximum" | "xhigh" | "ultracode" => Self::Max,
             _ => Self::default(),
         }
+    }
+
+    #[must_use]
+    pub fn from_setting_for_provider(value: &str, provider: ApiProvider) -> Self {
+        Self::from_setting(value).normalize_for_provider(provider)
     }
 
     /// Canonical lowercase label used for config storage and UI hints.
@@ -233,12 +265,57 @@ impl ReasoningEffort {
         }
     }
 
+    /// Provider-facing label for user-visible surfaces.
+    #[must_use]
+    pub fn display_label_for_provider(self, provider: ApiProvider) -> &'static str {
+        match (provider, self.normalize_for_provider(provider)) {
+            (ApiProvider::OpenaiCodex, Self::Low) => "low",
+            (ApiProvider::OpenaiCodex, Self::Medium) => "medium",
+            (ApiProvider::OpenaiCodex, Self::High) => "high",
+            (ApiProvider::OpenaiCodex, Self::Max) => "xhigh",
+            (_, effort) => effort.short_label(),
+        }
+    }
+
     /// Value forwarded to the engine/client. `None` means "provider default"
     /// (for `Off` we still emit `"off"` so the client can inject
     /// `thinking = {"type": "disabled"}`).
     #[must_use]
     pub fn api_value(self) -> Option<&'static str> {
         Some(self.as_setting())
+    }
+
+    #[must_use]
+    pub fn normalize_for_provider(self, provider: ApiProvider) -> Self {
+        if provider != ApiProvider::OpenaiCodex {
+            return self;
+        }
+        match self {
+            Self::Off => Self::Low,
+            Self::Auto => Self::Medium,
+            other => other,
+        }
+    }
+
+    #[must_use]
+    pub fn api_value_for_provider(self, provider: ApiProvider) -> Option<&'static str> {
+        if provider != ApiProvider::OpenaiCodex {
+            return self.api_value();
+        }
+        Some(match self.normalize_for_provider(provider) {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "xhigh",
+            Self::Off => "low",
+            Self::Auto => "medium",
+        })
+    }
+
+    #[must_use]
+    pub fn as_setting_for_provider(self, provider: ApiProvider) -> &'static str {
+        self.api_value_for_provider(provider)
+            .unwrap_or_else(|| self.as_setting())
     }
 
     /// Cycle through the three behaviorally distinct tiers.
@@ -251,17 +328,37 @@ impl ReasoningEffort {
             Self::Max => Self::Off,
         }
     }
+
+    #[must_use]
+    pub fn cycle_next_for_provider(self, provider: ApiProvider) -> Self {
+        if provider != ApiProvider::OpenaiCodex {
+            return self.cycle_next();
+        }
+        match self.normalize_for_provider(provider) {
+            Self::Low => Self::Medium,
+            Self::Medium => Self::High,
+            Self::High => Self::Max,
+            Self::Max => Self::Low,
+            Self::Off | Self::Auto => Self::Low,
+        }
+    }
 }
 
 /// Sidebar content focus mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarFocus {
     Auto,
-    Work,
+    Pinned,
     Tasks,
     Agents,
     Context,
     Hidden,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentProgressMeta {
+    pub parent_run_id: Option<String>,
+    pub spawn_depth: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,7 +401,7 @@ impl SidebarFocus {
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "work" | "plan" | "todos" => Self::Work,
+            "pinned" | "visible" | "show" | "on" | "work" | "plan" | "todos" => Self::Pinned,
             "tasks" => Self::Tasks,
             "agents" | "subagents" | "sub-agents" => Self::Agents,
             "context" | "session" => Self::Context,
@@ -318,7 +415,7 @@ impl SidebarFocus {
     pub fn as_setting(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Work => "work",
+            Self::Pinned => "pinned",
             Self::Tasks => "tasks",
             Self::Agents => "agents",
             Self::Context => "context",
@@ -344,6 +441,8 @@ impl ToolCollapseMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "expanded" | "off" | "none" => Self::Expanded,
             "calm" | "calm-mode" | "calm_only" | "calm-only" => Self::Calm,
+            // `collapsed`/`collapse` are issue #3256's preferred names for the
+            // default; treat them like the canonical `compact`.
             _ => Self::Compact,
         }
     }
@@ -802,22 +901,44 @@ fn match_kitty_csi_fragment(chars: &[char], start: usize) -> Option<usize> {
 }
 
 const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
+/// Maximum characters displayed in the composer for oversized input.
+/// Beyond this, the text is truncated for rendering but the full content
+/// is preserved for model submission (#3263).
+const MAX_COMPOSER_DISPLAY_CHARS: usize = 4_000;
 const MAX_DRAFT_HISTORY: usize = 50;
 
 impl AppMode {
+    /// Keyboard cycle order: Plan -> Agent -> YOLO -> Plan.
+    ///
+    /// `Auto` remains an internal variant while the real implementation is
+    /// redesigned; do not expose it through user-facing mode selection (#3733).
+    pub const CYCLE: [Self; 3] = [Self::Plan, Self::Agent, Self::Yolo];
+
+    /// User-facing picker / numeric command order.
+    pub const CHOICES: [Self; 3] = [Self::Agent, Self::Plan, Self::Yolo];
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "agent" | "auto" | "1" => Some(Self::Agent),
+            "plan" | "2" => Some(Self::Plan),
+            "yolo" | "4" | "bypass" | "bypass-permissions" | "bypasspermissions" => {
+                Some(Self::Yolo)
+            }
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "plan" => Self::Plan,
-            "yolo" => Self::Yolo,
-            _ => Self::Agent,
-        }
+        Self::parse(value).unwrap_or(Self::Agent)
     }
 
     #[must_use]
     pub fn as_setting(self) -> &'static str {
         match self {
             Self::Agent => "agent",
+            Self::Auto => "auto",
             Self::Yolo => "yolo",
             Self::Plan => "plan",
         }
@@ -827,9 +948,58 @@ impl AppMode {
     pub fn label(self) -> &'static str {
         match self {
             AppMode::Agent => "AGENT",
+            AppMode::Auto => "AUTO",
             AppMode::Yolo => "YOLO",
             AppMode::Plan => "PLAN",
         }
+    }
+
+    #[must_use]
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AppMode::Agent => "Agent",
+            AppMode::Auto => "Auto",
+            AppMode::Yolo => "YOLO",
+            AppMode::Plan => "Plan",
+        }
+    }
+
+    #[must_use]
+    pub fn number(self) -> char {
+        match self {
+            AppMode::Agent => '1',
+            AppMode::Plan => '2',
+            AppMode::Auto => '3',
+            AppMode::Yolo => '4',
+        }
+    }
+
+    /// Localized short name for the mode picker (user-facing surface only).
+    #[must_use]
+    pub fn display_name_localized(self, locale: Locale) -> Cow<'static, str> {
+        tr(
+            locale,
+            match self {
+                AppMode::Agent => MessageId::AppModeAgent,
+                AppMode::Auto => MessageId::AppModeAuto,
+                AppMode::Yolo => MessageId::AppModeYolo,
+                AppMode::Plan => MessageId::AppModePlan,
+            },
+        )
+    }
+
+    /// Localized one-line hint for the mode picker (user-facing surface only).
+    #[must_use]
+    pub fn picker_hint_localized(self, locale: Locale) -> Cow<'static, str> {
+        tr(
+            locale,
+            match self {
+                AppMode::Agent => MessageId::AppModeAgentHint,
+                AppMode::Plan => MessageId::AppModePlanHint,
+                AppMode::Auto => MessageId::AppModeAutoHint,
+                AppMode::Yolo => MessageId::AppModeYoloHint,
+            },
+        )
     }
 
     #[allow(dead_code)]
@@ -837,9 +1007,26 @@ impl AppMode {
     pub fn description(self) -> &'static str {
         match self {
             AppMode::Agent => "Agent mode - autonomous task execution with tools",
+            AppMode::Auto => "Auto mode - shell enabled with automatic risk review",
             AppMode::Yolo => "YOLO mode - full tool access without approvals",
             AppMode::Plan => "Plan mode - design before implementing",
         }
+    }
+
+    #[must_use]
+    pub fn next(self) -> Self {
+        let Some(index) = Self::CYCLE.iter().position(|mode| *mode == self) else {
+            return Self::Agent;
+        };
+        Self::CYCLE[(index + 1) % Self::CYCLE.len()]
+    }
+
+    #[must_use]
+    pub fn previous(self) -> Self {
+        let Some(index) = Self::CYCLE.iter().position(|mode| *mode == self) else {
+            return Self::Agent;
+        };
+        Self::CYCLE[(index + Self::CYCLE.len() - 1) % Self::CYCLE.len()]
     }
 }
 
@@ -899,11 +1086,79 @@ pub enum InitialInput {
     Submit(String),
 }
 
+/// Durable Agent-era permission baseline that Plan/YOLO restore to (#3386).
+///
+/// Mode cycling used to be tangled with permission policy: each mode mutated
+/// `allow_shell`/`trust_mode`/`approval_mode` directly and ad-hoc
+/// `YoloRestoreState`/`PlanRestoreState` snapshots tried to put things back on
+/// exit. That made it easy to leak YOLO's elevated authority into Agent.
+///
+/// Instead we keep one canonical baseline here — the permission surface the
+/// user has chosen for Agent mode — and derive every mode's effective policy
+/// from it via [`base_policy_for_mode`]. `set_mode` refreshes this from the
+/// live fields whenever the user leaves Agent, so toggling shell/trust/approval
+/// in Agent (wherever that happens in the UI) is captured before any transient
+/// Plan/YOLO policy overwrites the live mirrors.
 #[derive(Debug, Clone, Copy)]
-struct YoloRestoreState {
+struct ModeSessionPrefs {
+    agent_allow_shell: bool,
+    agent_trust_mode: bool,
+    agent_approval_mode: ApprovalMode,
+}
+
+/// The permission policy a given [`AppMode`] resolves to (#3386).
+///
+/// This is a pure projection of `(mode, prefs)` — see [`base_policy_for_mode`].
+/// The App keeps `allow_shell`/`trust_mode`/`approval_mode`/`yolo` as derived
+/// mirrors of these values so the rest of the crate can keep reading the
+/// existing fields without a type migration. YOLO authority is derived from
+/// `ApprovalMode::Bypass`, not carried as a separate mode-table knob (#3736).
+#[derive(Debug, Clone, Copy)]
+struct EffectiveModePolicy {
+    #[allow(dead_code)]
+    mode: AppMode,
     allow_shell: bool,
     trust_mode: bool,
     approval_mode: ApprovalMode,
+}
+
+/// Resolve a mode's effective permission policy from the durable Agent baseline.
+///
+/// This is the single source of truth for the mode/permission table (#3386):
+/// - `Plan`   → read-only: no shell, no trust, `Suggest` approvals.
+/// - `Agent`  → the user's durable baseline (`prefs`).
+/// - `Auto`   → shell-enabled Agent with automatic risk review, no trust.
+/// - `Yolo`   → full authority: shell + trust + `Bypass` approvals.
+///
+/// Pure and side-effect free so it can be unit-tested directly and reused by
+/// any policy consumer.
+fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> EffectiveModePolicy {
+    match mode {
+        AppMode::Plan => EffectiveModePolicy {
+            mode,
+            allow_shell: false,
+            trust_mode: false,
+            approval_mode: ApprovalMode::Suggest,
+        },
+        AppMode::Agent => EffectiveModePolicy {
+            mode,
+            allow_shell: prefs.agent_allow_shell,
+            trust_mode: prefs.agent_trust_mode,
+            approval_mode: prefs.agent_approval_mode,
+        },
+        AppMode::Auto => EffectiveModePolicy {
+            mode,
+            allow_shell: true,
+            trust_mode: false,
+            approval_mode: ApprovalMode::Auto,
+        },
+        AppMode::Yolo => EffectiveModePolicy {
+            mode,
+            allow_shell: true,
+            trust_mode: true,
+            approval_mode: ApprovalMode::Bypass,
+        },
+    }
 }
 
 // === Sub-state structs for App field organization (#377) ===
@@ -928,14 +1183,17 @@ pub enum VimMode {
 }
 
 impl VimMode {
-    /// Short status-bar label shown in the composer border.
+    /// Localized status-bar label shown in the composer border (user-facing).
     #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "-- NORMAL --",
-            Self::Insert => "-- INSERT --",
-            Self::Visual => "-- VISUAL --",
-        }
+    pub fn label_localized(self, locale: Locale) -> Cow<'static, str> {
+        tr(
+            locale,
+            match self {
+                Self::Normal => MessageId::VimModeNormal,
+                Self::Insert => MessageId::VimModeInsert,
+                Self::Visual => MessageId::VimModeVisual,
+            },
+        )
     }
 }
 
@@ -957,6 +1215,9 @@ pub struct MentionCompletionCache {
     /// Completion behavior used for this walk. Included so live config changes
     /// invalidate cached popup results.
     pub behavior: String,
+    /// Whether symlink following was enabled for this completion walk.
+    /// Included so live config changes invalidate cached popup results.
+    pub follow_links: bool,
     /// Cached completion entries.
     pub entries: Vec<String>,
 }
@@ -970,6 +1231,14 @@ pub struct ComposerState {
     /// Single-entry kill buffer for emacs-style `Ctrl+K` cut / `Ctrl+Y` yank.
     pub kill_buffer: String,
     pub paste_burst: PasteBurst,
+    /// When a large paste is consolidated at submit time, the file @mention
+    /// is stored here so it can be appended to the submitted text without
+    /// replacing the visible composer content (#3263).
+    pub(crate) pending_paste_reference: Option<String>,
+    /// When composer content is oversized, the full text is stored here
+    /// while `self.input` shows a truncated preview. At submit time the
+    /// full text is restored for model submission (#3263).
+    pub(crate) oversized_paste_full_text: Option<String>,
     pub input_history: Vec<String>,
     pub draft_history: VecDeque<String>,
     pub clear_undo_buffer: Option<String>,
@@ -1006,6 +1275,8 @@ impl Default for ComposerState {
             cursor_position: 0,
             kill_buffer: String::new(),
             paste_burst: PasteBurst::default(),
+            pending_paste_reference: None,
+            oversized_paste_full_text: None,
             input_history: Vec::new(),
             draft_history: VecDeque::new(),
             clear_undo_buffer: None,
@@ -1093,11 +1364,36 @@ pub enum HuntVerdict {
     Escaped,
 }
 
+impl HuntVerdict {
+    #[must_use]
+    pub fn goal_status(self) -> crate::tools::goal::GoalStatus {
+        match self {
+            Self::Hunting => crate::tools::goal::GoalStatus::Active,
+            Self::Hunted => crate::tools::goal::GoalStatus::Complete,
+            Self::Wounded => crate::tools::goal::GoalStatus::Paused,
+            Self::Escaped => crate::tools::goal::GoalStatus::Blocked,
+        }
+    }
+
+    #[must_use]
+    pub fn from_goal_status(status: crate::tools::goal::GoalStatus) -> Self {
+        match status {
+            crate::tools::goal::GoalStatus::Active => Self::Hunting,
+            crate::tools::goal::GoalStatus::Paused => Self::Wounded,
+            crate::tools::goal::GoalStatus::Complete => Self::Hunted,
+            crate::tools::goal::GoalStatus::Blocked => Self::Escaped,
+        }
+    }
+}
+
 /// Hunt tracking state (#2092 — was GoalState).
 #[derive(Debug, Clone, Default)]
 pub struct HuntState {
     pub quarry: Option<String>,
     pub token_budget: Option<u32>,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+    pub continuation_count: u32,
     pub started_at: Option<Instant>,
     pub verdict: HuntVerdict,
 }
@@ -1114,6 +1410,7 @@ pub struct SessionState {
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
     pub last_completion_tokens: Option<u32>,
+    pub last_output_throughput: Option<TokenThroughput>,
     pub last_prompt_cache_hit_tokens: Option<u32>,
     pub last_prompt_cache_miss_tokens: Option<u32>,
     pub last_reasoning_replay_tokens: Option<u32>,
@@ -1156,6 +1453,15 @@ pub struct SidebarHoverRow {
     pub detail: Option<String>,
     /// Whether the compact row lost information.
     pub is_truncated: bool,
+    /// Slash command to execute when this row is clicked (#3028).
+    /// `shell_*` job ids route through `/jobs` (e.g. `/jobs cancel
+    /// shell_abc123`); task-manager ids route through `/task` (e.g.
+    /// `/task show task_abc123`).
+    pub click_action: Option<String>,
+    /// Optional narrower stop target for rows that show an inline `[x]`.
+    pub stop_action: Option<String>,
+    pub stop_zone_start_col: Option<u16>,
+    pub stop_zone_end_col: Option<u16>,
 }
 
 /// Per-section metadata for sidebar hover detection.
@@ -1181,6 +1487,7 @@ impl Default for SessionState {
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
             last_completion_tokens: None,
+            last_output_throughput: None,
             last_prompt_cache_hit_tokens: None,
             last_prompt_cache_miss_tokens: None,
             last_reasoning_replay_tokens: None,
@@ -1206,6 +1513,7 @@ impl SessionState {
         self.total_cache_hit_tokens = 0;
         self.total_cache_miss_tokens = 0;
         self.total_output_tokens = 0;
+        self.last_output_throughput = None;
     }
 }
 
@@ -1221,6 +1529,8 @@ pub(crate) struct PendingProviderSwitch {
     pub previous_provider: ApiProvider,
     pub previous_model: String,
     pub previous_model_ids_passthrough: bool,
+    pub previous_route_limits: Option<RouteLimits>,
+    pub previous_context_window_override: Option<u32>,
     pub previous_config: Config,
     pub previous_onboarding: OnboardingState,
     pub previous_onboarding_needs_api_key: bool,
@@ -1259,6 +1569,9 @@ pub struct App {
     pub next_history_revision: u64,
     pub api_messages: Vec<Message>,
     pub is_loading: bool,
+    /// Whether the once-per-turn provider-wait incident (#3095) has already
+    /// been logged for the current turn.
+    pub provider_wait_incident_logged: bool,
     /// Ghost-text follow-up suggestion shown in the composer when empty.
     /// Generated asynchronously after each completed turn; cleared on new input.
     pub prompt_suggestion: Option<String>,
@@ -1292,13 +1605,33 @@ pub struct App {
     pub auto_model: bool,
     /// Last concrete model chosen while `auto_model` is active.
     pub last_effective_model: Option<String>,
+    /// Route selected for the in-flight turn. Consumed by `TurnComplete` to
+    /// annotate `/cache` telemetry without widening the engine event surface.
+    pub pending_turn_route: Option<(ApiProvider, String, bool)>,
     /// Current API provider (mirrors `Config::api_provider`).
     /// Updated by `/provider` switches so the UI/commands can read the
     /// active backend without re-deriving it from the live config.
     pub api_provider: ApiProvider,
+    /// Primary provider plus configured fallback providers for this session.
+    pub provider_chain: Option<ProviderChain>,
+    /// Per-provider auth/local readiness snapshot for the fallback chain (#2574).
+    ///
+    /// Captured at startup alongside `provider_chain` (where the live `Config` is
+    /// in scope). `advance_fallback` consults it to skip chain entries that
+    /// cannot serve a turn — hosted providers missing a key — while local
+    /// providers (Ollama/vLLM/SGLang) are always ready. Stored as `(provider,
+    /// ready)` pairs; lookups fall back to "ready" for providers not present so
+    /// an unknown entry is tried rather than silently skipped.
+    provider_readiness: Vec<(ApiProvider, bool)>,
+    /// Human-readable description of the last provider fallback event.
+    pub last_fallback_reason: Option<String>,
     /// True when the active provider/base URL accepts arbitrary model IDs
     /// verbatim rather than DeepSeek-only aliases.
     pub model_ids_passthrough: bool,
+    /// Resolved provider/model route limits for the active runtime route.
+    pub active_route_limits: Option<RouteLimits>,
+    /// User-configured provider context-window override for the active route.
+    pub active_context_window_override: Option<u32>,
     /// Pending provider transition for transactional rollback when the next
     /// auth failure indicates the new provider cannot be used.
     pub pending_provider_switch: Option<PendingProviderSwitch>,
@@ -1312,14 +1645,19 @@ pub struct App {
     pub config_profile: Option<String>,
     pub mcp_config_path: PathBuf,
     pub skills_dir: PathBuf,
+    pub skills_scan_deepseek_only: bool,
     /// Path to the user-memory file (#489). Always populated; only
     /// consulted when `use_memory` is `true`.
     pub memory_path: PathBuf,
     /// Whether the user-memory feature is enabled (#489). Mirrors
     /// `Config::memory_enabled()` at app boot. Used by the `# foo`
-    /// composer interception, the `/memory` slash command, and tool
-    /// registration for `remember`.
+    /// composer interception (also gated by `moraine_fallback`),
+    /// the `/memory` slash command, and tool registration for
+    /// `remember`.
     pub use_memory: bool,
+    /// True when legacy memory push/inject behavior should stay disabled
+    /// because Moraine pull/recall is the configured memory backend.
+    pub moraine_fallback: bool,
     pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
     /// When true, plain Up/Down on an empty composer scroll the transcript
@@ -1337,6 +1675,10 @@ pub struct App {
     /// `@`-mention completion behavior: fuzzy workspace search or deterministic
     /// directory browser.
     pub mention_menu_behavior: String,
+    /// Follow symbolic links during workspace file discovery walks.
+    /// When `true`, symlinked directories are traversed, enabling
+    /// multi-project workspaces.
+    pub workspace_follow_symlinks: bool,
     pub use_bracketed_paste: bool,
     pub use_paste_burst_detection: bool,
     /// Set to `true` the first time a real `Event::Paste` arrives during a
@@ -1378,6 +1720,14 @@ pub struct App {
     pub cost_currency: CostCurrency,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
+    /// Voice input state — toggled by `/voice` and the voice hotbar action.
+    pub voice_enabled: bool,
+    /// Auto-send after transcription when the transcript ends with an
+    /// explicit send instruction ("send it" / "发送"). Toggled by `/voice-send`.
+    pub voice_send_enabled: bool,
+    /// AI-assisted dictation that sees the current composer text.
+    /// Toggled by `/voice-control`.
+    pub voice_control_enabled: bool,
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
@@ -1398,6 +1748,8 @@ pub struct App {
     pub sidebar_resize_anchor_width: u16,
     /// Last sidebar area rendered (for mouse hit-testing the resize handle).
     pub last_sidebar_area: Option<Rect>,
+    /// Last total chat/sidebar width considered for sidebar rendering.
+    pub last_sidebar_host_width: Option<u16>,
     /// Handle rect painted on the left edge of the sidebar (1 col).
     pub last_sidebar_handle_area: Option<Rect>,
     /// Total horizontal space (chat + sidebar) used to compute the percentage
@@ -1405,6 +1757,8 @@ pub struct App {
     pub sidebar_resize_total_width: u16,
     /// Sidebar width changed during this drag and needs persistence.
     pub sidebar_width_dirty: bool,
+    /// Sidebar focus/hidden state changed and needs persistence.
+    pub sidebar_focus_dirty: bool,
     /// Whether the session-context panel is enabled (#504).
     pub context_panel: bool,
     /// Minimum number of consecutive safe tool cells needed for auto-collapse.
@@ -1422,13 +1776,18 @@ pub struct App {
     pub compact_threshold: usize,
     pub max_input_history: usize,
     pub allow_shell: bool,
+    pub verbosity: Option<String>,
     pub max_subagents: usize,
     /// Per-SSE-chunk idle timeout for streamed turns, in seconds.
     pub stream_chunk_timeout_secs: u64,
     /// Cached sub-agent snapshots for UI views.
     pub subagent_cache: Vec<SubAgentResult>,
+    /// First time this TUI observed each terminal sub-agent card.
+    pub subagent_terminal_seen_at: HashMap<String, Instant>,
     /// Last known per-agent progress text for running sub-agents.
     pub agent_progress: HashMap<String, String>,
+    /// Parent/depth metadata for live progress-only sub-agent rows.
+    pub agent_progress_meta: HashMap<String, AgentProgressMeta>,
     /// In-transcript sub-agent card index by `agent_id` (issue #128).
     /// Maps each live sub-agent to the `HistoryCell::SubAgent` it renders
     /// into, so successive mailbox envelopes mutate the same cell rather
@@ -1439,11 +1798,21 @@ pub struct App {
     /// when a fresh fanout-family tool call starts.
     pub last_fanout_card_index: Option<usize>,
     /// Most recently observed sub-agent dispatch tool name (set on
-    /// `ToolCallStarted` for `agent_spawn` / `rlm` / etc., cleared
+    /// `ToolCallStarted` for `agent` / `rlm` / etc., cleared
     /// after the first `Started` mailbox envelope routes through it).
     pub pending_subagent_dispatch: Option<String>,
     /// Animation anchor for status-strip active sub-agent spinner.
     pub agent_activity_started_at: Option<Instant>,
+    /// Monotonic counter for stable agent labels (#3030).
+    /// Incremented each time a sub-agent is spawned; used to generate
+    /// "Agent 1", "Agent 2", etc.
+    pub agent_counter: u64,
+    /// Maps raw agent_id to a stable user-facing label (#3030).
+    /// Populated when `AgentSpawned` fires; read by sidebar rendering.
+    pub agent_label_map: HashMap<String, String>,
+    /// Last time a sub-agent progress event triggered a redraw.
+    /// Used to throttle redraws under high sub-agent concurrency (#3033).
+    pub last_agent_progress_redraw: Option<Instant>,
     pub ui_theme: UiTheme,
     /// Active named theme. Drives the cell-level color remap in
     /// `tui::color_compat::ColorCompatBackend` so community presets
@@ -1463,7 +1832,10 @@ pub struct App {
     pub hooks: HookExecutor,
     #[allow(dead_code)]
     pub yolo: bool,
-    yolo_restore: Option<YoloRestoreState>,
+    /// Durable Agent-era permission baseline that Plan/YOLO derive from and
+    /// restore to (#3386). Refreshed from the live fields whenever the user
+    /// leaves Agent mode; see [`base_policy_for_mode`] and `set_mode`.
+    mode_prefs: ModeSessionPrefs,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist
@@ -1505,8 +1877,8 @@ pub struct App {
     pub plan_prompt_pending: bool,
     /// Whether update_plan was called during the current turn
     pub plan_tool_used_in_turn: bool,
-    /// Todo list for `TodoWriteTool`
-    #[allow(dead_code)] // For future engine integration
+    /// Todo list for `TodoWriteTool`. Read by the plan confirmation modal to
+    /// show the active checklist alongside the plan.
     pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
     pub runtime_services: RuntimeToolServices,
@@ -1577,8 +1949,18 @@ pub struct App {
     /// thinking into the active cell so it groups visually with tool calls
     /// until the next assistant prose chunk flushes the group into history.
     pub streaming_thinking_active_entry: Option<usize>,
+    /// Instant of the last throttled active-cell revision bump for the
+    /// in-flight thinking stream (#1620). Reasoning chunks arrive faster than
+    /// the eye can read, and each bump invalidates the active cell's wrap
+    /// cache, forcing a full re-wrap. We debounce intermediate bumps to a
+    /// time window so high-frequency thinking deltas no longer trigger a
+    /// re-render per character. `None` means "no bump since the last
+    /// finalize" so the first chunk of a block always renders immediately.
+    pub thinking_revision_last_bump_at: Option<Instant>,
     /// Newline-gated streaming collector state.
     pub streaming_state: StreamingState,
+    /// Live approximate output tokens for the current assistant stream.
+    pub streaming_output_token_estimate: u64,
     /// Accumulated reasoning text
     pub reasoning_buffer: String,
     /// Live reasoning header extracted from bold text
@@ -1629,6 +2011,9 @@ pub struct App {
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
     pub runtime_turn_status: Option<String>,
+    /// Monotonic turn counter for stable user-facing labels (#3030).
+    /// Incremented each time a new turn starts; displayed as "Turn N".
+    pub turn_counter: u64,
     /// When the UI accepted a user message but has not observed `TurnStarted` yet.
     pub dispatch_started_at: Option<Instant>,
 
@@ -1664,8 +2049,6 @@ pub struct App {
     /// streamed chunks don't yank the view back to the live tail. Cleared
     /// when the user explicitly returns to bottom or the turn completes.
     pub user_scrolled_during_stream: bool,
-    /// Plain-language session coherence state for the footer.
-    pub coherence_state: CoherenceState,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
     /// Most recent user prompt accepted for an active engine turn. Ctrl+C can
@@ -1770,6 +2153,17 @@ pub struct TaskPanelEntry {
     pub status: String,
     pub prompt_summary: String,
     pub duration_ms: Option<u64>,
+    pub kind: TaskPanelEntryKind,
+    pub stale: bool,
+    pub elapsed_since_output_ms: Option<u64>,
+    pub owner_agent_id: Option<String>,
+    pub owner_agent_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskPanelEntryKind {
+    Background,
+    ModelReasoning,
 }
 
 impl QueuedMessage {
@@ -1848,14 +2242,16 @@ impl App {
     pub(crate) fn clear_model_scoped_telemetry(&mut self) {
         self.session.last_prompt_tokens = None;
         self.session.last_completion_tokens = None;
+        self.session.last_output_throughput = None;
         self.session.last_prompt_cache_hit_tokens = None;
         self.session.last_prompt_cache_miss_tokens = None;
         self.session.last_reasoning_replay_tokens = None;
         self.session.turn_cache_history.clear();
+        self.pending_turn_route = None;
         self.last_pinned_prefix_hash = None;
     }
 
-    pub fn tr(&self, id: MessageId) -> &'static str {
+    pub fn tr(&self, id: MessageId) -> Cow<'static, str> {
         tr(self.ui_locale, id)
     }
 
@@ -1884,6 +2280,33 @@ impl App {
         } = options;
 
         let settings = Settings::load().unwrap_or_else(|_| Settings::default());
+
+        // If settings.toml exists on disk but couldn't be parsed (we fell back
+        // to defaults), surface a warning in the TUI so the user knows their
+        // file is broken instead of silently losing all settings.
+        let settings_parse_warning = crate::settings::Settings::path().ok().and_then(|p| {
+            if p.exists() {
+                std::fs::read_to_string(&p).ok().and_then(|raw| {
+                    ::toml::from_str::<::toml::Value>(&raw)
+                        .err()
+                        .map(|e| format!("⚠ settings.toml is malformed — using defaults ({e})"))
+                })
+            } else {
+                None
+            }
+        });
+        let tui_prefs_warning = crate::settings::TuiPrefs::path().ok().and_then(|p| {
+            if p.exists() {
+                std::fs::read_to_string(&p).ok().and_then(|raw| {
+                    ::toml::from_str::<::toml::Value>(&raw)
+                        .err()
+                        .map(|e| format!("⚠ tui.toml is malformed — using defaults ({e})"))
+                })
+            } else {
+                None
+            }
+        });
+
         let mut provider = config.api_provider();
 
         // Let settings preserve runtime switches only when config/CLI did not
@@ -1902,6 +2325,28 @@ impl App {
         let mut effective_auth_config = config.clone();
         effective_auth_config.provider = Some(provider.as_str().to_string());
         let model_ids_passthrough = effective_auth_config.model_ids_pass_through();
+        let provider_chain = provider
+            .kind()
+            .map(|kind| ProviderChain::new(kind, &config.fallback_providers))
+            .filter(|chain| chain.providers().len() > 1);
+
+        // Snapshot per-provider readiness for the fallback chain (#2574). Uses
+        // the same `has_api_key_for` helper the provider picker uses, so hosted
+        // providers require a key and self-hosted ones (Ollama/vLLM/SGLang) are
+        // reported ready without one. Empty when there is no fallback chain.
+        let provider_readiness = provider_chain
+            .as_ref()
+            .map(|chain| {
+                chain
+                    .providers()
+                    .iter()
+                    .map(|kind| {
+                        let provider = ApiProvider::from_kind(*kind);
+                        (provider, has_api_key_for(config, provider))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Check if the effective provider has an API key. This must happen
         // after settings.default_provider is applied; otherwise a saved
@@ -1964,6 +2409,26 @@ impl App {
             })
             .unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
+        let active_context_window_override = config.context_window_for_provider_config(provider);
+        let active_route_limits = if auto_model {
+            active_context_window_override.map(|window| RouteLimits {
+                context_tokens: Some(u64::from(window)),
+                ..RouteLimits::default()
+            })
+        } else {
+            let saved_provider_model = config
+                .provider_config_for(provider)
+                .and_then(|provider| provider.model.as_deref());
+            crate::route_runtime::resolve_route_candidate(
+                provider,
+                Some(&model),
+                saved_provider_model,
+                Some(effective_auth_config.deepseek_base_url()),
+                active_context_window_override,
+            )
+            .ok()
+            .and_then(|candidate| crate::route_budget::known_route_limits(candidate.limits))
+        };
         let configured_reasoning_effort = settings
             .reasoning_effort
             .as_deref()
@@ -1973,20 +2438,26 @@ impl App {
         } else {
             model.as_str()
         };
-        let compact_threshold = compaction_threshold_for_model_at_percent(
+        let compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
+            provider,
             threshold_model,
+            active_route_limits,
             auto_compact_threshold_percent,
         );
         let auto_compact = if auto_compact_user_configured {
             settings_auto_compact
         } else {
-            auto_compact_default_for_model(threshold_model)
+            crate::route_budget::auto_compact_default_for_route(
+                provider,
+                threshold_model,
+                active_route_limits,
+            )
         };
         let reasoning_effort = if auto_model {
             ReasoningEffort::Auto
         } else {
             configured_reasoning_effort.map_or_else(ReasoningEffort::default, |s| {
-                ReasoningEffort::from_setting(s)
+                ReasoningEffort::from_setting_for_provider(s, provider)
             })
         };
 
@@ -2014,31 +2485,43 @@ impl App {
             needs_workspace_trust,
         );
 
-        let yolo_restore = if initial_mode == AppMode::Yolo {
-            Some(YoloRestoreState {
-                allow_shell: config.allow_shell(),
-                trust_mode: false,
-                approval_mode: config
-                    .approval_policy
-                    .as_deref()
-                    .and_then(ApprovalMode::from_config_value)
-                    .unwrap_or_default(),
-            })
-        } else {
-            None
+        // Durable Agent-era permission baseline (#3386). Plan/Auto/YOLO derive
+        // from and restore to this. When the user starts in Auto or YOLO the
+        // live shell flag is force-enabled below, so the baseline shell value is
+        // taken from config (the pre-mode surface) rather than the live mirror;
+        // otherwise it mirrors the resolved `allow_shell` option. Trust is
+        // never part of the Agent baseline (it is YOLO-only authority). Approval
+        // mirrors the configured policy.
+        let configured_approval_mode = config
+            .approval_policy
+            .as_deref()
+            .and_then(ApprovalMode::from_config_value)
+            .unwrap_or_default();
+        let mode_prefs = ModeSessionPrefs {
+            agent_allow_shell: if matches!(initial_mode, AppMode::Auto | AppMode::Yolo) {
+                config.allow_shell()
+            } else {
+                allow_shell
+            },
+            agent_trust_mode: false,
+            agent_approval_mode: configured_approval_mode,
         };
-        let allow_shell = allow_shell || initial_mode == AppMode::Yolo;
+        let allow_shell = allow_shell || matches!(initial_mode, AppMode::Auto | AppMode::Yolo);
         let shell_manager = new_shared_shell_manager(workspace.clone());
 
-        // Initialize hooks executor from config
-        let hooks_config = config.hooks_config();
+        // Initialize hooks executor from config, merged with project-local
+        // `.deepseek/hooks.toml` (#3026).
+        let hooks_config =
+            crate::hooks::HooksConfig::load_with_project(config.hooks_config(), &workspace);
         let hooks = HookExecutor::new(hooks_config, workspace.clone());
 
         // Initialize plan state
         let plan_state = new_shared_plan_state();
 
+        let skills_scan_deepseek_only = config.skills_config().scan_deepseek_only();
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
-        let cached_skills = Self::discover_cached_skills(&workspace, &skills_dir);
+        let cached_skills =
+            Self::discover_cached_skills(&workspace, &skills_dir, skills_scan_deepseek_only);
 
         let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor, auto_submit_initial_input) =
@@ -2069,6 +2552,8 @@ impl App {
                 cursor_position: initial_input_cursor,
                 kill_buffer: String::new(),
                 paste_burst: PasteBurst::default(),
+                pending_paste_reference: None,
+                oversized_paste_full_text: None,
                 input_history,
                 draft_history: VecDeque::new(),
                 clear_undo_buffer: None,
@@ -2099,11 +2584,14 @@ impl App {
             next_history_revision: 1,
             api_messages: Vec::new(),
             is_loading: false,
+            provider_wait_incident_logged: false,
             prompt_suggestion: None,
             prompt_suggestion_gen: std::sync::atomic::AtomicU64::new(0),
             offline_mode: false,
             turn_error_posted: false,
-            status_message: None,
+            // Surface parse warnings so the user knows their config file is
+            // broken instead of silently losing all settings.
+            status_message: settings_parse_warning.or(tui_prefs_warning),
             status_toasts: VecDeque::new(),
             sticky_status: None,
             last_status_message_seen: None,
@@ -2111,8 +2599,14 @@ impl App {
             provider_models,
             auto_model,
             last_effective_model: None,
+            pending_turn_route: None,
             api_provider: provider,
+            provider_chain,
+            provider_readiness,
+            last_fallback_reason: None,
             model_ids_passthrough,
+            active_route_limits,
+            active_context_window_override,
             pending_provider_switch: None,
             reasoning_effort,
             last_effective_reasoning_effort: None,
@@ -2121,8 +2615,10 @@ impl App {
             config_profile,
             mcp_config_path: mcp_config_path.clone(),
             skills_dir,
+            skills_scan_deepseek_only,
             memory_path,
             use_memory,
+            moraine_fallback: config.moraine_fallback(),
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,
@@ -2144,6 +2640,9 @@ impl App {
             cost_currency,
             composer_density,
             composer_border,
+            voice_enabled: false,
+            voice_send_enabled: false,
+            voice_control_enabled: false,
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
@@ -2155,9 +2654,11 @@ impl App {
             sidebar_resize_anchor_x: 0,
             sidebar_resize_anchor_width: 0,
             last_sidebar_area: None,
+            last_sidebar_host_width: None,
             last_sidebar_handle_area: None,
             sidebar_resize_total_width: 0,
             sidebar_width_dirty: false,
+            sidebar_focus_dirty: false,
             context_panel: settings.context_panel,
             tool_collapse_threshold: 3,
             expanded_tool_runs: HashSet::new(),
@@ -2167,14 +2668,20 @@ impl App {
             compact_threshold,
             max_input_history,
             allow_shell,
+            verbosity: config.verbosity.clone(),
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             subagent_cache: Vec::new(),
+            subagent_terminal_seen_at: HashMap::new(),
             agent_progress: HashMap::new(),
+            agent_progress_meta: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
             pending_subagent_dispatch: None,
             agent_activity_started_at: None,
+            agent_counter: 0,
+            agent_label_map: HashMap::new(),
+            last_agent_progress_redraw: None,
             ui_theme,
             theme_id,
             onboarding,
@@ -2186,11 +2693,13 @@ impl App {
             onboarding_api_provider: ApiProvider::Deepseek,
             hooks,
             yolo: initial_mode == AppMode::Yolo,
-            yolo_restore,
+            mode_prefs,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_session_denied: HashSet::new(),
             approval_mode: if matches!(initial_mode, AppMode::Yolo) {
+                ApprovalMode::Bypass
+            } else if matches!(initial_mode, AppMode::Auto) {
                 ApprovalMode::Auto
             } else {
                 config
@@ -2245,7 +2754,9 @@ impl App {
             streaming_message_index: None,
             suppress_stream_events_until_turn_complete: false,
             streaming_thinking_active_entry: None,
+            thinking_revision_last_bump_at: None,
             streaming_state: StreamingState::new(),
+            streaming_output_token_estimate: 0,
             reasoning_buffer: String::new(),
             reasoning_header: None,
             last_reasoning: None,
@@ -2264,6 +2775,7 @@ impl App {
             last_balance_fetch: None,
             runtime_turn_id: None,
             runtime_turn_status: None,
+            turn_counter: 0,
             dispatch_started_at: None,
             workspace_context: None,
             workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -2277,7 +2789,6 @@ impl App {
             is_compacting: false,
             is_purging: false,
             user_scrolled_during_stream: false,
-            coherence_state: CoherenceState::default(),
             last_send_at: None,
             last_submitted_prompt: None,
             auto_submit_initial_input,
@@ -2300,6 +2811,7 @@ impl App {
             mention_menu_limit: settings.mention_menu_limit,
             mention_walk_depth: settings.mention_walk_depth,
             mention_menu_behavior: settings.mention_menu_behavior.clone(),
+            workspace_follow_symlinks: settings.workspace_follow_symlinks,
             session_title: None,
             receipt_text: None,
             receipt_started_at: None,
@@ -2310,17 +2822,26 @@ impl App {
     fn discover_cached_skills(
         workspace: &std::path::Path,
         skills_dir: &std::path::Path,
+        scan_deepseek_only: bool,
     ) -> Vec<(String, String)> {
-        crate::skills::discover_for_workspace_and_dir(workspace, skills_dir)
-            .list()
-            .iter()
-            .map(|s| (s.name.clone(), s.description.clone()))
-            .collect()
+        crate::skills::discover_for_workspace_and_dir_with_mode(
+            workspace,
+            skills_dir,
+            crate::skills::SkillDiscoveryMode::from_deepseek_only(scan_deepseek_only),
+        )
+        .list()
+        .iter()
+        .map(|s| (s.name.clone(), s.description.clone()))
+        .collect()
     }
 
     pub fn refresh_skill_cache(&mut self) {
         let skills_dir = self.skills_dir.clone();
-        self.cached_skills = Self::discover_cached_skills(&self.workspace, &skills_dir);
+        self.cached_skills = Self::discover_cached_skills(
+            &self.workspace,
+            &skills_dir,
+            self.skills_scan_deepseek_only,
+        );
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
@@ -2399,27 +2920,36 @@ impl App {
             return false;
         }
 
-        let entering_yolo = mode == AppMode::Yolo && previous_mode != AppMode::Yolo;
-        let leaving_yolo = previous_mode == AppMode::Yolo && mode != AppMode::Yolo;
         self.mode = mode;
         self.status_message = Some(format!("Switched to {} mode", mode.label()));
 
-        if entering_yolo {
-            self.yolo_restore = Some(YoloRestoreState {
-                allow_shell: self.allow_shell,
-                trust_mode: self.trust_mode,
-                approval_mode: self.approval_mode,
-            });
-            self.allow_shell = true;
-            self.trust_mode = true;
-            self.approval_mode = ApprovalMode::Auto;
-        } else if leaving_yolo && let Some(restore) = self.yolo_restore.take() {
-            self.allow_shell = restore.allow_shell;
-            self.trust_mode = restore.trust_mode;
-            self.approval_mode = restore.approval_mode;
+        // Mode cycling is untangled from permission policy (#3386). The user
+        // only edits the durable permission surface while in Agent mode, so
+        // refresh the baseline from the live mirrors whenever we leave Agent —
+        // before any transient Plan/YOLO policy overwrites them. This subsumes
+        // the old per-mode `YoloRestoreState`/`PlanRestoreState` snapshots:
+        // cross-mode hops (Plan -> YOLO, YOLO -> Plan) do not touch the baseline,
+        // so YOLO's elevated authority never bleeds into the restored Agent
+        // surface (#3279).
+        if previous_mode == AppMode::Agent {
+            self.mode_prefs = ModeSessionPrefs {
+                agent_allow_shell: self.allow_shell,
+                agent_trust_mode: self.trust_mode,
+                agent_approval_mode: self.approval_mode,
+            };
         }
 
-        self.yolo = mode == AppMode::Yolo;
+        // Derive the effective permission policy for the incoming mode from the
+        // single source of truth and apply it to the live mirrors in one block.
+        // Plan's write-blocking still comes from `self.mode` in turn_loop; this
+        // also keeps the TUI approval surface (which reads `self.approval_mode`
+        // without consulting `self.mode`) consistent with the active mode.
+        let policy = base_policy_for_mode(mode, &self.mode_prefs);
+        self.allow_shell = policy.allow_shell;
+        self.trust_mode = policy.trust_mode;
+        self.approval_mode = policy.approval_mode;
+        self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
+
         if mode != AppMode::Plan {
             self.plan_prompt_pending = false;
             self.plan_tool_used_in_turn = false;
@@ -2436,35 +2966,60 @@ impl App {
         true
     }
 
+    /// Whether mode/thinking selection is locked because a turn is in flight.
+    ///
+    /// While `is_loading`, the model/permission surface the engine is acting on
+    /// must not shift underneath it, so user-initiated mode and thinking changes
+    /// are refused (#2982). Returns true (and posts a concise status message) if
+    /// the change should be rejected — the caller leaves the selection unchanged
+    /// so the chip "twitches" back instead of moving.
+    fn reject_setting_change_while_busy(&mut self, what: &str) -> bool {
+        if self.is_loading {
+            self.status_message = Some(format!(
+                "{what} is locked while a turn is running — press Esc to interrupt first"
+            ));
+            self.needs_redraw = true;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Cycle through modes: Plan → Agent → YOLO → Plan.
     pub fn cycle_mode(&mut self) {
-        let next = match self.mode {
-            AppMode::Plan => AppMode::Agent,
-            AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
-        };
+        if self.reject_setting_change_while_busy("Mode") {
+            return;
+        }
+        let next = self.mode.next();
         let _ = self.set_mode(next);
     }
 
     /// Cycle through modes in reverse.
     #[allow(dead_code)]
     pub fn cycle_mode_reverse(&mut self) {
-        let next = match self.mode {
-            AppMode::Agent => AppMode::Plan,
-            AppMode::Yolo => AppMode::Agent,
-            AppMode::Plan => AppMode::Yolo,
-        };
+        if self.reject_setting_change_while_busy("Mode") {
+            return;
+        }
+        let next = self.mode.previous();
         let _ = self.set_mode(next);
     }
 
-    /// Cycle reasoning-effort through the three behaviorally distinct tiers:
-    /// `Off` → `High` → `Max` → `Off`.
+    /// Cycle reasoning-effort through the active provider's distinct tiers.
     pub fn cycle_effort(&mut self) {
-        self.reasoning_effort = self.reasoning_effort.cycle_next();
+        if self.reject_setting_change_while_busy("Thinking") {
+            return;
+        }
+        self.reasoning_effort = self
+            .reasoning_effort
+            .cycle_next_for_provider(self.api_provider);
         self.last_effective_reasoning_effort = None;
         self.needs_redraw = true;
         self.push_status_toast(
-            format!("Thinking: {}", self.reasoning_effort.short_label()),
+            format!(
+                "Thinking: {}",
+                self.reasoning_effort
+                    .display_label_for_provider(self.api_provider)
+            ),
             StatusToastLevel::Info,
             Some(1_500),
         );
@@ -2583,7 +3138,7 @@ impl App {
 
     /// Read the visible session+sub-agent cost in the chosen currency.
     pub fn displayed_session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
-        match currency {
+        match self.cost_display_currency(currency) {
             CostCurrency::Usd => {
                 let current = self.session.session_cost + self.session.subagent_cost;
                 current.max(self.session.displayed_cost_high_water)
@@ -2596,25 +3151,43 @@ impl App {
     }
 
     pub fn session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
-        match currency {
+        match self.cost_display_currency(currency) {
             CostCurrency::Usd => self.session.session_cost,
             CostCurrency::Cny => self.session.session_cost_cny,
         }
     }
 
     pub fn subagent_cost_for_currency(&self, currency: CostCurrency) -> f64 {
-        match currency {
+        match self.cost_display_currency(currency) {
             CostCurrency::Usd => self.session.subagent_cost,
             CostCurrency::Cny => self.session.subagent_cost_cny,
         }
     }
 
     pub fn format_cost_amount(&self, amount: f64) -> String {
-        crate::pricing::format_cost_amount(amount, self.cost_currency)
+        crate::pricing::format_cost_amount(amount, self.cost_display_currency(self.cost_currency))
     }
 
     pub fn format_cost_amount_precise(&self, amount: f64) -> String {
-        crate::pricing::format_cost_amount_precise(amount, self.cost_currency)
+        crate::pricing::format_cost_amount_precise(
+            amount,
+            self.cost_display_currency(self.cost_currency),
+        )
+    }
+
+    fn cost_display_currency(&self, currency: CostCurrency) -> CostCurrency {
+        if currency == CostCurrency::Cny
+            && self.session.session_cost_cny == 0.0
+            && self.session.subagent_cost_cny == 0.0
+            && self.session.displayed_cost_high_water_cny == 0.0
+            && (self.session.session_cost > 0.0
+                || self.session.subagent_cost > 0.0
+                || self.session.displayed_cost_high_water > 0.0)
+        {
+            CostCurrency::Usd
+        } else {
+            currency
+        }
     }
 
     /// Estimated cost saved by the last turn's cache-hit tokens in the
@@ -2625,6 +3198,9 @@ impl App {
         let estimate = crate::pricing::calculate_cache_savings(&self.model, hit_tokens)?;
         Some(match self.cost_currency {
             crate::pricing::CostCurrency::Usd => estimate.usd,
+            crate::pricing::CostCurrency::Cny if estimate.cny == 0.0 && estimate.usd > 0.0 => {
+                estimate.usd
+            }
             crate::pricing::CostCurrency::Cny => estimate.cny,
         })
     }
@@ -2746,6 +3322,28 @@ impl App {
             .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
             .collect();
         self.collapsed_cell_map.clear();
+    }
+
+    /// #3030: return the stable user-facing label for an agent id
+    /// ("Agent 3"), assigning the next sequential label on first sight.
+    pub(crate) fn ensure_agent_label(&mut self, agent_id: &str) -> String {
+        if let Some(label) = self.agent_label_map.get(agent_id) {
+            return label.clone();
+        }
+        self.agent_counter = self.agent_counter.saturating_add(1);
+        let label = format!("Agent {}", self.agent_counter);
+        self.agent_label_map
+            .insert(agent_id.to_string(), label.clone());
+        label
+    }
+
+    /// #3030: read-only label lookup with raw-id fallback for agents the
+    /// label map has never seen.
+    pub(crate) fn agent_display_label(&self, agent_id: &str) -> String {
+        self.agent_label_map
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_else(|| agent_id.to_string())
     }
 
     pub fn mark_history_updated(&mut self) {
@@ -2995,7 +3593,7 @@ impl App {
             .find(|detail| self.tool_cells.get(&detail.tool_id).copied() == Some(index))
     }
 
-    /// Whether a virtual transcript cell can open a meaningful Alt+V detail
+    /// Whether a virtual transcript cell can open a meaningful `v` detail
     /// view. Thinking cells render their own raw text inline so there is no
     /// separate "raw" target — only tool / sub-agent cells get the hint.
     #[must_use]
@@ -3008,7 +3606,7 @@ impl App {
     }
 
     /// Pick the detail target for the current viewport. This is used by the
-    /// transcript highlight and footer hint so they agree with Alt+V.
+    /// transcript highlight and footer hint so they agree with `v`.
     #[must_use]
     pub fn detail_cell_index_for_viewport(
         &self,
@@ -3298,7 +3896,10 @@ impl App {
     }
 
     pub fn set_sidebar_focus(&mut self, focus: SidebarFocus) {
-        self.sidebar_focus = focus;
+        if self.sidebar_focus != focus {
+            self.sidebar_focus = focus;
+            self.sidebar_focus_dirty = true;
+        }
         self.needs_redraw = true;
     }
 
@@ -3493,10 +4094,22 @@ impl App {
         byte_index_at_char(&self.input, self.cursor_position)
     }
 
+    /// When the user starts editing a truncated oversized paste, restore the
+    /// full text so they can see and edit the complete content (#3263).
+    fn auto_expand_oversized_paste(&mut self) {
+        if let Some(full) = self.oversized_paste_full_text.take() {
+            self.input = full;
+            // Clamp cursor to the new length instead of resetting to 0,
+            // so the user's position in the truncated preview is preserved.
+            self.cursor_position = self.cursor_position.min(char_count(&self.input));
+        }
+    }
+
     pub fn insert_str(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
+        self.auto_expand_oversized_paste();
         self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -3757,6 +4370,7 @@ impl App {
 
     pub fn insert_char(&mut self, c: char) {
         self.clear_input_history_navigation();
+        self.auto_expand_oversized_paste();
         self.delete_selection();
         self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -3771,9 +4385,6 @@ impl App {
     }
 
     fn strip_raw_mouse_reports_from_input(&mut self) {
-        if !self.use_mouse_capture {
-            return;
-        }
         if let Some((input, cursor_position)) =
             strip_raw_mouse_report_runs(&self.input, self.cursor_position)
         {
@@ -3784,6 +4395,7 @@ impl App {
 
     pub fn delete_char(&mut self) {
         self.clear_input_history_navigation();
+        self.auto_expand_oversized_paste();
         if self.delete_selection() {
             return;
         }
@@ -3804,6 +4416,7 @@ impl App {
 
     pub fn delete_char_forward(&mut self) {
         self.clear_input_history_navigation();
+        self.auto_expand_oversized_paste();
         if self.delete_selection() {
             return;
         }
@@ -4214,6 +4827,7 @@ impl App {
 
     /// Delete the character under the cursor (vim `x`).
     pub fn vim_delete_char_under_cursor(&mut self) {
+        self.auto_expand_oversized_paste();
         let total = char_count(&self.input);
         if self.cursor_position >= total {
             return;
@@ -4357,6 +4971,10 @@ impl App {
         self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
+        // Prevent stale oversized-paste state from leaking when the user
+        // clears the composer or navigates to a different input (#3263).
+        self.pending_paste_reference = None;
+        self.oversized_paste_full_text = None;
         self.selection_anchor = None;
         self.selected_attachment_index = None;
         self.slash_menu_selected = 0;
@@ -4371,6 +4989,9 @@ impl App {
     }
 
     pub fn stash_current_input_for_recovery(&mut self) {
+        // Before stashing, expand any truncated paste so the saved draft
+        // contains the full text, not the truncated preview (#3263).
+        self.auto_expand_oversized_paste();
         let draft = self.input.clone();
         if draft.trim().is_empty() {
             self.clear_undo_buffer = None;
@@ -4395,6 +5016,9 @@ impl App {
         if self.composer_history_search.is_some() {
             return;
         }
+        // Expand any truncated paste first so the history search seed
+        // contains the full text, not the truncated preview (#3263).
+        self.auto_expand_oversized_paste();
         self.composer_history_search = Some(ComposerHistorySearch::new(
             self.input.clone(),
             self.cursor_position,
@@ -4573,7 +5197,19 @@ impl App {
         // the consolidation in `insert_paste_text` first, so the user
         // sees the @mention in the composer before submission.
         self.consolidate_large_input_if_oversized();
-        let input = self.input.clone();
+        // If consolidation created a paste file, restore the full text and
+        // append the @mention so the model can read the complete content
+        // while the composer stays editable (#3263).
+        let mut input = self
+            .oversized_paste_full_text
+            .take()
+            .unwrap_or_else(|| self.input.clone());
+        if let Some(reference) = self.pending_paste_reference.take() {
+            if !input.is_empty() && !input.ends_with('\n') {
+                input.push('\n');
+            }
+            input.push_str(&reference);
+        }
         if !looks_like_slash_command_input(&input) {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
@@ -4725,10 +5361,20 @@ impl App {
             return;
         }
 
-        self.input = format!("@{rel_path}");
-        self.cursor_position = char_count(&self.input);
+        // Keep a truncated preview in the composer so the user can still
+        // select, copy, and edit it, while the full text is stored for
+        // model submission. The @mention is appended at submit time (#3263).
+        self.pending_paste_reference = Some(format!("@{rel_path}"));
+        self.oversized_paste_full_text = Some(full_input.clone());
+        let display_chars = char_count(&full_input).min(MAX_COMPOSER_DISPLAY_CHARS);
+        let mut truncated: String = full_input.chars().take(display_chars).collect();
+        if char_count(&full_input) > MAX_COMPOSER_DISPLAY_CHARS {
+            truncated.push_str("\n\n---\n(content truncated for display — start typing to expand; full text sent to model)");
+        }
+        self.input = truncated;
+        self.cursor_position = 0;
         self.push_status_toast(
-            "Large paste consolidated — auto-wrote to file and replaced with @mention. The text is still fully accessible to the model.",
+            "Large paste backed up to file — the model will receive the full content.",
             StatusToastLevel::Info,
             Some(5_000),
         );
@@ -4864,6 +5510,9 @@ impl App {
             return;
         }
         if self.history_index.is_none() {
+            // Expand truncated paste first so the saved draft contains the
+            // full text instead of the truncated preview (#3263).
+            self.auto_expand_oversized_paste();
             self.history_navigation_draft = Some(InputHistoryDraft {
                 input: self.input.clone(),
                 cursor: self.cursor_position,
@@ -4955,11 +5604,38 @@ impl App {
 
     pub fn update_model_compaction_budget(&mut self) {
         let model = self.effective_model_for_budget().to_string();
-        self.compact_threshold =
-            compaction_threshold_for_model_at_percent(&model, self.auto_compact_threshold_percent);
+        self.compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
+            self.api_provider,
+            &model,
+            self.active_route_limits,
+            self.auto_compact_threshold_percent,
+        );
         if !self.auto_compact_user_configured {
-            self.auto_compact = auto_compact_default_for_model(&model);
+            self.auto_compact = crate::route_budget::auto_compact_default_for_route(
+                self.api_provider,
+                &model,
+                self.active_route_limits,
+            );
         }
+    }
+
+    pub fn set_active_route_limits(&mut self, limits: RouteLimits) {
+        self.active_route_limits = crate::route_budget::known_route_limits(limits);
+    }
+
+    pub fn set_active_context_window_override(&mut self, context_window: Option<u32>) {
+        self.active_context_window_override = context_window;
+        if self.active_route_limits.is_none() {
+            self.active_route_limits = self.context_window_override_limits();
+        }
+    }
+
+    pub fn context_window_override_limits(&self) -> Option<RouteLimits> {
+        self.active_context_window_override
+            .map(|window| RouteLimits {
+                context_tokens: Some(u64::from(window)),
+                ..RouteLimits::default()
+            })
     }
 
     pub fn set_model_selection(&mut self, model: String) {
@@ -4974,6 +5650,10 @@ impl App {
         self.last_effective_reasoning_effort = None;
         if auto_model {
             self.reasoning_effort = ReasoningEffort::Auto;
+        } else {
+            self.reasoning_effort = self
+                .reasoning_effort
+                .normalize_for_provider(self.api_provider);
         }
     }
 
@@ -5016,11 +5696,16 @@ impl App {
     pub fn reasoning_effort_display_label(&self) -> String {
         if self.auto_model || self.reasoning_effort == ReasoningEffort::Auto {
             if let Some(effective) = self.last_effective_reasoning_effort {
-                return format!("auto: {}", effective.short_label());
+                return format!(
+                    "auto: {}",
+                    effective.display_label_for_provider(self.api_provider)
+                );
             }
             return "auto".to_string();
         }
-        self.reasoning_effort.short_label().to_string()
+        self.reasoning_effort
+            .display_label_for_provider(self.api_provider)
+            .to_string()
     }
 
     pub fn compaction_config(&self) -> CompactionConfig {
@@ -5030,6 +5715,126 @@ impl App {
             model: self.effective_model_for_budget().to_string(),
             ..Default::default()
         }
+    }
+
+    pub fn fallback_chain_entries(&self) -> Vec<(usize, ApiProvider, bool)> {
+        let Some(chain) = &self.provider_chain else {
+            return Vec::new();
+        };
+        let position = chain.position();
+        chain
+            .providers()
+            .iter()
+            .enumerate()
+            .map(|(index, provider)| (index, ApiProvider::from_kind(*provider), index == position))
+            .collect()
+    }
+
+    pub fn fallback_chain_position(&self) -> Option<usize> {
+        self.provider_chain.as_ref().map(ProviderChain::position)
+    }
+
+    pub fn fallback_chain_len(&self) -> usize {
+        self.provider_chain
+            .as_ref()
+            .map_or(0, |chain| chain.providers().len())
+    }
+
+    /// Whether a fallback chain entry can serve a turn right now (#2574).
+    ///
+    /// Mirrors the provider picker's eligibility: hosted providers need a key
+    /// (`has_api_key_for`, captured into `provider_readiness` at startup) while
+    /// self-hosted providers (Ollama/vLLM/SGLang) are always ready. Providers
+    /// absent from the snapshot default to ready so an unknown entry is tried
+    /// rather than silently skipped.
+    fn fallback_provider_is_ready(&self, provider: ApiProvider) -> bool {
+        self.provider_readiness
+            .iter()
+            .find_map(|(candidate, ready)| (*candidate == provider).then_some(*ready))
+            .unwrap_or(true)
+    }
+
+    /// Advance to the next *eligible* provider in the fallback chain (#2574).
+    ///
+    /// Walks the chain from the current position, skipping entries that are not
+    /// ready (hosted providers missing auth) and recording a clear note for each
+    /// skip. Local providers are always eligible. Returns the first ready
+    /// provider, or `None` (with an exhaustion reason) when every remaining entry
+    /// is unready or the end of the chain is reached. `ProviderChain::advance`
+    /// stays pure — the readiness filtering lives here at the App level.
+    ///
+    /// Note: auth-rejection (401) failures never reach this path; the caller
+    /// excludes them from fallback so a bad key does not silently rotate
+    /// providers (see `apply_engine_error_to_app`).
+    ///
+    /// Local/private policy (#2574): when the chain's primary provider is a
+    /// self-hosted / local runtime, cloud candidates are skipped with a clear
+    /// note so a local/private route never silently falls back out to a hosted
+    /// provider. Self-hosted siblings remain eligible. The policy is anchored
+    /// to the original primary; a cloud primary may still hop through a local
+    /// runtime and then back to another cloud fallback.
+    pub fn advance_fallback(&mut self, reason: impl Into<String>) -> Option<ApiProvider> {
+        let reason = reason.into();
+        self.provider_chain.as_ref()?;
+
+        let origin_is_local = self
+            .provider_chain
+            .as_ref()
+            .and_then(|chain| chain.providers().first().copied())
+            .map(ApiProvider::from_kind)
+            .is_some_and(ApiProvider::is_self_hosted);
+
+        let mut skip_notes: Vec<String> = Vec::new();
+        let mut chosen: Option<ApiProvider> = None;
+        while let Some(next_kind) = self
+            .provider_chain
+            .as_mut()
+            .and_then(ProviderChain::advance)
+        {
+            let candidate = ApiProvider::from_kind(next_kind);
+            if origin_is_local && !candidate.is_self_hosted() {
+                skip_notes.push(format!(
+                    "skipped {}: local/private policy (no local->cloud fallback)",
+                    candidate.as_str()
+                ));
+                continue;
+            }
+            if self.fallback_provider_is_ready(candidate) {
+                chosen = Some(candidate);
+                break;
+            }
+            skip_notes.push(format!("skipped {}: needs auth", candidate.as_str()));
+        }
+
+        let skipped = if skip_notes.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", skip_notes.join("; "))
+        };
+
+        let Some(next_provider) = chosen else {
+            let total = self
+                .provider_chain
+                .as_ref()
+                .map_or(0, |chain| chain.providers().len());
+            self.last_fallback_reason = Some(format!(
+                "Fallback chain exhausted after {total} provider(s): {reason}{skipped}"
+            ));
+            return None;
+        };
+
+        self.api_provider = next_provider;
+        self.last_fallback_reason = Some(format!(
+            "Fell back to {} after recoverable provider error: {reason}{skipped}",
+            next_provider.as_str()
+        ));
+        Some(next_provider)
+    }
+
+    pub fn is_fallback_active(&self) -> bool {
+        self.provider_chain
+            .as_ref()
+            .is_some_and(ProviderChain::is_fallback_active)
     }
 }
 
@@ -5062,6 +5867,7 @@ pub enum AppAction {
         system_prompt: Option<SystemPrompt>,
         model: String,
         workspace: PathBuf,
+        mode: AppMode,
     },
     OpenConfigEditor(ConfigUiMode),
     OpenConfigView,
@@ -5080,6 +5886,10 @@ pub enum AppAction {
     OpenFeedbackPicker,
     /// Open the `/theme` picker modal with live preview of every preset.
     OpenThemePicker,
+    /// Open the `/fleet` setup and loadout planner.
+    OpenFleetSetup,
+    /// Open the `/hotbar` setup wizard.
+    OpenHotbarSetup,
     /// Open an external URL in the system browser.
     OpenExternalUrl {
         url: String,
@@ -5087,6 +5897,13 @@ pub enum AppAction {
     },
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
+    /// Update the runtime goal status (`/goal pause|resume|clear|…`) without
+    /// dispatching a model turn. The UI layer translates this into
+    /// `Op::SetGoalStatus`.
+    SetGoalStatus {
+        status: crate::tools::goal::GoalStatus,
+        clear: bool,
+    },
     ListSubAgents,
     FetchModels,
     CacheWarmup,
@@ -5100,6 +5917,14 @@ pub enum AppAction {
     },
     UpdateCompaction(CompactionConfig),
     UpdateStreamChunkTimeout(u64),
+    UpdateSubagentRuntimeConfig {
+        enabled: bool,
+        max_subagents: usize,
+        launch_concurrency: usize,
+        max_spawn_depth: u32,
+        api_timeout_secs: u64,
+        heartbeat_timeout_secs: u64,
+    },
     OpenContextInspector,
     CompactContext,
     PurgeContext,
@@ -5124,6 +5949,11 @@ pub enum AppAction {
     SwitchWorkspace {
         workspace: PathBuf,
     },
+    /// Record from the microphone and route the transcription into the
+    /// composer (or auto-send it). Emitted by `/voice` and the voice hotbar
+    /// action; handled in the UI event loop where the live `Config` supplies
+    /// provider credentials.
+    VoiceCapture,
     /// Export and share the current session as a web URL.
     ShareSession {
         history_len: usize,
@@ -5178,2355 +6008,16 @@ pub enum McpUiAction {
     Remove {
         name: String,
     },
+    Login {
+        name: String,
+        scopes: Vec<String>,
+    },
+    Logout {
+        name: String,
+    },
     Validate,
     Reload,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
-    use crate::test_support::{EnvVarGuard, lock_test_env};
-    use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
-    use crate::tools::todo::TodoStatus;
-    use crate::tui::clipboard::PastedImage;
-    use crate::tui::history::{GenericToolCell, ToolCell, ToolStatus};
-
-    fn test_options(yolo: bool) -> TuiOptions {
-        TuiOptions {
-            model: "test-model".to_string(),
-            workspace: PathBuf::from("."),
-            config_path: None,
-            config_profile: None,
-            allow_shell: yolo,
-            use_alt_screen: true,
-            use_mouse_capture: false,
-            use_bracketed_paste: true,
-            max_subagents: 1,
-            skills_dir: PathBuf::from("."),
-            memory_path: PathBuf::from("memory.md"),
-            notes_path: PathBuf::from("notes.txt"),
-            mcp_config_path: PathBuf::from("mcp.json"),
-            use_memory: false,
-            // Keep unit tests independent from the developer's saved
-            // `default_mode` setting.
-            start_in_agent_mode: true,
-            skip_onboarding: false,
-            yolo,
-            resume_session_id: None,
-            initial_input: None,
-        }
-    }
-
-    #[test]
-    fn initial_input_prefill_waits_for_manual_submit() {
-        let mut options = test_options(false);
-        options.initial_input = Some(InitialInput::Prefill("review this PR".to_string()));
-
-        let app = App::new(options, &Config::default());
-
-        assert_eq!(app.input, "review this PR");
-        assert_eq!(app.cursor_position, "review this PR".chars().count());
-        assert!(!app.auto_submit_initial_input);
-    }
-
-    #[test]
-    fn initial_input_submit_marks_startup_dispatch() {
-        let mut options = test_options(false);
-        options.initial_input = Some(InitialInput::Submit(
-            "阅读项目 and wait for instructions".to_string(),
-        ));
-
-        let app = App::new(options, &Config::default());
-
-        assert_eq!(app.input, "阅读项目 and wait for instructions");
-        assert_eq!(
-            app.cursor_position,
-            "阅读项目 and wait for instructions".chars().count()
-        );
-        assert!(app.auto_submit_initial_input);
-    }
-
-    #[test]
-    fn composer_arrows_scroll_default_is_true_without_mouse_capture() {
-        assert!(default_composer_arrows_scroll_for_platform(false, false));
-    }
-
-    #[test]
-    fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_non_windows() {
-        assert!(!default_composer_arrows_scroll_for_platform(true, false));
-    }
-
-    #[test]
-    fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_windows() {
-        assert!(!default_composer_arrows_scroll_for_platform(true, true));
-    }
-
-    #[test]
-    fn composer_arrows_scroll_default_is_true_without_mouse_capture_on_windows() {
-        assert!(default_composer_arrows_scroll_for_platform(false, true));
-    }
-
-    #[test]
-    fn move_cursor_line_start_multiline() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "abc\ndef\nghi".to_string();
-        app.cursor_position = "abc\ndef\nghi".chars().count(); // absolute end
-        app.move_cursor_line_start();
-        assert_eq!(app.cursor_position, "abc\ndef\n".len()); // start of "ghi"
-    }
-
-    #[test]
-    fn move_cursor_line_start_singleline() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello".to_string();
-        app.cursor_position = 3;
-        app.move_cursor_line_start();
-        assert_eq!(app.cursor_position, 0);
-    }
-
-    #[test]
-    fn move_cursor_line_end_multiline() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "abc\ndef\nghi".to_string();
-        app.cursor_position = 0; // start of first line
-        app.move_cursor_line_end();
-        assert_eq!(app.cursor_position, "abc".len()); // before first '\n'
-    }
-
-    #[test]
-    fn move_cursor_line_end_at_newline_stays_at_line_end() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "abc\ndef\nghi".to_string();
-        app.cursor_position = "abc".len(); // on the '\n'
-        app.move_cursor_line_end();
-        assert_eq!(app.cursor_position, "abc".len()); // stays at line end
-    }
-
-    #[test]
-    fn move_cursor_line_end_last_line() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "abc\ndef".to_string();
-        app.cursor_position = "abc\n".len(); // start of last line
-        app.move_cursor_line_end();
-        assert_eq!(app.cursor_position, "abc\ndef".chars().count()); // absolute end
-    }
-
-    #[test]
-    fn move_cursor_line_start_already_at_start() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "abc\ndef".to_string();
-        app.cursor_position = "abc\n".len(); // start of second line
-        app.move_cursor_line_start();
-        assert_eq!(app.cursor_position, "abc\n".len()); // unchanged
-    }
-
-    #[test]
-    fn test_trust_mode_follows_yolo_on_startup() {
-        let app = App::new(test_options(true), &Config::default());
-        assert!(app.trust_mode);
-    }
-
-    #[test]
-    fn settings_default_provider_auth_check_uses_provider_scoped_key() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(
-            tmp.path().join("settings.toml"),
-            "default_provider = \"openai\"\n",
-        )
-        .expect("settings");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-        let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
-        let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
-
-        let config = Config {
-            providers: Some(ProvidersConfig {
-                openai: ProviderConfig {
-                    api_key: Some("openai-config-key".to_string()),
-                    ..ProviderConfig::default()
-                },
-                ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        };
-
-        let app = App::new(test_options(false), &config);
-
-        assert_eq!(app.api_provider, ApiProvider::Openai);
-        assert!(
-            !app.onboarding_needs_api_key,
-            "OpenAI provider config key should satisfy startup auth without a DeepSeek key"
-        );
-        assert_ne!(app.onboarding, OnboardingState::ApiKey);
-        assert!(!app.api_key_env_only);
-    }
-
-    #[test]
-    fn explicit_config_provider_wins_over_saved_default_provider() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(
-            tmp.path().join("settings.toml"),
-            "default_provider = \"deepseek\"\ndefault_model = \"deepseek-v4-pro\"\n",
-        )
-        .expect("settings");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-        let config = Config {
-            provider: Some("xiaomi-mimo".to_string()),
-            providers: Some(ProvidersConfig {
-                xiaomi_mimo: ProviderConfig {
-                    api_key: Some("mimo-config-key".to_string()),
-                    model: Some("mimo-v2.5-pro".to_string()),
-                    ..ProviderConfig::default()
-                },
-                ..ProvidersConfig::default()
-            }),
-            ..Config::default()
-        };
-
-        let mut options = test_options(false);
-        options.model = "mimo-v2.5-pro".to_string();
-        let app = App::new(options, &config);
-
-        assert_eq!(app.api_provider, ApiProvider::XiaomiMimo);
-        assert_eq!(app.model, "mimo-v2.5-pro");
-        assert!(
-            !app.onboarding_needs_api_key,
-            "Xiaomi MiMo provider config key should satisfy startup auth"
-        );
-    }
-
-    #[test]
-    fn app_new_defaults_auto_compact_on_for_256k_class_models_when_unset() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-        let mut options = test_options(false);
-        options.model = "trinity-large-thinking".to_string();
-        let app = App::new(options, &Config::default());
-
-        assert!(app.auto_compact);
-        assert!(!app.auto_compact_user_configured);
-        assert_eq!(app.auto_compact_threshold_percent, 80.0);
-        assert_eq!(app.compact_threshold, 209_715);
-    }
-
-    #[test]
-    fn app_new_respects_explicit_auto_compact_false_for_256k_class_models() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        std::fs::write(tmp.path().join("settings.toml"), "auto_compact = false\n")
-            .expect("settings");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-        let mut options = test_options(false);
-        options.model = "trinity-large-thinking".to_string();
-        let app = App::new(options, &Config::default());
-
-        assert!(!app.auto_compact);
-        assert!(app.auto_compact_user_configured);
-        assert_eq!(app.compact_threshold, 209_715);
-    }
-
-    #[test]
-    fn sidebar_focus_accepts_work_and_maps_legacy_trackers_to_work() {
-        assert_eq!(SidebarFocus::from_setting("auto"), SidebarFocus::Auto);
-        assert_eq!(SidebarFocus::from_setting("work"), SidebarFocus::Work);
-        assert_eq!(SidebarFocus::from_setting("plan"), SidebarFocus::Work);
-        assert_eq!(SidebarFocus::from_setting("todos"), SidebarFocus::Work);
-        assert_eq!(SidebarFocus::from_setting("tasks"), SidebarFocus::Tasks);
-        assert_eq!(SidebarFocus::from_setting("agents"), SidebarFocus::Agents);
-        assert_eq!(SidebarFocus::from_setting("context"), SidebarFocus::Context);
-        assert_eq!(SidebarFocus::from_setting("hidden"), SidebarFocus::Hidden);
-        assert_eq!(SidebarFocus::from_setting("off"), SidebarFocus::Hidden);
-        assert_eq!(SidebarFocus::Work.as_setting(), "work");
-        assert_eq!(SidebarFocus::Hidden.as_setting(), "hidden");
-    }
-
-    #[test]
-    fn slash_command_classifier_treats_absolute_path_as_message() {
-        assert!(looks_like_slash_command_input("/"));
-        assert!(looks_like_slash_command_input("/help"));
-        assert!(looks_like_slash_command_input("/model deepseek-v4-pro"));
-        assert!(!looks_like_slash_command_input("/ hello"));
-        assert!(!looks_like_slash_command_input("  / hello"));
-        assert!(!looks_like_slash_command_input(
-            "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？"
-        ));
-    }
-
-    #[test]
-    fn bang_shell_prefix_parses_compact_and_spaced_forms() {
-        assert_eq!(shell_command_from_bang_input("!pwd"), Ok(Some("pwd")));
-        assert_eq!(shell_command_from_bang_input("! pwd"), Ok(Some("pwd")));
-        assert_eq!(
-            shell_command_from_bang_input("  !  cargo test -p deepseek-tui sidebar"),
-            Ok(Some("cargo test -p deepseek-tui sidebar"))
-        );
-        assert_eq!(shell_command_from_bang_input("normal message"), Ok(None));
-    }
-
-    #[test]
-    fn bang_shell_prefix_rejects_empty_command() {
-        assert_eq!(
-            shell_command_from_bang_input("!"),
-            Err("Usage: ! <shell command>")
-        );
-        assert_eq!(
-            shell_command_from_bang_input("!   "),
-            Err("Usage: ! <shell command>")
-        );
-    }
-
-    #[test]
-    fn submit_input_records_absolute_slash_path_as_message_history() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let input = "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？";
-        app.input = input.to_string();
-        app.cursor_position = input.chars().count();
-
-        let submitted = app.submit_input().expect("expected submitted input");
-
-        assert_eq!(submitted, input);
-        assert_eq!(app.input_history.last().map(String::as_str), Some(input));
-    }
-
-    #[test]
-    fn restore_last_submitted_prompt_rehydrates_empty_composer() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.last_submitted_prompt = Some("fix the typo\nand retry".to_string());
-
-        assert!(app.restore_last_submitted_prompt_if_empty());
-
-        assert_eq!(app.input, "fix the typo\nand retry");
-        assert_eq!(app.cursor_position, app.input.chars().count());
-        assert!(app.needs_redraw);
-    }
-
-    #[test]
-    fn restore_last_submitted_prompt_preserves_existing_draft() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.last_submitted_prompt = Some("previous prompt".to_string());
-        app.input = "new draft".to_string();
-        app.cursor_position = app.input.chars().count();
-
-        assert!(!app.restore_last_submitted_prompt_if_empty());
-
-        assert_eq!(app.input, "new draft");
-        assert_eq!(app.cursor_position, "new draft".chars().count());
-    }
-
-    #[test]
-    fn composer_strips_raw_sgr_mouse_report_when_mouse_capture_is_enabled() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        app.insert_str("[<35;44;18M");
-
-        assert_eq!(app.input, "");
-        assert_eq!(app.cursor_position, 0);
-    }
-
-    #[test]
-    fn composer_strips_corrupted_mouse_report_burst() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("draft ");
-        let leaked = "43;19M[<35;44;18M[<35;45;18M5;46;18M;48;18M";
-
-        app.insert_str(leaked);
-
-        assert_eq!(app.input, "draft ");
-        assert_eq!(app.cursor_position, "draft ".chars().count());
-    }
-
-    #[test]
-    fn composer_preserves_draft_suffix_when_stripping_mouse_report() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("commit -m");
-
-        app.insert_str("[<65;44;18M");
-
-        assert_eq!(app.input, "commit -m");
-        assert_eq!(app.cursor_position, "commit -m".chars().count());
-    }
-
-    #[test]
-    fn composer_preserves_numeric_draft_when_stripping_mouse_report() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("123");
-
-        app.insert_str("[<65;44;18M");
-
-        assert_eq!(app.input, "123");
-        assert_eq!(app.cursor_position, 3);
-    }
-
-    #[test]
-    fn composer_keeps_mouse_like_text_when_mouse_capture_is_disabled() {
-        let mut app = App::new(test_options(false), &Config::default());
-
-        app.insert_str("[<35;44;18M");
-
-        assert_eq!(app.input, "[<35;44;18M");
-    }
-
-    #[test]
-    fn composer_keeps_normal_bracket_text_with_mouse_capture_enabled() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        app.insert_str("Use [<tag>] normally");
-
-        assert_eq!(app.input, "Use [<tag>] normally");
-    }
-
-    #[test]
-    fn composer_keeps_coordinate_like_text_with_mouse_capture_enabled() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        app.insert_str("Size 12;34M");
-
-        assert_eq!(app.input, "Size 12;34M");
-    }
-
-    // === Bug #1915: broader terminal control-sequence fragments leaking
-    // into the composer during dense streaming output. The narrow SGR
-    // mouse-report filter installed in e63a4ba4a covers `[<…M` style
-    // bursts, but not OSC 8 hyperlink fragments (`]8;;http…`) or Kitty
-    // keyboard protocol responses (`[?u`, `[>1u`). These can arrive when
-    // crossterm's event reader is mid-sequence and the unparsed tail is
-    // delivered as individual Char(c) keystrokes that land in the input.
-
-    #[test]
-    fn composer_strips_osc8_hyperlink_fragment() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("draft ");
-
-        // OSC 8 prefix with URL body but no terminator delivered yet —
-        // exactly what crossterm hands us if its event reader is
-        // interrupted mid-sequence and the leading ESC is consumed by the
-        // parser before the rest gets reclassified as Char(c).
-        app.insert_str("]8;;https://example.com");
-
-        assert_eq!(app.input, "draft ");
-        assert_eq!(app.cursor_position, "draft ".chars().count());
-    }
-
-    #[test]
-    fn composer_strips_closing_osc8_fragment() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("hello ");
-
-        // The closing wrapper `]8;;` (with a stray ST `\\` from a
-        // chopped escape) can arrive on its own when the parser ate
-        // the start of the sequence in a previous read but caught the
-        // tail as keystrokes.
-        app.insert_str("]8;;\\");
-
-        assert_eq!(app.input, "hello ");
-        assert_eq!(app.cursor_position, "hello ".chars().count());
-    }
-
-    #[test]
-    fn composer_strips_kitty_keyboard_protocol_fragment() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("ready ");
-
-        // Kitty keyboard protocol responses look like `\x1b[?1u`,
-        // `\x1b[>1u`, `\x1b[<1u`, or `\x1b[?u`. With the ESC consumed,
-        // the tail shape is `[?…u`, `[>…u`, or `[<…u`.
-        app.insert_str("[?1u[>1u[<1u[?u");
-
-        assert_eq!(app.input, "ready ");
-        assert_eq!(app.cursor_position, "ready ".chars().count());
-    }
-
-    #[test]
-    fn composer_strips_dec_private_mode_set_reset_fragments() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("ok ");
-
-        // Regression for #2592: DEC private mode set/reset chatter ends in
-        // `h`/`l`, not `u`, so the `u`-only terminator used to leak the
-        // leading `[`. Bracketed paste, mouse capture, focus reporting, and
-        // synchronized output all leak during dense streaming.
-        app.insert_str("[?2004h[?2004l[?1000h[?1004h[?2026h[?25l");
-
-        assert_eq!(app.input, "ok ");
-        assert_eq!(app.cursor_position, "ok ".chars().count());
-    }
-
-    #[test]
-    fn composer_keeps_bracket_question_word_text() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        // The `h`/`l` terminator only counts after a numeric parameter, so
-        // ordinary prose where a letter follows `[?` directly is preserved.
-        app.insert_str("[?help] and [?later]");
-
-        assert_eq!(app.input, "[?help] and [?later]");
-    }
-
-    #[test]
-    fn composer_strips_mixed_control_sequence_burst() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-        app.insert_str("hi");
-
-        // Mixed dense burst combining all three fragment families
-        // described in #1915.
-        app.insert_str("[<35;44;18M]8;;https://example.com[?1u");
-
-        assert_eq!(app.input, "hi");
-        assert_eq!(app.cursor_position, 2);
-    }
-
-    #[test]
-    fn composer_keeps_legitimate_url_text_with_mouse_capture_enabled() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        // URLs typed by the user must survive the filter — only
-        // recognized control-sequence shapes are stripped.
-        app.insert_str("see https://example.com/path?a=1&b=2 for info");
-
-        assert_eq!(app.input, "see https://example.com/path?a=1&b=2 for info");
-    }
-
-    #[test]
-    fn composer_keeps_legitimate_bracket_question_text() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        // Text that uses brackets, question marks, and lowercase `u` —
-        // shapes that overlap Kitty fragments — must not be eaten.
-        app.insert_str("[is this ok?] sure");
-
-        assert_eq!(app.input, "[is this ok?] sure");
-    }
-
-    #[test]
-    fn composer_keeps_legitimate_closing_bracket_digit_text() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_mouse_capture = true;
-
-        // Plain `]8` followed by spaces and words must survive — only
-        // the OSC 8 shape `]8;` (with the mandatory `;` separator)
-        // should be treated as a fragment.
-        app.insert_str("array[]8 elements");
-
-        assert_eq!(app.input, "array[]8 elements");
-    }
-
-    // initial_onboarding_state tests
-    // These pin the logic that decides whether the TUI shows the
-    // onboarding flow (ApiKeyProviderSelect → ApiKey → …) or goes
-    // straight to the chat view.  Getting this wrong either locks
-    // first-run users out of the API-key prompt or nags returning
-    // users whose key is already configured.
-
-    #[test]
-    fn skip_onboarding_suppresses_all_onboarding_states() {
-        assert_eq!(
-            initial_onboarding_state(true, false, true, true),
-            OnboardingState::None
-        );
-        assert_eq!(
-            initial_onboarding_state(true, true, true, true),
-            OnboardingState::None
-        );
-    }
-
-    #[test]
-    fn fully_configured_returning_user_skips_onboarding() {
-        assert_eq!(
-            initial_onboarding_state(false, true, false, false),
-            OnboardingState::None
-        );
-    }
-
-    #[test]
-    fn returning_user_missing_api_key_goes_to_api_key_screen() {
-        assert_eq!(
-            initial_onboarding_state(false, true, true, false),
-            OnboardingState::ApiKeyProviderSelect
-        );
-        // workspace trust doesn't affect the api-key gate
-        assert_eq!(
-            initial_onboarding_state(false, true, true, true),
-            OnboardingState::ApiKeyProviderSelect
-        );
-    }
-
-    #[test]
-    fn first_run_user_routes_directly_to_relevant_step() {
-        // No API key, no trust needed — show tips immediately.
-        assert_eq!(
-            initial_onboarding_state(false, false, false, false),
-            OnboardingState::Tips
-        );
-        // Needs API key — go to provider select.
-        assert_eq!(
-            initial_onboarding_state(false, false, true, false),
-            OnboardingState::ApiKeyProviderSelect
-        );
-        // Needs trust, no API key — go to trust prompt.
-        assert_eq!(
-            initial_onboarding_state(false, false, false, true),
-            OnboardingState::TrustDirectory
-        );
-    }
-
-    #[test]
-    fn onboarding_workspace_trust_gate_only_fires_for_onboarded_user() {
-        assert!(onboarding_is_workspace_trust_gate(false, true, false, true));
-        assert!(!onboarding_is_workspace_trust_gate(true, true, false, true));
-        assert!(!onboarding_is_workspace_trust_gate(false, true, true, true));
-        assert!(!onboarding_is_workspace_trust_gate(
-            false, false, false, true
-        ));
-    }
-
-    #[test]
-    fn onboarded_user_still_gets_workspace_trust_prompt_when_needed() {
-        assert_eq!(
-            initial_onboarding_state(false, true, false, true),
-            OnboardingState::TrustDirectory
-        );
-    }
-
-    // App::new tests: missing key is detected
-
-    #[test]
-    fn app_new_detects_missing_api_key_with_default_config() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-        let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
-        let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
-        let _api_key_envs: Vec<_> = [
-            "DEEPSEEK_API_KEY",
-            "NVIDIA_API_KEY",
-            "NVIDIA_NIM_API_KEY",
-            "OPENAI_API_KEY",
-            "ATLASCLOUD_API_KEY",
-            "WANJIE_ARK_API_KEY",
-            "WANJIE_API_KEY",
-            "WANJIE_MAAS_API_KEY",
-            "OPENROUTER_API_KEY",
-            "NOVITA_API_KEY",
-            "FIREWORKS_API_KEY",
-            "SILICONFLOW_API_KEY",
-            "MOONSHOT_API_KEY",
-            "KIMI_API_KEY",
-            "SGLANG_API_KEY",
-            "VLLM_API_KEY",
-            "OLLAMA_API_KEY",
-        ]
-        .into_iter()
-        .map(EnvVarGuard::remove)
-        .collect();
-
-        // Config::default() carries no api_key, and this test isolates process
-        // env/settings so previous tests or developer shells cannot satisfy it.
-        let app = App::new(test_options(false), &Config::default());
-        assert!(
-            app.onboarding_needs_api_key,
-            "default config (no key) must set onboarding_needs_api_key"
-        );
-    }
-
-    #[test]
-    fn app_new_with_explicit_api_key_does_not_trigger_onboarding() {
-        let _lock = lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-        let _provider_env = EnvVarGuard::remove("CODEWHALE_PROVIDER");
-        let _legacy_provider_env = EnvVarGuard::remove("DEEPSEEK_PROVIDER");
-
-        let config = Config {
-            api_key: Some("sk-test-onboarding-key".to_string()),
-            ..Config::default()
-        };
-        let app = App::new(test_options(false), &config);
-        assert!(
-            !app.onboarding_needs_api_key,
-            "explicit config.api_key must satisfy the onboarding check"
-        );
-    }
-
-    #[test]
-    fn new_caches_workspace_skills_for_slash_menu() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
-        let skill_dir = workspace.join(".agents").join("skills").join("local-skill");
-        std::fs::create_dir_all(&skill_dir).expect("skill dir");
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: local-skill\ndescription: Local workspace skill\n---\nUse the local skill.\n",
-        )
-        .expect("skill file");
-
-        let mut options = test_options(false);
-        options.workspace = workspace.clone();
-        options.skills_dir = tmp.path().join("global-skills");
-        let app = App::new(options, &Config::default());
-
-        assert_eq!(app.skills_dir, workspace.join(".agents").join("skills"));
-        assert!(app.cached_skills.iter().any(|(name, description)| {
-            name == "local-skill" && description == "Local workspace skill"
-        }));
-    }
-
-    #[test]
-    fn cached_skills_merges_across_candidate_directories() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
-
-        // Higher-precedence directory contains a stale empty dir for `foo`
-        // (no SKILL.md). This used to shadow the real definition further
-        // down the candidate list when the cache only scanned a single dir.
-        std::fs::create_dir_all(workspace.join(".agents").join("skills").join("foo"))
-            .expect("stale empty dir");
-
-        // Lower-precedence directory has the real skill.
-        let real_dir = workspace.join(".claude").join("skills").join("foo");
-        std::fs::create_dir_all(&real_dir).expect("real skill dir");
-        std::fs::write(
-            real_dir.join("SKILL.md"),
-            "---\nname: foo\ndescription: Real foo skill\n---\nbody\n",
-        )
-        .expect("skill file");
-
-        let mut options = test_options(false);
-        options.workspace = workspace.clone();
-        options.skills_dir = tmp.path().join("global-skills");
-        let app = App::new(options, &Config::default());
-
-        assert!(
-            app.cached_skills
-                .iter()
-                .any(|(name, description)| name == "foo" && description == "Real foo skill"),
-            "cached_skills should fall through to lower-precedence dir when higher-precedence one has an empty stub: {:?}",
-            app.cached_skills,
-        );
-    }
-
-    #[test]
-    fn cached_skills_include_configured_directory() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
-
-        let configured_dir = tmp.path().join("configured-skills");
-        let configured_skill_dir = configured_dir.join("configured-skill");
-        std::fs::create_dir_all(&configured_skill_dir).expect("configured skill dir");
-        std::fs::write(
-            configured_skill_dir.join("SKILL.md"),
-            "---\nname: configured-skill\ndescription: Configured skill\n---\nbody\n",
-        )
-        .expect("write configured skill");
-
-        let mut options = test_options(false);
-        options.workspace = workspace.clone();
-        options.skills_dir = configured_dir.clone();
-        let config = Config {
-            skills_dir: Some(configured_dir.to_string_lossy().into_owned()),
-            ..Default::default()
-        };
-        let app = App::new(options, &config);
-
-        assert!(
-            app.cached_skills
-                .iter()
-                .any(|(name, description)| name == "configured-skill"
-                    && description == "Configured skill"),
-            "configured skill dir should be merged: {:?}",
-            app.cached_skills
-        );
-    }
-
-    #[test]
-    fn paste_defers_oversized_text_consolidation_until_submit() {
-        // #2168: a large paste stays inline so the user can still edit it.
-        // Submit-time consolidation then writes the paste file and sends the
-        // @mention instead of the raw oversized content.
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let mut opts = test_options(false);
-        opts.workspace = tmp.path().to_path_buf();
-        let mut app = App::new(opts, &Config::default());
-        let full_content = "y".repeat(MAX_SUBMITTED_INPUT_CHARS + 256);
-
-        app.insert_paste_text(&full_content);
-
-        assert_eq!(app.input, full_content);
-        assert_eq!(app.cursor_position, app.input.chars().count());
-        let pastes_dir = tmp.path().join(".deepseek/pastes");
-        assert!(
-            !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
-            "paste file should not be written before submit"
-        );
-        assert!(
-            app.status_toasts
-                .iter()
-                .all(|toast| !toast.text.contains("consolidated")),
-            "consolidation toast should not appear before submit"
-        );
-
-        let submitted = app.submit_input().expect("expected submitted input");
-        assert!(
-            submitted.starts_with("@.deepseek/pastes/paste-") && submitted.ends_with(".md"),
-            "expected @mention after submit, got: {submitted}"
-        );
-        let rel_path = &submitted[1..];
-        let abs = tmp.path().join(rel_path);
-        assert!(abs.is_file(), "paste file must exist at {abs:?}");
-        let written = std::fs::read_to_string(&abs).expect("read");
-        assert_eq!(written, full_content);
-        assert!(
-            app.status_toasts
-                .iter()
-                .any(|toast| toast.text.contains("consolidated")),
-            "expected consolidation toast after submit"
-        );
-    }
-
-    #[test]
-    fn paste_under_threshold_does_not_consolidate() {
-        // Negative path: a small paste must NOT spawn a paste file. The
-        // input stays inline so the user can edit it freely.
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let mut opts = test_options(false);
-        opts.workspace = tmp.path().to_path_buf();
-        let mut app = App::new(opts, &Config::default());
-        let small = "hello world\nthis is fine".to_string();
-
-        app.insert_paste_text(&small);
-
-        assert_eq!(app.input, small);
-        assert!(!app.input.starts_with("@.deepseek/pastes/"));
-        // No paste file gets written for under-cap pastes.
-        let pastes_dir = tmp.path().join(".deepseek/pastes");
-        assert!(
-            !pastes_dir.exists() || std::fs::read_dir(&pastes_dir).unwrap().next().is_none(),
-            "no paste file should be written for under-cap content"
-        );
-    }
-
-    #[test]
-    fn submit_input_consolidates_oversized_input_into_paste_file() {
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let mut opts = test_options(false);
-        opts.workspace = tmp.path().to_path_buf();
-        let mut app = App::new(opts, &Config::default());
-        let full_content = "x".repeat(MAX_SUBMITTED_INPUT_CHARS + 128);
-        app.input = full_content.clone();
-        app.cursor_position = app.input.chars().count();
-
-        let submitted = app.submit_input().expect("expected submitted input");
-
-        // The submitted text should be the @mention, not the truncated
-        // original (#553).
-        assert!(
-            submitted.starts_with("@.deepseek/pastes/paste-"),
-            "expected @mention, got: {submitted}"
-        );
-        assert!(
-            submitted.ends_with(".md"),
-            "expected .md extension, got: {submitted}"
-        );
-
-        // The paste file must exist on disk with the full original content.
-        let rel_path = &submitted[1..]; // strip leading '@'
-        let abs_path = tmp.path().join(rel_path);
-        assert!(abs_path.is_file(), "paste file must exist at {abs_path:?}");
-        let written = std::fs::read_to_string(&abs_path).expect("read paste file");
-        assert_eq!(written, full_content);
-
-        // A status toast should have been pushed.
-        assert!(
-            app.status_toasts
-                .iter()
-                .any(|toast| toast.text.contains("consolidated")),
-            "expected consolidation toast, got: {:?}",
-            app.status_toasts
-                .iter()
-                .map(|t| &t.text)
-                .collect::<Vec<_>>()
-        );
-
-        // The composer must be clear after submit.
-        assert!(app.input.is_empty());
-    }
-
-    #[test]
-    fn app_starts_without_seeded_transcript_messages() {
-        let app = App::new(test_options(false), &Config::default());
-        assert!(app.history.is_empty());
-        assert_eq!(app.history_version, 0);
-    }
-
-    #[test]
-    fn clear_todos_resets_todos_list() {
-        let mut app = App::new(test_options(false), &Config::default());
-
-        // Seed some todos.
-        {
-            let mut todos = app.todos.try_lock().expect("todos lock");
-            todos.add("buy milk".to_string(), TodoStatus::Pending);
-            todos.add("write code".to_string(), TodoStatus::InProgress);
-            assert_eq!(todos.snapshot().items.len(), 2);
-        }
-
-        assert!(app.clear_todos());
-
-        let todos = app.todos.try_lock().expect("todos lock");
-        assert!(todos.snapshot().items.is_empty());
-    }
-
-    #[test]
-    fn clear_todos_resets_plan_state() {
-        let mut app = App::new(test_options(false), &Config::default());
-
-        {
-            let mut plan = app
-                .plan_state
-                .try_lock()
-                .expect("plan lock should be available");
-            plan.update(UpdatePlanArgs {
-                explanation: Some("test plan".to_string()),
-                plan: vec![PlanItemArg {
-                    step: "step 1".to_string(),
-                    status: StepStatus::InProgress,
-                }],
-                ..UpdatePlanArgs::default()
-            });
-            assert!(!plan.is_empty());
-        }
-
-        assert!(app.clear_todos());
-
-        let plan = app
-            .plan_state
-            .try_lock()
-            .expect("plan lock should be available");
-        assert!(plan.is_empty());
-    }
-
-    #[test]
-    fn test_cycle_mode_transitions() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let initial_mode = app.mode;
-        app.cycle_mode();
-        // Mode should have changed
-        assert_ne!(app.mode, initial_mode);
-    }
-
-    #[test]
-    fn test_cycle_mode_reverse_transitions() {
-        let mut app = App::new(test_options(false), &Config::default());
-
-        app.mode = AppMode::Plan;
-        app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Yolo);
-
-        app.mode = AppMode::Agent;
-        app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Plan);
-
-        app.mode = AppMode::Yolo;
-        app.cycle_mode_reverse();
-        assert_eq!(app.mode, AppMode::Agent);
-    }
-
-    #[test]
-    fn test_mode_switch_toasts_replace_previous_mode_switch_toast() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let first_mode = match app.mode {
-            AppMode::Plan => AppMode::Agent,
-            AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
-        };
-        let second_mode = match first_mode {
-            AppMode::Plan => AppMode::Agent,
-            AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
-        };
-        let third_mode = match second_mode {
-            AppMode::Plan => AppMode::Agent,
-            AppMode::Agent => AppMode::Yolo,
-            AppMode::Yolo => AppMode::Plan,
-        };
-
-        app.set_mode(first_mode);
-        app.sync_status_message_to_toasts();
-        assert_eq!(app.status_toasts.len(), 1);
-        assert_eq!(
-            app.status_toasts.back().expect("mode toast").text,
-            format!("Switched to {} mode", first_mode.label())
-        );
-
-        app.set_mode(second_mode);
-        app.sync_status_message_to_toasts();
-        assert_eq!(app.status_toasts.len(), 1);
-        assert_eq!(
-            app.status_toasts.back().expect("mode toast").text,
-            format!("Switched to {} mode", second_mode.label())
-        );
-
-        app.set_mode(third_mode);
-        app.sync_status_message_to_toasts();
-        assert_eq!(app.status_toasts.len(), 1);
-        assert_eq!(
-            app.status_toasts.back().expect("mode toast").text,
-            format!("Switched to {} mode", third_mode.label())
-        );
-    }
-
-    #[test]
-    fn test_mode_switch_toasts_do_not_disrupt_non_mode_toasts() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.status_message = Some("Task queued".to_string());
-        app.sync_status_message_to_toasts();
-
-        app.set_mode(AppMode::Agent);
-        app.sync_status_message_to_toasts();
-        app.set_mode(AppMode::Yolo);
-        app.sync_status_message_to_toasts();
-
-        assert_eq!(app.status_toasts.len(), 2);
-        assert!(
-            app.status_toasts
-                .iter()
-                .any(|toast| toast.text == "Task queued")
-        );
-        assert!(
-            app.status_toasts
-                .iter()
-                .any(|toast| toast.text == "Switched to YOLO mode")
-        );
-    }
-
-    #[test]
-    fn test_clear_input() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "test input".to_string();
-        app.cursor_position = app.input.len();
-        app.clear_input();
-        assert!(app.input.is_empty());
-        assert_eq!(app.cursor_position, 0);
-    }
-
-    #[test]
-    fn test_queue_message() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new("test message".to_string(), None));
-        assert_eq!(app.queued_message_count(), 1);
-        assert!(app.queued_messages.front().is_some());
-    }
-
-    #[test]
-    fn test_remove_queued_message() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new("first".to_string(), None));
-        app.queue_message(QueuedMessage::new("second".to_string(), None));
-
-        // Remove first (index 0)
-        let removed = app.remove_queued_message(0);
-        assert!(removed.is_some());
-        assert_eq!(app.queued_message_count(), 1);
-
-        // Remove second (now at index 0)
-        let removed = app.remove_queued_message(0);
-        assert!(removed.is_some());
-        assert_eq!(app.queued_message_count(), 0);
-    }
-
-    #[test]
-    fn test_remove_queued_message_invalid_index() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new("test".to_string(), None));
-
-        // Try to remove non-existent index
-        let removed = app.remove_queued_message(100);
-        assert!(removed.is_none());
-    }
-
-    #[test]
-    fn test_set_mode_updates_state() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let initial_mode = app.mode;
-        app.set_mode(AppMode::Yolo);
-        assert_eq!(app.mode, AppMode::Yolo);
-        assert_ne!(app.mode, initial_mode);
-        // Yolo mode should enable trust and shell
-        assert!(app.trust_mode);
-        assert!(app.allow_shell);
-    }
-
-    #[test]
-    fn app_new_respects_allow_shell_option_when_not_yolo() {
-        let mut options = test_options(false);
-        options.allow_shell = false;
-        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-        let app = App::new(options, &Config::default());
-        assert!(!app.allow_shell);
-    }
-
-    #[test]
-    fn set_mode_yolo_restores_previous_policies_on_exit() {
-        let mut options = test_options(false);
-        options.allow_shell = false;
-        options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-        let mut app = App::new(options, &Config::default());
-        app.allow_shell = false;
-        app.trust_mode = false;
-        app.approval_mode = ApprovalMode::Never;
-
-        app.set_mode(AppMode::Yolo);
-        assert!(app.allow_shell);
-        assert!(app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Auto);
-
-        app.set_mode(AppMode::Agent);
-        assert!(!app.allow_shell);
-        assert!(!app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Never);
-    }
-
-    #[test]
-    fn leaving_yolo_after_startup_restores_baseline_policies() {
-        let config = Config {
-            allow_shell: Some(false),
-            ..Default::default()
-        };
-
-        let mut app = App::new(test_options(true), &config);
-        assert_eq!(app.mode, AppMode::Yolo);
-        assert!(app.allow_shell);
-        assert!(app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Auto);
-
-        app.set_mode(AppMode::Agent);
-        assert!(!app.allow_shell);
-        assert!(!app.trust_mode);
-        assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    }
-
-    #[test]
-    fn configured_approval_policy_initializes_live_approval_mode() {
-        let config = Config {
-            approval_policy: Some("never".to_string()),
-            ..Default::default()
-        };
-        let mut options = test_options(false);
-        options.start_in_agent_mode = true;
-
-        let app = App::new(options, &config);
-
-        assert_eq!(app.mode, AppMode::Agent);
-        assert_eq!(app.approval_mode, ApprovalMode::Never);
-    }
-
-    #[test]
-    fn test_mark_history_updated() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let initial_version = app.history_version;
-        app.mark_history_updated();
-        assert!(app.history_version > initial_version);
-    }
-
-    #[test]
-    fn expanded_tool_runs_rebase_when_history_prefix_shifts() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.expanded_tool_runs = std::collections::HashSet::from([2usize, 6usize]);
-
-        app.shift_history_maps_down(3);
-
-        assert_eq!(app.expanded_tool_runs, std::collections::HashSet::from([3]));
-    }
-
-    #[test]
-    fn expanded_tool_runs_prune_when_history_is_truncated() {
-        let mut app = App::new(test_options(false), &Config::default());
-        for idx in 0..5 {
-            app.add_message(HistoryCell::System {
-                content: format!("cell {idx}"),
-            });
-        }
-        app.expanded_tool_runs = std::collections::HashSet::from([1usize, 4usize]);
-
-        app.truncate_history_to(3);
-
-        assert_eq!(app.expanded_tool_runs, std::collections::HashSet::from([1]));
-    }
-
-    #[test]
-    fn tool_run_expansion_toggle_opens_and_closes_run() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.tool_collapse_mode = ToolCollapseMode::Compact;
-        app.tool_collapse_threshold = 3;
-        for name in ["read_file", "list_dir", "web_search"] {
-            app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: name.to_string(),
-                status: ToolStatus::Success,
-                input_summary: None,
-                output: Some("ok".to_string()),
-                prompts: None,
-                spillover_path: None,
-                output_summary: None,
-                is_diff: false,
-            })));
-        }
-
-        assert!(app.toggle_tool_run_expansion_at(0));
-        assert!(app.expanded_tool_runs.contains(&0));
-        assert!(app.toggle_tool_run_expansion_at(2));
-        assert!(!app.expanded_tool_runs.contains(&0));
-        assert!(!app.toggle_tool_run_expansion_at(99));
-    }
-
-    #[test]
-    fn test_scroll_operations() {
-        let mut app = App::new(test_options(false), &Config::default());
-        // Just verify scroll methods can be called without panic
-        app.scroll_up(5);
-        app.scroll_down(3);
-    }
-
-    #[test]
-    fn resize_preserves_scrolled_transcript_position() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.viewport.transcript_scroll = TranscriptScroll::at_line(42);
-        app.viewport.last_transcript_top = 42;
-        app.viewport.pending_scroll_delta = 5;
-
-        app.handle_resize(120, 40);
-
-        let meta = vec![TranscriptLineMeta::Spacer; 240];
-        let (_, top) = app.viewport.transcript_scroll.resolve_top(&meta, 200);
-        assert_eq!(top, 42);
-        assert_eq!(app.viewport.pending_scroll_delta, 0);
-    }
-
-    #[test]
-    fn resize_keeps_tail_state_when_user_was_at_tail() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
-        app.viewport.last_transcript_top = 42;
-
-        app.handle_resize(120, 40);
-
-        assert!(app.viewport.transcript_scroll.is_at_tail());
-    }
-
-    #[test]
-    fn resize_seeds_visible_height_for_paging_before_next_render() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.viewport.last_transcript_visible = 12;
-
-        app.handle_resize(120, 40);
-        assert_eq!(app.viewport.last_transcript_visible, 38);
-
-        app.handle_resize(120, 1);
-        assert_eq!(app.viewport.last_transcript_visible, 1);
-    }
-
-    #[test]
-    fn test_add_message() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let initial_len = app.history.len();
-        app.add_message(HistoryCell::User {
-            content: "test".to_string(),
-        });
-        assert_eq!(app.history.len(), initial_len + 1);
-    }
-
-    #[test]
-    fn test_compaction_config() {
-        let mut app = App::new(test_options(false), &Config::default());
-        let config = app.compaction_config();
-        // Config should be valid (just checking it returns something)
-        let _ = config.enabled;
-
-        app.auto_model = true;
-        app.model = "auto".to_string();
-        app.last_effective_model = None;
-        let config = app.compaction_config();
-        assert_eq!(config.model, DEFAULT_TEXT_MODEL);
-
-        app.last_effective_model = Some("deepseek-v4-flash".to_string());
-        let config = app.compaction_config();
-        assert_eq!(config.model, "deepseek-v4-flash");
-    }
-
-    #[test]
-    fn test_update_model_compaction_budget() {
-        let mut app = App::new(test_options(false), &Config::default());
-        // Pin the inputs so the budget math is deterministic and does not
-        // depend on the developer's local `auto_compact_threshold_percent`
-        // setting (App::new loads real settings) or on auto-model resolution.
-        app.auto_model = false;
-        app.auto_compact_threshold_percent = 80.0;
-
-        // A large-context model earns a proportionally larger compaction
-        // budget; an unknown model falls back to the fixed default threshold.
-        app.model = "deepseek-v4-pro".to_string();
-        app.update_model_compaction_budget();
-        let large_window_threshold = app.compact_threshold;
-
-        app.model = "unknown-test-model".to_string();
-        app.update_model_compaction_budget();
-        let unknown_threshold = app.compact_threshold;
-
-        assert!(
-            unknown_threshold > 0,
-            "unknown model must still get a positive budget"
-        );
-        assert!(
-            large_window_threshold > unknown_threshold,
-            "a large-context model ({large_window_threshold}) should budget more \
-             than an unknown model ({unknown_threshold})"
-        );
-    }
-
-    #[test]
-    fn test_input_history_navigation() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.push("first".to_string());
-        app.input_history.push("second".to_string());
-
-        // Navigate up
-        app.history_up();
-        assert!(app.history_index.is_some());
-
-        // Navigate down
-        app.history_down();
-    }
-
-    #[test]
-    fn input_history_down_restores_live_draft_after_accidental_up() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.push("previous prompt".to_string());
-        app.input = "careful current draft".to_string();
-        app.cursor_position = "careful".chars().count();
-
-        app.history_up();
-        assert_eq!(app.input, "previous prompt");
-
-        app.history_down();
-        assert_eq!(app.input, "careful current draft");
-        assert_eq!(app.cursor_position, "careful".chars().count());
-        assert!(app.history_index.is_none());
-    }
-
-    #[test]
-    fn input_history_navigation_clears_stale_selection() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.push("previous input".to_string());
-        app.input = "hello world".to_string();
-        app.cursor_position = "hello ".chars().count();
-        app.selection_anchor = Some(app.input.chars().count());
-
-        app.history_up();
-        assert_eq!(app.input, "previous input");
-        assert!(app.selection_anchor.is_none());
-
-        app.insert_char('x');
-        assert_eq!(app.input, "previous inputx");
-    }
-
-    #[test]
-    fn input_history_restores_empty_draft_at_end_of_navigation() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.push("previous prompt".to_string());
-
-        app.history_up();
-        assert_eq!(app.input, "previous prompt");
-
-        app.history_down();
-        assert!(app.input.is_empty());
-        assert_eq!(app.cursor_position, 0);
-        assert!(app.history_index.is_none());
-    }
-
-    #[test]
-    fn word_cursor_helpers_move_by_whitespace_delimited_words() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "alpha beta  gamma".to_string();
-        app.cursor_position = 0;
-
-        app.move_cursor_word_forward();
-        assert_eq!(app.cursor_position, "alpha ".chars().count());
-
-        app.move_cursor_word_forward();
-        assert_eq!(app.cursor_position, "alpha beta  ".chars().count());
-
-        app.move_cursor_word_backward();
-        assert_eq!(app.cursor_position, "alpha ".chars().count());
-    }
-
-    #[test]
-    fn editing_history_entry_leaves_navigation_mode() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.push("previous prompt".to_string());
-        app.input = "current draft".to_string();
-        app.cursor_position = app.input.chars().count();
-
-        app.history_up();
-        app.insert_char('!');
-        app.history_down();
-
-        assert_eq!(app.input, "previous prompt!");
-        assert!(app.history_index.is_none());
-    }
-
-    #[test]
-    fn history_search_filters_matches_and_skips_duplicates() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.clear();
-        app.input_history.push("alpha one".to_string());
-        app.input_history.push("beta two".to_string());
-        app.input_history.push("alpha one".to_string());
-        app.draft_history.push_back("draft alpha".to_string());
-
-        app.start_history_search();
-        app.history_search_insert_str("alpha");
-
-        assert_eq!(
-            app.history_search_matches(),
-            vec!["draft alpha".to_string(), "alpha one".to_string()]
-        );
-    }
-
-    #[test]
-    fn history_search_matches_unicode_case_insensitively() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.clear();
-        app.input_history.push("CAFÉ prompt".to_string());
-
-        app.start_history_search();
-        app.history_search_insert_str("café");
-
-        assert_eq!(
-            app.history_search_matches(),
-            vec!["CAFÉ prompt".to_string()]
-        );
-    }
-
-    #[test]
-    fn history_search_accepts_match_without_submitting() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.clear();
-        app.input_history.push("older prompt".to_string());
-
-        app.start_history_search();
-        app.history_search_insert_str("older");
-
-        assert!(app.accept_history_search());
-        assert_eq!(app.input, "older prompt");
-        assert_eq!(app.cursor_position, "older prompt".chars().count());
-        assert!(app.composer_history_search.is_none());
-    }
-
-    #[test]
-    fn history_search_cancel_restores_pre_search_draft() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.clear();
-        app.input = "current draft".to_string();
-        app.cursor_position = 7;
-        app.input_history.push("older prompt".to_string());
-
-        app.start_history_search();
-        app.history_search_insert_str("older");
-        app.cancel_history_search();
-
-        assert_eq!(app.input, "current draft");
-        assert_eq!(app.cursor_position, 7);
-        assert!(app.composer_history_search.is_none());
-    }
-
-    #[test]
-    fn recoverable_clear_stashes_nonempty_draft() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input_history.clear();
-        app.input = "recover this".to_string();
-        app.cursor_position = app.input.chars().count();
-
-        app.clear_input_recoverable();
-        app.start_history_search();
-        app.history_search_insert_str("recover");
-
-        assert_eq!(
-            app.history_search_matches(),
-            vec!["recover this".to_string()]
-        );
-    }
-
-    #[test]
-    fn clear_undo_buffer_is_set_on_clear_input_recoverable() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello".to_string();
-        app.cursor_position = 5;
-
-        app.clear_input_recoverable();
-
-        assert!(app.input.is_empty());
-        assert_eq!(app.clear_undo_buffer.as_deref(), Some("hello"));
-    }
-
-    #[test]
-    fn clear_undo_buffer_is_none_when_clearing_empty_input() {
-        let mut app = App::new(test_options(false), &Config::default());
-        assert!(app.input.is_empty());
-
-        app.clear_input_recoverable();
-
-        assert!(app.clear_undo_buffer.is_none());
-    }
-
-    #[test]
-    fn restore_last_cleared_input_restores_saved_draft() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "previous".to_string();
-        app.cursor_position = 8;
-        app.clear_input_recoverable();
-        assert!(app.input.is_empty());
-
-        let restored = app.restore_last_cleared_input_if_empty();
-        assert!(restored);
-        assert_eq!(app.input, "previous");
-        assert!(app.clear_undo_buffer.is_none());
-    }
-
-    #[test]
-    fn restore_last_cleared_input_does_nothing_when_composer_not_empty() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.clear_undo_buffer = Some("old".to_string());
-        app.input = "current".to_string();
-        assert!(!app.restore_last_cleared_input_if_empty());
-    }
-
-    #[test]
-    fn composer_paste_flushes_pending_burst_and_normalizes_crlf() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_paste_burst_detection = true;
-        let now = Instant::now();
-        let key = crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('x'),
-            crossterm::event::KeyModifiers::NONE,
-        );
-
-        assert!(crate::tui::paste::handle_paste_burst_key(
-            &mut app, &key, now
-        ));
-        assert!(
-            app.input.is_empty(),
-            "first burst char should stay buffered"
-        );
-
-        app.insert_paste_text("a\r\nb\rc");
-
-        assert_eq!(app.input, "xa\nb\nc");
-        assert_eq!(app.cursor_position, "xa\nb\nc".chars().count());
-        assert!(!app.paste_burst.is_active());
-    }
-
-    #[test]
-    fn bracketed_paste_preserves_bare_carriage_return_line_breaks() {
-        let mut app = App::new(test_options(false), &Config::default());
-
-        app.insert_paste_text("alpha\r  indented\r# literal heading\r- literal list");
-
-        assert_eq!(
-            app.input,
-            "alpha\n  indented\n# literal heading\n- literal list"
-        );
-        assert_eq!(app.cursor_position, app.input.chars().count());
-    }
-
-    #[test]
-    fn enter_during_active_paste_burst_appends_newline_to_buffer_not_submit() {
-        // #1073: when chars are still being assembled into a paste burst and
-        // an Enter arrives (the trailing newline of the paste), the Enter
-        // must be absorbed into the burst buffer — not fired as a submit.
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_paste_burst_detection = true;
-        let now = Instant::now();
-        app.paste_burst.append_char_to_buffer('h', now);
-        app.paste_burst.append_char_to_buffer('i', now);
-        assert!(app.paste_burst.is_active());
-        assert!(app.input.is_empty());
-
-        let result = app.handle_composer_enter();
-
-        assert!(
-            result.is_none(),
-            "Enter during active paste burst must not submit"
-        );
-        let flushed = app.paste_burst.flush_before_modified_input();
-        assert_eq!(
-            flushed.as_deref(),
-            Some("hi\n"),
-            "newline must land in the burst buffer so the next flush carries it"
-        );
-    }
-
-    #[test]
-    fn enter_inside_paste_burst_window_after_flush_inserts_newline_not_submit() {
-        // #1073: after a burst has flushed (text now in `input`), the
-        // suppression window stays open for ~120ms. An Enter arriving in
-        // that window is the trailing newline of the paste, not a user
-        // submit — insert it as a literal newline into the composer.
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_paste_burst_detection = true;
-        app.input = "hello".to_string();
-        app.cursor_position = "hello".chars().count();
-        let now = Instant::now();
-        app.paste_burst.extend_window(now);
-        assert!(!app.paste_burst.is_active());
-        assert!(
-            app.paste_burst.newline_should_insert_instead_of_submit(now),
-            "suppression window should be open"
-        );
-
-        let result = app.handle_composer_enter();
-
-        assert!(
-            result.is_none(),
-            "Enter inside post-flush suppression window must not submit"
-        );
-        assert_eq!(
-            app.input, "hello\n",
-            "newline must be inserted into the composer instead of firing a submit"
-        );
-    }
-
-    #[test]
-    fn enter_outside_any_paste_burst_window_submits_normally() {
-        // Regression guard: the suppression must not trip when the user
-        // actually wants to submit.
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_paste_burst_detection = true;
-        app.input = "hello world".to_string();
-        app.cursor_position = "hello world".chars().count();
-
-        let result = app.handle_composer_enter();
-
-        assert_eq!(
-            result.as_deref(),
-            Some("hello world"),
-            "Enter outside any paste burst window must submit normally"
-        );
-        assert!(
-            app.input.is_empty(),
-            "submit_input should clear the composer"
-        );
-    }
-
-    #[test]
-    fn enter_with_paste_burst_detection_disabled_submits_normally() {
-        // When the user has explicitly turned off paste-burst detection
-        // (`bracketed_paste = false` is independent, this is the
-        // `paste_burst_detection` setting), the suppression must be
-        // skipped — otherwise turning it off would not actually turn it
-        // off.
-        let mut app = App::new(test_options(false), &Config::default());
-        app.use_paste_burst_detection = false;
-        app.input = "ship it".to_string();
-        app.cursor_position = "ship it".chars().count();
-        let now = Instant::now();
-        app.paste_burst.extend_window(now);
-
-        let result = app.handle_composer_enter();
-
-        assert_eq!(result.as_deref(), Some("ship it"));
-    }
-
-    #[test]
-    fn clipboard_text_paste_matches_bracketed_paste_state() {
-        let text = "alpha\r\nbeta";
-        let mut bracketed = App::new(test_options(false), &Config::default());
-        let mut clipboard = App::new(test_options(false), &Config::default());
-
-        bracketed.insert_paste_text(text);
-        clipboard.apply_clipboard_content(ClipboardContent::Text(text.to_string()));
-
-        assert_eq!(clipboard.input, bracketed.input);
-        assert_eq!(clipboard.cursor_position, bracketed.cursor_position);
-        assert_eq!(clipboard.slash_menu_hidden, bracketed.slash_menu_hidden);
-        assert_eq!(clipboard.mention_menu_hidden, bracketed.mention_menu_hidden);
-    }
-
-    #[test]
-    fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "before after".to_string();
-        app.cursor_position = "before".chars().count();
-
-        app.apply_clipboard_content(ClipboardContent::Image(PastedImage {
-            path: PathBuf::from("/tmp/pasted.png"),
-            width: 8,
-            height: 4,
-            byte_len: 2048,
-        }));
-
-        assert!(
-            app.input
-                .contains("before\n[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]")
-        );
-        assert!(app.input.contains("] after"));
-        let status = app.status_message.as_deref().expect("status message");
-        assert_eq!(status, "Attached image: 8x4 PNG (2KB)");
-    }
-
-    #[test]
-    fn pasted_text_and_image_placeholders_survive_history_and_queue_paths() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.insert_paste_text("line 1\r\nline 2");
-        app.insert_media_attachment("image", Path::new("/tmp/pasted.png"), Some("8x4 PNG (2KB)"));
-
-        let submitted = app.submit_input().expect("submitted input");
-        assert!(submitted.contains("line 1\nline 2"));
-        assert!(submitted.contains("[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]"));
-
-        app.history_up();
-        assert_eq!(app.input, submitted);
-        assert_eq!(app.composer_attachment_count(), 1);
-
-        app.clear_input();
-        app.queue_message(QueuedMessage::new(
-            submitted.clone(),
-            Some("Use this skill".to_string()),
-        ));
-        assert!(app.pop_last_queued_into_draft());
-        assert_eq!(app.input, submitted);
-        assert_eq!(app.composer_attachment_count(), 1);
-        assert_eq!(
-            app.queued_draft
-                .as_ref()
-                .and_then(|draft| draft.skill_instruction.as_deref()),
-            Some("Use this skill")
-        );
-
-        app.push_pending_steer(QueuedMessage::new(submitted.clone(), None));
-        let steers = app.drain_pending_steers();
-        assert_eq!(steers[0].display, submitted);
-    }
-
-    #[test]
-    fn selected_attachment_row_removes_placeholder_without_manual_editing() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "before".to_string();
-        app.cursor_position = "before".chars().count();
-        app.insert_media_attachment("image", Path::new("/tmp/pasted.png"), Some("8x4 PNG"));
-        app.insert_str("after");
-
-        app.move_cursor_start();
-        assert!(app.select_previous_composer_attachment());
-        assert_eq!(app.selected_composer_attachment_index(), Some(0));
-        assert!(app.remove_selected_composer_attachment());
-
-        assert!(!app.input.contains("[Attached image:"));
-        assert!(app.input.contains("before"));
-        assert!(app.input.contains("after"));
-        assert_eq!(app.composer_attachment_count(), 0);
-        assert!(app.selected_composer_attachment_index().is_none());
-    }
-
-    #[test]
-    fn kill_to_end_of_line_cuts_from_middle_of_word() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 6; // before 'w'
-        assert!(app.kill_to_end_of_line());
-        assert_eq!(app.input, "hello ");
-        assert_eq!(app.cursor_position, 6);
-        assert_eq!(app.kill_buffer, "world");
-    }
-
-    #[test]
-    fn kill_at_eol_consumes_following_newline() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "line one\nline two".to_string();
-        app.cursor_position = 8; // sitting on the '\n'
-        assert!(app.kill_to_end_of_line());
-        assert_eq!(app.input, "line oneline two");
-        assert_eq!(app.cursor_position, 8);
-        assert_eq!(app.kill_buffer, "\n");
-
-        // Empty input: kill is a no-op and the buffer is untouched.
-        let mut empty = App::new(test_options(false), &Config::default());
-        assert!(!empty.kill_to_end_of_line());
-        assert!(empty.input.is_empty());
-        assert!(empty.kill_buffer.is_empty());
-    }
-
-    #[test]
-    fn yank_inserts_kill_buffer_and_preserves_it() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "abc def".to_string();
-        app.cursor_position = 4; // before 'd'
-        assert!(app.kill_to_end_of_line());
-        assert_eq!(app.input, "abc ");
-        assert_eq!(app.kill_buffer, "def");
-
-        // Move cursor to the start and yank twice — kill_buffer must persist.
-        app.cursor_position = 0;
-        assert!(app.yank());
-        assert!(app.yank());
-        assert_eq!(app.input, "defdefabc ");
-        assert_eq!(app.cursor_position, 6);
-        assert_eq!(app.kill_buffer, "def");
-
-        // Yank with empty buffer is a no-op.
-        let mut empty = App::new(test_options(false), &Config::default());
-        assert!(!empty.yank());
-        assert!(empty.input.is_empty());
-    }
-
-    // ---- Issue #90: quit confirmation timeout ----
-
-    #[test]
-    fn quit_is_not_armed_by_default() {
-        let app = App::new(test_options(false), &Config::default());
-        assert!(!app.quit_is_armed());
-        assert!(app.quit_armed_until.is_none());
-    }
-
-    #[test]
-    fn arm_quit_sets_two_second_window() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.arm_quit();
-        assert!(app.quit_is_armed());
-        let deadline = app.quit_armed_until.expect("deadline set");
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        // Allow a generous margin for slow CI machines: 1.5s..=2.0s.
-        assert!(
-            remaining >= Duration::from_millis(1500) && remaining <= Duration::from_secs(2),
-            "expected ~2s window, got {remaining:?}",
-        );
-        assert!(app.needs_redraw, "armed prompt should request a redraw");
-    }
-
-    #[test]
-    fn disarm_quit_clears_the_timer() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.arm_quit();
-        app.needs_redraw = false;
-        app.disarm_quit();
-        assert!(!app.quit_is_armed());
-        assert!(app.quit_armed_until.is_none());
-        assert!(app.needs_redraw, "disarming should request a redraw");
-    }
-
-    #[test]
-    fn disarm_quit_when_not_armed_is_a_noop() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.needs_redraw = false;
-        app.disarm_quit();
-        assert!(!app.needs_redraw, "no redraw when nothing changed");
-    }
-
-    #[test]
-    fn quit_armed_expires_after_window() {
-        let mut app = App::new(test_options(false), &Config::default());
-        // Pin the deadline in the past to simulate a stale timer.
-        app.quit_armed_until = Some(Instant::now() - Duration::from_millis(10));
-        assert!(
-            !app.quit_is_armed(),
-            "expired timer must not count as armed"
-        );
-
-        app.needs_redraw = false;
-        app.tick_quit_armed();
-        assert!(app.quit_armed_until.is_none(), "tick clears expired timer");
-        assert!(
-            app.needs_redraw,
-            "expiry triggers a redraw to repaint footer"
-        );
-    }
-
-    #[test]
-    fn receipt_expires_and_requests_redraw() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.set_receipt_text("✓ turn completed");
-        app.receipt_started_at =
-            Some(Instant::now() - App::RECEIPT_VISIBLE_DURATION - Duration::from_millis(10));
-        assert_eq!(app.active_receipt_text(), None);
-
-        app.needs_redraw = false;
-        app.tick_receipt();
-        assert!(app.receipt_text.is_none());
-        assert!(app.receipt_started_at.is_none());
-        assert!(
-            app.needs_redraw,
-            "receipt expiry should repaint composer chrome"
-        );
-    }
-
-    #[test]
-    fn quit_armed_tick_is_noop_within_window() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.arm_quit();
-        app.needs_redraw = false;
-        app.tick_quit_armed();
-        assert!(
-            app.quit_is_armed(),
-            "tick within window keeps the timer armed"
-        );
-        assert!(!app.needs_redraw, "no redraw when nothing changed");
-    }
-
-    #[test]
-    fn re_arming_after_expiry_starts_a_fresh_window() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.quit_armed_until = Some(Instant::now() - Duration::from_secs(5));
-        app.tick_quit_armed();
-        assert!(app.quit_armed_until.is_none());
-        app.arm_quit();
-        let deadline = app.quit_armed_until.expect("re-armed");
-        assert!(deadline > Instant::now(), "fresh deadline in the future");
-    }
-
-    // ---- Issue #208: in-flight input routing ----
-
-    #[test]
-    fn submit_disposition_immediate_when_idle_and_online() {
-        let app = App::new(test_options(false), &Config::default());
-        assert!(!app.is_loading);
-        assert!(!app.offline_mode);
-        assert_eq!(
-            app.decide_submit_disposition(),
-            SubmitDisposition::Immediate
-        );
-    }
-
-    #[test]
-    fn submit_disposition_steer_when_busy_and_online_not_streaming() {
-        // v0.8.44: Busy + not streaming → Steer (Enter reaches engine during
-        // sub-agent/shell waits instead of silently queueing).
-        let mut app = App::new(test_options(false), &Config::default());
-        app.is_loading = true;
-        app.offline_mode = false;
-        // streaming_message_index is None (default) → tool execution phase
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Steer);
-    }
-
-    #[test]
-    fn submit_disposition_queue_when_busy_and_streaming() {
-        // #382: Busy + streaming → Queue (was QueueFollowUp; now unified)
-        let mut app = App::new(test_options(false), &Config::default());
-        app.is_loading = true;
-        app.offline_mode = false;
-        app.streaming_message_index = Some(0);
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
-    }
-
-    #[test]
-    fn submit_disposition_queue_when_offline_and_idle() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.is_loading = false;
-        app.offline_mode = true;
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
-    }
-
-    #[test]
-    fn submit_disposition_offline_busy_queues() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.is_loading = true;
-        app.offline_mode = true;
-        // Offline mode always queues, even when streaming
-        app.streaming_message_index = Some(0);
-        assert_eq!(app.decide_submit_disposition(), SubmitDisposition::Queue);
-    }
-
-    #[test]
-    fn push_pending_steer_arms_resend_flag() {
-        let mut app = App::new(test_options(false), &Config::default());
-        assert!(!app.submit_pending_steers_after_interrupt);
-        app.push_pending_steer(QueuedMessage::new("steer me".to_string(), None));
-        assert_eq!(app.pending_steers.len(), 1);
-        assert!(app.submit_pending_steers_after_interrupt);
-    }
-
-    #[test]
-    fn drain_pending_steers_clears_flag_and_returns_in_order() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.push_pending_steer(QueuedMessage::new("first".to_string(), None));
-        app.push_pending_steer(QueuedMessage::new("second".to_string(), None));
-        app.push_pending_steer(QueuedMessage::new("third".to_string(), None));
-
-        let drained = app.drain_pending_steers();
-        assert_eq!(drained.len(), 3);
-        assert_eq!(drained[0].display, "first");
-        assert_eq!(drained[2].display, "third");
-        assert!(app.pending_steers.is_empty());
-        assert!(!app.submit_pending_steers_after_interrupt);
-    }
-
-    #[test]
-    fn drain_pending_steers_when_empty_is_safe() {
-        let mut app = App::new(test_options(false), &Config::default());
-        // Flag-only set (someone armed it manually): drain still clears it.
-        app.submit_pending_steers_after_interrupt = true;
-        let drained = app.drain_pending_steers();
-        assert!(drained.is_empty());
-        assert!(!app.submit_pending_steers_after_interrupt);
-    }
-
-    #[test]
-    fn double_push_pending_steer_is_idempotent_on_flag() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.push_pending_steer(QueuedMessage::new("a".to_string(), None));
-        app.push_pending_steer(QueuedMessage::new("b".to_string(), None));
-        assert!(app.submit_pending_steers_after_interrupt);
-        assert_eq!(app.pending_steers.len(), 2);
-    }
-
-    #[test]
-    fn pop_last_queued_into_draft_pops_back_and_arms_draft() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new(
-            "first".to_string(),
-            Some("skill-A".to_string()),
-        ));
-        app.queue_message(QueuedMessage::new(
-            "last".to_string(),
-            Some("skill-B".to_string()),
-        ));
-
-        assert!(app.pop_last_queued_into_draft());
-        assert_eq!(app.input, "last");
-        assert_eq!(app.cursor_position, "last".chars().count());
-        assert_eq!(app.queued_messages.len(), 1);
-        let draft = app.queued_draft.clone().expect("draft is set");
-        assert_eq!(draft.display, "last");
-        assert_eq!(draft.skill_instruction.as_deref(), Some("skill-B"));
-    }
-
-    #[test]
-    fn pop_last_queued_into_draft_noop_when_composer_dirty() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new("queued".to_string(), None));
-        app.input = "typing".to_string();
-        app.cursor_position = char_count(&app.input);
-
-        assert!(!app.pop_last_queued_into_draft());
-        assert_eq!(app.input, "typing");
-        assert_eq!(app.queued_messages.len(), 1);
-        assert!(app.queued_draft.is_none());
-    }
-
-    #[test]
-    fn pop_last_queued_into_draft_noop_when_draft_already_armed() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new("queued".to_string(), None));
-        app.queued_draft = Some(QueuedMessage::new("editing".to_string(), None));
-
-        assert!(!app.pop_last_queued_into_draft());
-        assert_eq!(app.queued_messages.len(), 1);
-        assert_eq!(
-            app.queued_draft.as_ref().map(|d| d.display.as_str()),
-            Some("editing")
-        );
-    }
-
-    #[test]
-    fn pop_last_queued_into_draft_noop_when_queue_empty() {
-        let mut app = App::new(test_options(false), &Config::default());
-        assert!(!app.pop_last_queued_into_draft());
-        assert!(app.input.is_empty());
-        assert!(app.queued_draft.is_none());
-    }
-
-    #[test]
-    fn cancel_queued_draft_edit_restores_original_message() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.queue_message(QueuedMessage::new("first".to_string(), None));
-        app.queue_message(QueuedMessage::new(
-            "original follow-up".to_string(),
-            Some("skill".to_string()),
-        ));
-        assert!(app.pop_last_queued_into_draft());
-        app.input = "edited but not submitted".to_string();
-        app.cursor_position = char_count(&app.input);
-
-        assert!(app.cancel_queued_draft_edit());
-
-        assert!(app.input.is_empty());
-        assert!(app.queued_draft.is_none());
-        assert_eq!(app.queued_messages.len(), 2);
-        let restored = app.queued_messages.back().expect("restored message");
-        assert_eq!(restored.display, "original follow-up");
-        assert_eq!(restored.skill_instruction.as_deref(), Some("skill"));
-        assert_eq!(
-            app.clear_undo_buffer.as_deref(),
-            Some("edited but not submitted"),
-            "the interrupted edit remains recoverable via normal draft recovery"
-        );
-    }
-
-    #[test]
-    fn finalize_streaming_assistant_marks_existing_cell_interrupted() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.add_message(HistoryCell::Assistant {
-            content: "partial reply so far".to_string(),
-            streaming: true,
-        });
-        let idx = app.history.len() - 1;
-        app.streaming_message_index = Some(idx);
-
-        app.finalize_streaming_assistant_as_interrupted();
-
-        assert!(app.streaming_message_index.is_none());
-        match &app.history[idx] {
-            HistoryCell::Assistant { content, streaming } => {
-                assert!(content.starts_with("[interrupted]"), "got: {content}");
-                assert!(content.contains("partial reply so far"));
-                assert!(!*streaming);
-            }
-            other => panic!("expected Assistant cell, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn finalize_streaming_assistant_handles_empty_content() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.add_message(HistoryCell::Assistant {
-            content: String::new(),
-            streaming: true,
-        });
-        let idx = app.history.len() - 1;
-        app.streaming_message_index = Some(idx);
-
-        app.finalize_streaming_assistant_as_interrupted();
-
-        match &app.history[idx] {
-            HistoryCell::Assistant { content, streaming } => {
-                assert_eq!(content, "[interrupted]");
-                assert!(!*streaming);
-            }
-            other => panic!("expected Assistant cell, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn finalize_streaming_assistant_no_op_without_index() {
-        let mut app = App::new(test_options(false), &Config::default());
-        // No streaming index set; should not panic and should leave history unchanged.
-        let prev_len = app.history.len();
-        app.finalize_streaming_assistant_as_interrupted();
-        assert_eq!(app.history.len(), prev_len);
-        assert!(app.streaming_message_index.is_none());
-    }
-
-    #[test]
-    fn finalize_streaming_assistant_is_idempotent_on_double_call() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.add_message(HistoryCell::Assistant {
-            content: "something".to_string(),
-            streaming: true,
-        });
-        let idx = app.history.len() - 1;
-        app.streaming_message_index = Some(idx);
-
-        app.finalize_streaming_assistant_as_interrupted();
-        // Second call without resetting state must be safe.
-        app.finalize_streaming_assistant_as_interrupted();
-
-        match &app.history[idx] {
-            HistoryCell::Assistant { content, .. } => {
-                // Second call still finds index None — content unchanged from first.
-                assert!(content.starts_with("[interrupted] "));
-                assert_eq!(content.matches("[interrupted]").count(), 1);
-            }
-            other => panic!("expected Assistant cell, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn delete_word_backward_removes_previous_word_only() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = char_count(&app.input);
-
-        app.delete_word_backward();
-
-        assert_eq!(app.input, "hello ");
-        assert_eq!(app.cursor_position, char_count("hello "));
-    }
-
-    #[test]
-    fn delete_word_backward_handles_trailing_space_and_utf8() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "cafe 你好   ".to_string();
-        app.cursor_position = char_count(&app.input);
-
-        app.delete_word_backward();
-
-        assert_eq!(app.input, "cafe ");
-        assert_eq!(app.cursor_position, char_count("cafe "));
-    }
-
-    #[test]
-    fn delete_word_forward_handles_leading_space_and_utf8() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello 你好 world".to_string();
-        app.cursor_position = char_count("hello");
-
-        app.delete_word_forward();
-
-        assert_eq!(app.input, "hello world");
-        assert_eq!(app.cursor_position, char_count("hello"));
-    }
-
-    #[test]
-    fn delete_to_start_of_line_respects_multiline_cursor() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "first\nsecond line".to_string();
-        app.cursor_position = char_count("first\nsecond");
-
-        app.delete_to_start_of_line();
-
-        assert_eq!(app.input, "first\n line");
-        assert_eq!(app.cursor_position, char_count("first\n"));
-    }
-
-    #[test]
-    fn kill_and_yank_handle_multibyte_utf8() {
-        let mut app = App::new(test_options(false), &Config::default());
-        // "café 你好" — char_count = 7 (c,a,f,é, ,你,好); UTF-8 bytes differ.
-        app.input = "café 你好".to_string();
-        app.cursor_position = 5; // before '你'
-        assert!(app.kill_to_end_of_line());
-        assert_eq!(app.input, "café ");
-        assert_eq!(app.cursor_position, 5);
-        assert_eq!(app.kill_buffer, "你好");
-
-        // Yank back at the same spot — must not panic on char boundaries.
-        assert!(app.yank());
-        assert_eq!(app.input, "café 你好");
-        assert_eq!(app.cursor_position, 7);
-    }
-
-    #[test]
-    fn selection_range_returns_none_when_no_anchor() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = None;
-        assert!(app.selection_range().is_none());
-    }
-
-    #[test]
-    fn selection_range_returns_ordered_range() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = Some(2);
-        assert_eq!(app.selection_range(), Some((2, 5)));
-    }
-
-    #[test]
-    fn selection_range_normalizes_order() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 2;
-        app.selection_anchor = Some(5);
-        assert_eq!(app.selection_range(), Some((2, 5)));
-    }
-
-    #[test]
-    fn selection_range_returns_none_when_anchor_equals_cursor() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello".to_string();
-        app.cursor_position = 3;
-        app.selection_anchor = Some(3);
-        assert!(app.selection_range().is_none());
-    }
-
-    #[test]
-    fn delete_selection_removes_selected_text() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = Some(2);
-        assert!(app.delete_selection());
-        assert_eq!(app.input, "he world");
-        assert_eq!(app.cursor_position, 2);
-        assert!(app.selection_anchor.is_none());
-    }
-
-    #[test]
-    fn insert_char_replaces_selection() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = Some(2);
-        app.insert_char('X');
-        assert_eq!(app.input, "heX world");
-        assert_eq!(app.cursor_position, 3);
-        assert!(app.selection_anchor.is_none());
-    }
-
-    #[test]
-    fn delete_char_removes_selection_instead_of_single_char() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = Some(2);
-        app.delete_char();
-        assert_eq!(app.input, "he world");
-        assert_eq!(app.cursor_position, 2);
-    }
-
-    #[test]
-    fn selected_text_returns_correct_substring() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = Some(2);
-        assert_eq!(app.selected_text(), "llo");
-    }
-
-    #[test]
-    fn insert_str_replaces_selection() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello world".to_string();
-        app.cursor_position = 5;
-        app.selection_anchor = Some(2);
-        app.insert_str("yo");
-        assert_eq!(app.input, "heyo world");
-        assert_eq!(app.cursor_position, 4);
-        assert!(app.selection_anchor.is_none());
-    }
-
-    #[test]
-    fn delete_selection_noop_when_no_selection() {
-        let mut app = App::new(test_options(false), &Config::default());
-        app.input = "hello".to_string();
-        app.cursor_position = 3;
-        app.selection_anchor = None;
-        assert!(!app.delete_selection());
-        assert_eq!(app.input, "hello");
-        assert_eq!(app.cursor_position, 3);
-    }
-}
+mod tests;

@@ -348,18 +348,27 @@ async fn validate_fetch_target(
         return Ok(None);
     }
 
+    let addrs = tokio::net::lookup_host((host.as_str(), 0u16))
+        .await
+        .map_err(|e| {
+            ToolError::permission_denied(format!(
+                "could not resolve host before fetch_url request: {e}"
+            ))
+        })?;
     let mut first_valid: Option<std::net::IpAddr> = None;
-    if let Ok(addrs) = tokio::net::lookup_host((host.as_str(), 0u16)).await {
-        for addr in addrs {
-            validate_dns_resolved_ip(&host, &addr.ip(), context.network_policy.as_ref())?;
-            if first_valid.is_none() {
-                first_valid = Some(addr.ip());
-            }
+    for addr in addrs {
+        validate_dns_resolved_ip(&host, &addr.ip(), context.network_policy.as_ref())?;
+        if first_valid.is_none() {
+            first_valid = Some(addr.ip());
         }
     }
 
-    // If DNS resolution fails, let the HTTP request proceed and fail naturally.
-    Ok(first_valid.map(|validated_ip| (host, validated_ip)))
+    let Some(validated_ip) = first_valid else {
+        return Err(ToolError::permission_denied(
+            "host resolved to no addresses before fetch_url request",
+        ));
+    };
+    Ok(Some((host, validated_ip)))
 }
 
 fn validate_network_policy(host: &str, context: &ToolContext) -> Result<(), ToolError> {
@@ -742,6 +751,21 @@ mod tests {
         let url = reqwest::Url::parse("https://example.com/redirect-target").unwrap();
         let err = validate_fetch_target(&url, &ctx).await.unwrap_err();
         assert!(format!("{err}").contains("blocked"));
+    }
+
+    #[tokio::test]
+    async fn unresolved_hostname_is_rejected_before_request() {
+        let url =
+            reqwest::Url::parse("https://deepseek-unresolvable-fetch-target.invalid/resource")
+                .unwrap();
+        let err = validate_fetch_target(&url, &ctx())
+            .await
+            .expect_err("unresolved host must fail preflight");
+        let message = format!("{err}");
+        assert!(
+            message.contains("could not resolve host") || message.contains("restricted address"),
+            "error must identify preflight DNS or restricted-IP failure; got {err}"
+        );
     }
 
     #[test]

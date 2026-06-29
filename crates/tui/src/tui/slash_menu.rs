@@ -11,8 +11,9 @@
 use crate::commands;
 
 use super::app::{App, looks_like_slash_command_input};
+use super::model_picker::provider_scoped_model_completion_ids;
 use super::widgets::SlashMenuEntry;
-use super::widgets::slash_completion_hints;
+use super::widgets::slash_completion_hints_with_model_candidates;
 
 /// Return the slash-menu entries the composer should display, honouring
 /// `slash_menu_hidden` (set when the user dismisses the popup with Esc).
@@ -20,18 +21,20 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
     if app.slash_menu_hidden {
         return Vec::new();
     }
-    if let Some((_byte_start, partial)) =
+    if let Some((byte_start, partial)) =
         partial_inline_skill_mention_at_cursor(&app.input, app.cursor_position)
     {
-        return skill_mention_entries(&partial, limit, &app.cached_skills);
+        let trigger = app.input[byte_start..].chars().next().unwrap_or('/');
+        return skill_mention_entries(&partial, trigger, limit, &app.cached_skills);
     }
-    slash_completion_hints(
+    let model_candidates = provider_scoped_model_completion_ids(app);
+    slash_completion_hints_with_model_candidates(
         &app.input,
         limit,
         &app.cached_skills,
         app.ui_locale,
         Some(&app.workspace),
-        app.api_provider,
+        &model_candidates,
     )
 }
 
@@ -55,9 +58,10 @@ pub fn apply_slash_menu_selection(
             partial_inline_skill_mention_at_cursor(&app.input, app.cursor_position)
         && let Some(skill_name) = skill_name_from_menu_entry(selected)
     {
-        replace_inline_skill_mention(app, byte_start, &partial, &skill_name);
+        let trigger = app.input[byte_start..].chars().next().unwrap_or('/');
+        replace_inline_skill_mention(app, byte_start, trigger, &partial, &skill_name);
         app.slash_menu_hidden = false;
-        app.status_message = Some(format!("Skill selected: /{skill_name}"));
+        app.status_message = Some(format!("Skill selected: {trigger}{skill_name}"));
         return true;
     }
 
@@ -80,9 +84,10 @@ pub fn apply_slash_menu_selection(
     true
 }
 
-/// Return the `/<skill>` token under the cursor when it is used as an inline
-/// mention inside a normal message. A slash at the start of the composer, even
-/// after leading whitespace, remains reserved for slash commands.
+/// Return the `/<skill>` or `$<skill>` token under the cursor when it is used as
+/// an inline mention inside a normal message. A `/` or `$` at the start of the
+/// composer, even after leading whitespace, remains reserved for slash commands
+/// (handled by `slash_completion_hints`).
 pub(crate) fn partial_inline_skill_mention_at_cursor(
     input: &str,
     cursor_chars: usize,
@@ -99,7 +104,7 @@ pub(crate) fn partial_inline_skill_mention_at_cursor(
     let mut start_chars = cursor_chars;
     while start_chars > 0 {
         let prev = chars[start_chars - 1];
-        if prev == '/' {
+        if prev == '/' || prev == '$' {
             start_chars -= 1;
             break;
         }
@@ -109,7 +114,11 @@ pub(crate) fn partial_inline_skill_mention_at_cursor(
         start_chars -= 1;
     }
 
-    if start_chars == cursor_chars || chars.get(start_chars) != Some(&'/') {
+    if start_chars == cursor_chars {
+        return None;
+    }
+    let trigger = *chars.get(start_chars)?;
+    if trigger != '/' && trigger != '$' {
         return None;
     }
     if !is_inline_skill_mention_start(&chars, start_chars) {
@@ -126,7 +135,7 @@ pub(crate) fn partial_inline_skill_mention_at_cursor(
         end_chars += 1;
     }
     let partial: String = chars[start_chars + 1..end_chars].iter().collect();
-    if partial.contains('/') {
+    if partial.contains('/') || partial.contains('$') {
         return None;
     }
 
@@ -144,6 +153,7 @@ fn is_inline_skill_mention_start(chars: &[char], idx: usize) -> bool {
 
 fn skill_mention_entries(
     partial: &str,
+    trigger: char,
     limit: usize,
     cached_skills: &[(String, String)],
 ) -> Vec<SlashMenuEntry> {
@@ -155,7 +165,7 @@ fn skill_mention_entries(
         .iter()
         .filter(|(skill_name, _)| skill_name.to_ascii_lowercase().starts_with(&partial_lower))
         .map(|(skill_name, skill_desc)| SlashMenuEntry {
-            name: format!("/{skill_name}"),
+            name: format!("{trigger}{skill_name}"),
             description: skill_desc.clone(),
             is_skill: true,
             alias_hint: None,
@@ -176,18 +186,25 @@ fn skill_name_from_menu_entry(entry: &SlashMenuEntry) -> Option<String> {
     entry
         .name
         .strip_prefix('/')
+        .or_else(|| entry.name.strip_prefix('$'))
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .map(ToString::to_string)
 }
 
-fn replace_inline_skill_mention(app: &mut App, byte_start: usize, partial: &str, skill_name: &str) {
-    let original_token_len = '/'.len_utf8() + partial.len();
+fn replace_inline_skill_mention(
+    app: &mut App,
+    byte_start: usize,
+    trigger: char,
+    partial: &str,
+    skill_name: &str,
+) {
+    let original_token_len = trigger.len_utf8() + partial.len();
     let original_token_end = byte_start + original_token_len;
     let mut new_input =
         String::with_capacity(app.input.len() - original_token_len + 1 + skill_name.len());
     new_input.push_str(&app.input[..byte_start]);
-    new_input.push('/');
+    new_input.push(trigger);
     new_input.push_str(skill_name);
     if original_token_end < app.input.len() {
         new_input.push_str(&app.input[original_token_end..]);
@@ -206,13 +223,14 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
         return false;
     }
 
-    let candidates = slash_completion_hints(
+    let model_candidates = provider_scoped_model_completion_ids(app);
+    let candidates = slash_completion_hints_with_model_candidates(
         &app.input,
         128,
         &app.cached_skills,
         app.ui_locale,
         Some(&app.workspace),
-        app.api_provider,
+        &model_candidates,
     )
     .into_iter()
     .map(|entry| entry.name)

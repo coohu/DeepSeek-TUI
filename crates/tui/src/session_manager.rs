@@ -13,6 +13,7 @@ use crate::utils::write_atomic;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
@@ -595,8 +596,9 @@ fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
 fn find_git_root(path: &Path) -> Option<PathBuf> {
     let mut current = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     loop {
-        if is_git_metadata_entry(&current.join(".git")) {
-            return Some(current);
+        let git_entry = current.join(".git");
+        if git_entry.exists() {
+            return is_git_metadata_entry(&git_entry).then_some(current);
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent.to_path_buf(),
@@ -618,10 +620,92 @@ fn is_git_metadata_entry(path: &Path) -> bool {
 /// Resolve the default session directory path.
 ///
 /// v0.8.44: prefers `~/.deepseek/sessions`, falls back to
-/// `~/.deepseek/sessions` for existing installs.
+/// `~/.deepseek/sessions` for existing installs. Uses the write-path resolver
+/// so the first access relocates any legacy `~/.deepseek/sessions` into
+/// `~/.deepseek/sessions` when the primary directory is missing (#3240).
+/// If an older build already created an empty primary sessions directory, copy
+/// missing legacy entries into it without overwriting newer DeepSeek data.
 pub fn default_sessions_dir() -> std::io::Result<PathBuf> {
-    deepseek_config::resolve_state_dir("sessions")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
+    let dir = deepseek_config::ensure_state_dir("sessions")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))?;
+    match merge_missing_legacy_session_entries(&dir) {
+        Ok(0) => {}
+        Ok(count) => {
+            tracing::info!(
+                target: "session::migration",
+                "Copied {count} missing legacy session entries into {}",
+                dir.display()
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                target: "session::migration",
+                "Could not copy legacy sessions into {}: {err}",
+                dir.display()
+            );
+        }
+    }
+    Ok(dir)
+}
+
+fn merge_missing_legacy_session_entries(primary: &Path) -> io::Result<usize> {
+    if deepseek_home_is_explicit() {
+        return Ok(0);
+    }
+
+    let legacy = deepseek_config::legacy_deepseek_home()
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?
+        .join("sessions");
+    if !legacy.is_dir() || paths_equivalent(primary, &legacy) {
+        return Ok(0);
+    }
+
+    copy_missing_dir_entries(&legacy, primary)
+}
+
+fn deepseek_home_is_explicit() -> bool {
+    std::env::var("DEEPSEEK_HOME")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn copy_missing_dir_entries(src: &Path, dst: &Path) -> io::Result<usize> {
+    fs::create_dir_all(dst)?;
+    let mut copied = 0;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = dst.join(entry.file_name());
+
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if entry.file_name() == std::ffi::OsStr::new("checkpoints") || target.exists() {
+                continue;
+            }
+            copied += copy_missing_dir_entries(&source, &target)?;
+        } else if file_type.is_file() {
+            copied += usize::from(copy_file_create_new(&source, &target)?);
+        }
+    }
+    Ok(copied)
+}
+
+fn copy_file_create_new(src: &Path, dst: &Path) -> io::Result<bool> {
+    let mut source = fs::File::open(src)?;
+    let mut target = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)
+    {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    if let Err(err) = io::copy(&mut source, &mut target) {
+        let _ = fs::remove_file(dst);
+        return Err(err);
+    }
+    Ok(true)
 }
 
 /// Prune snapshots older than `max_age` for `workspace`.
@@ -959,11 +1043,11 @@ pub fn format_session_line(meta: &SessionMetadata) -> String {
     let age = format_age(&meta.updated_at);
     let updated = format_session_updated_at(&meta.updated_at, &age);
     let truncated_title = truncate_title(extract_title(&meta.title), 40);
-    let fork_label = meta
-        .parent_session_id
-        .as_deref()
-        .map(|parent| format!(" | fork {}", truncate_id(parent)))
-        .unwrap_or_default();
+    let fork_label = if meta.parent_session_id.is_some() {
+        " | fork"
+    } else {
+        ""
+    };
 
     format!(
         "{} | {} | {} msgs{} | {}",
@@ -1294,6 +1378,98 @@ mod tests {
     }
 
     #[test]
+    fn default_manager_copies_legacy_sessions_when_primary_already_exists() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _deepseek_home = crate::test_support::EnvVarGuard::remove("DEEPSEEK_HOME");
+
+        let primary_sessions = home.join(".deepseek").join("sessions");
+        let legacy_sessions = home.join(".codewhale").join("sessions");
+        fs::create_dir_all(&primary_sessions).expect("primary sessions");
+        fs::create_dir_all(&legacy_sessions).expect("legacy sessions");
+        fs::create_dir_all(legacy_sessions.join("checkpoints")).expect("legacy checkpoints");
+        fs::write(
+            legacy_sessions.join("checkpoints").join("latest.json"),
+            "{}",
+        )
+        .expect("legacy checkpoint");
+
+        let mut legacy_session = create_saved_session(
+            &[make_test_message("user", "find my old session")],
+            "test-model",
+            tmp.path(),
+            100,
+            None,
+        );
+        legacy_session.metadata.id = "legacy-visible".to_string();
+        legacy_session.metadata.title = "session from legacy home".to_string();
+        fs::write(
+            legacy_sessions.join("legacy-visible.json"),
+            serde_json::to_string_pretty(&legacy_session).expect("serialize legacy session"),
+        )
+        .expect("write legacy session");
+
+        let manager = SessionManager::default_location().expect("default manager");
+        assert_eq!(manager.sessions_dir(), primary_sessions.as_path());
+        assert!(primary_sessions.join("legacy-visible.json").exists());
+        assert!(!primary_sessions.join("checkpoints").exists());
+        assert!(legacy_sessions.join("legacy-visible.json").exists());
+
+        let sessions = manager.list_sessions().expect("list");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "legacy-visible");
+    }
+
+    #[test]
+    fn legacy_session_copy_never_overwrites_primary_session() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _deepseek_home = crate::test_support::EnvVarGuard::remove("DEEPSEEK_HOME");
+
+        let primary_sessions = home.join(".deepseek").join("sessions");
+        let legacy_sessions = home.join(".codewhale").join("sessions");
+        fs::create_dir_all(&primary_sessions).expect("primary sessions");
+        fs::create_dir_all(&legacy_sessions).expect("legacy sessions");
+
+        let primary_path = primary_sessions.join("same-id.json");
+        fs::write(&primary_path, "primary data wins").expect("write primary session");
+        fs::write(
+            legacy_sessions.join("same-id.json"),
+            "legacy data must not overwrite",
+        )
+        .expect("write legacy session");
+
+        let dir = default_sessions_dir().expect("default session dir");
+        assert_eq!(dir, primary_sessions);
+        assert_eq!(
+            fs::read_to_string(primary_path).expect("read primary session"),
+            "primary data wins"
+        );
+    }
+
+    #[test]
+    fn explicit_deepseek_home_disables_legacy_session_copy() {
+        let _lock = crate::test_support::lock_test_env();
+        let tmp = tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        let explicit_home = tmp.path().join("explicit-deepseek");
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _deepseek_home = crate::test_support::EnvVarGuard::set("DEEPSEEK_HOME", &explicit_home);
+
+        let legacy_sessions = home.join(".codewhale").join("sessions");
+        fs::create_dir_all(&legacy_sessions).expect("legacy sessions");
+        fs::write(legacy_sessions.join("legacy-visible.json"), "{}").expect("write legacy session");
+
+        let dir = default_sessions_dir().expect("default session dir");
+        assert_eq!(dir, explicit_home.join("sessions"));
+        assert!(!dir.join("legacy-visible.json").exists());
+    }
+
+    #[test]
     fn latest_session_for_workspace_ignores_newer_other_directory() {
         let tmp = tempdir().expect("tempdir");
         let manager = SessionManager::new(tmp.path().join("sessions")).expect("new");
@@ -1301,6 +1477,7 @@ mod tests {
         let workspace_b = tmp.path().join("bb").join("bbb");
         fs::create_dir_all(&workspace_a).expect("mkdir workspace a");
         fs::create_dir_all(&workspace_b).expect("mkdir workspace b");
+        fs::create_dir_all(tmp.path().join(".git")).expect("mkdir invalid git boundary");
 
         write_session_record(
             &manager,
@@ -1972,7 +2149,9 @@ mod tests {
             Some(parent.metadata.id.as_str())
         );
         assert_eq!(loaded.metadata.forked_from_message_count, Some(2));
-        assert!(format_session_line(&loaded.metadata).contains("fork "));
+        let line = format_session_line(&loaded.metadata);
+        assert!(line.contains("fork"));
+        assert!(!line.contains(parent.metadata.id.as_str()));
     }
 
     #[test]

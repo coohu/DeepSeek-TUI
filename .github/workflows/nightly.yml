@@ -14,72 +14,74 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   RUSTFLAGS: -Dwarnings
   DEEPSEEK_BUILD_SHA: ${{ github.sha }}
 
 jobs:
   build:
-    name: Build ${{ matrix.artifact_name }}
+    name: Build ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # --- deepseek (cli dispatcher, canonical) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-x64
+            platform: linux-x64
+            cli_binary: deepseek
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-linux-x64
+            tui_artifact: deepseek-tui-linux-x64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-arm64
+            platform: linux-arm64
+            cli_binary: deepseek
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-linux-arm64
+            tui_artifact: deepseek-tui-linux-arm64
           - os: ubuntu-latest
             target: riscv64gc-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-riscv64
+            platform: linux-riscv64
+            cli_binary: deepseek
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-linux-riscv64
+            tui_artifact: deepseek-tui-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-x64
+            platform: macos-x64
+            cli_binary: deepseek
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-macos-x64
+            tui_artifact: deepseek-tui-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-arm64
+            platform: macos-arm64
+            cli_binary: deepseek
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-macos-arm64
+            tui_artifact: deepseek-tui-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: deepseek.exe
-            artifact_name: deepseek-windows-x64.exe
-          # --- deepseek-tui (TUI runtime, canonical) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-x64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-arm64
-          - os: ubuntu-latest
-            target: riscv64gc-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-riscv64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: deepseek-tui.exe
-            artifact_name: deepseek-tui-windows-x64.exe
+            platform: windows-x64
+            cli_binary: deepseek.exe
+            tui_binary: deepseek-tui.exe
+            cli_artifact: deepseek-windows-x64.exe
+            tui_artifact: deepseek-tui-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
+      - name: Install Rust target
+        run: rustup target add --toolchain stable ${{ matrix.target }}
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
@@ -119,30 +121,55 @@ jobs:
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
           PKG_CONFIG_ALLOW_CROSS: 1
           PKG_CONFIG_LIBDIR_riscv64gc_unknown_linux_gnu: /usr/lib/riscv64-linux-gnu/pkgconfig
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: |
+          for attempt in 1 2 3; do
+            if cargo build --release --locked --target ${{ matrix.target }} -p deepseek-cli -p deepseek-tui; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "Build attempt ${attempt} failed; retrying in 30s..."
+              sleep 30
+            fi
+          done
+          echo "Build failed after 3 attempts" >&2
+          exit 1
       - name: Stage artifact
         id: stage
         shell: bash
         run: |
           short_sha="${GITHUB_SHA::12}"
-          bin_path="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          if [ ! -f "${bin_path}" ]; then
-            echo "Binary not at ${bin_path}; searching target/ for ${{ matrix.binary }}:"
-            find target -name "${{ matrix.binary }}" -type f
-            exit 1
-          fi
+          stage_one() {
+            local binary="$1"
+            local artifact="$2"
+            local dir="$3"
+            local bin_path="target/${{ matrix.target }}/release/${binary}"
+            if [ ! -f "${bin_path}" ]; then
+              echo "Binary not at ${bin_path}; searching target/ for ${binary}:"
+              find target -name "${binary}" -type f
+              exit 1
+            fi
 
-          mkdir -p nightly
-          cp "${bin_path}" "nightly/${{ matrix.artifact_name }}"
-          cat > nightly/nightly-build-info.txt <<INFO
+            mkdir -p "${dir}"
+            cp "${bin_path}" "${dir}/${artifact}"
+            cat > "${dir}/nightly-build-info.txt" <<INFO
           repository=${GITHUB_REPOSITORY}
           ref=${GITHUB_REF_NAME}
           commit=${GITHUB_SHA}
-          artifact=${{ matrix.artifact_name }}
+          artifact=${artifact}
           INFO
-          echo "name=${{ matrix.artifact_name }}-${short_sha}" >> "${GITHUB_OUTPUT}"
-      - uses: actions/upload-artifact@v4
+          }
+
+          stage_one "${{ matrix.cli_binary }}" "${{ matrix.cli_artifact }}" nightly-cli
+          stage_one "${{ matrix.tui_binary }}" "${{ matrix.tui_artifact }}" nightly-tui
+          echo "cli_name=${{ matrix.cli_artifact }}-${short_sha}" >> "${GITHUB_OUTPUT}"
+          echo "tui_name=${{ matrix.tui_artifact }}-${short_sha}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.stage.outputs.name }}
-          path: nightly/*
+          name: ${{ steps.stage.outputs.cli_name }}
+          path: nightly-cli/*
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.stage.outputs.tui_name }}
+          path: nightly-tui/*
           retention-days: 14

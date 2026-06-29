@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -22,7 +22,7 @@ use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::views::{CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PaletteSection {
+pub enum PaletteSection {
     Action,
     Command,
     Skill,
@@ -37,6 +37,15 @@ pub struct CommandPaletteEntry {
     pub description: String,
     pub command: String,
     pub action: CommandPaletteAction,
+    show_on_empty_query: bool,
+}
+
+#[cfg(test)]
+impl CommandPaletteEntry {
+    #[must_use]
+    pub fn section(&self) -> PaletteSection {
+        self.section
+    }
 }
 
 pub struct CommandPaletteView {
@@ -49,46 +58,89 @@ pub struct CommandPaletteView {
 pub fn build_entries(
     locale: Locale,
     skills_dir: &Path,
+    skills_scan_deepseek_only: bool,
     workspace: &Path,
     mcp_config_path: &Path,
     mcp_snapshot: Option<&crate::mcp::McpManagerSnapshot>,
 ) -> Vec<CommandPaletteEntry> {
     let mut entries = Vec::new();
-
-    for command in commands::COMMANDS {
-        let mut description = command.palette_description_for(locale);
-        if command.requires_argument() {
-            description.push_str("  ");
-            description.push_str(command.usage);
+    commands::user_registry::with_registry_for_workspace(Some(workspace), |user_registry| {
+        for command in commands::command_infos() {
+            if user_registry.get(command.name).is_some() {
+                continue;
+            }
+            let mut description =
+                palette_description_for_unshadowed_aliases(command, locale, user_registry);
+            if command.requires_argument() {
+                description.push_str("  ");
+                description.push_str(command.usage);
+            }
+            let action = if command_runs_directly(command.name) {
+                CommandPaletteAction::ExecuteCommand {
+                    command: format!("/{}", command.name),
+                }
+            } else {
+                CommandPaletteAction::InsertText {
+                    text: command.palette_command(),
+                }
+            };
+            entries.push(CommandPaletteEntry {
+                section: PaletteSection::Command,
+                label: format!("/{}", command.name),
+                description,
+                command: command.palette_command(),
+                action,
+                show_on_empty_query: command.show_in_empty_discovery(),
+            });
         }
-        let action = if command_runs_directly(command.name) {
-            CommandPaletteAction::ExecuteCommand {
-                command: format!("/{}", command.name),
-            }
-        } else {
-            CommandPaletteAction::InsertText {
-                text: command.palette_command(),
-            }
-        };
-        entries.push(CommandPaletteEntry {
-            section: PaletteSection::Command,
-            label: format!("/{}", command.name),
-            description,
-            command: command.palette_command(),
-            action,
-        });
-    }
 
-    let skills = skills::discover_for_workspace_and_dir(workspace, skills_dir);
+        for command in user_registry.iter().filter(|command| !command.hidden) {
+            let mut description = command
+                .description
+                .clone()
+                .unwrap_or_else(|| "User-defined command".to_string());
+            if let Some(hint) = &command.argument_hint
+                && !hint.trim().is_empty()
+            {
+                description.push_str("  ");
+                description.push_str(hint.trim());
+            }
+            let slash_command = format!("/{}", command.name);
+            let action = if command.argument_hint.is_some() {
+                CommandPaletteAction::InsertText {
+                    text: format!("{slash_command} "),
+                }
+            } else {
+                CommandPaletteAction::ExecuteCommand {
+                    command: slash_command.clone(),
+                }
+            };
+            entries.push(CommandPaletteEntry {
+                section: PaletteSection::Command,
+                label: slash_command.clone(),
+                description,
+                command: slash_command,
+                action,
+                show_on_empty_query: true,
+            });
+        }
+    });
+
+    let skills = skills::discover_for_workspace_and_dir_with_mode(
+        workspace,
+        skills_dir,
+        skills::SkillDiscoveryMode::from_deepseek_only(skills_scan_deepseek_only),
+    );
     for skill in skills.list() {
         entries.push(CommandPaletteEntry {
             section: PaletteSection::Skill,
-            label: format!("skill:{}", skill.name),
+            label: format!("${}", skill.name),
             description: skill.description.clone(),
-            command: format!("/skill {}", skill.name),
+            command: format!("${}", skill.name),
             action: CommandPaletteAction::ExecuteCommand {
-                command: format!("/skill {}", skill.name),
+                command: format!("${}", skill.name),
             },
+            show_on_empty_query: true,
         });
     }
 
@@ -156,6 +208,7 @@ pub fn build_entries(
                     title: format!("Tool: {}", tool.name()),
                     content: format_tool_details(tool.name(), tool.description(), &tags),
                 },
+                show_on_empty_query: true,
             })
         })
         .collect::<Vec<_>>();
@@ -167,6 +220,28 @@ pub fn build_entries(
     entries.sort_by(|a, b| a.label.cmp(&b.label));
     entries.sort_by_key(|entry| entry.section);
     entries
+}
+
+fn palette_description_for_unshadowed_aliases(
+    command: &commands::CommandInfo,
+    locale: Locale,
+    user_registry: &commands::user_registry::UserCommandRegistry,
+) -> String {
+    let desc = command.description_for(locale);
+    let aliases = command
+        .aliases
+        .iter()
+        .copied()
+        .filter(|alias| user_registry.get(alias).is_none())
+        .collect::<Vec<_>>();
+    if aliases.len() == command.aliases.len() {
+        return command.palette_description_for(locale);
+    }
+    if aliases.is_empty() {
+        desc.to_string()
+    } else {
+        format!("{}  aliases: {}", desc, aliases.join(", "))
+    }
 }
 
 fn build_mcp_entries(
@@ -189,6 +264,7 @@ fn build_mcp_entries(
         action: CommandPaletteAction::ExecuteCommand {
             command: "/mcp".to_string(),
         },
+        show_on_empty_query: true,
     }];
 
     let Some(snapshot) = snapshot else {
@@ -224,6 +300,7 @@ fn build_mcp_entries(
                 title: format!("MCP Server: {}", server.name),
                 content: format_mcp_server_details(snapshot, server),
             },
+            show_on_empty_query: true,
         });
 
         for tool in &server.tools {
@@ -247,6 +324,7 @@ fn build_mcp_entries(
                         tool.description.as_deref().unwrap_or("(no description)")
                     ),
                 },
+                show_on_empty_query: true,
             });
             // Add a "use" entry that inserts the tool's model_name into the input
             // so users can quickly reference the tool in their message to the AI.
@@ -265,6 +343,7 @@ fn build_mcp_entries(
                     action: CommandPaletteAction::InsertText {
                         text: tool.model_name.clone(),
                     },
+                    show_on_empty_query: true,
                 });
             }
         }
@@ -285,6 +364,7 @@ fn build_mcp_entries(
                         server.name, resource.name
                     ),
                 },
+                show_on_empty_query: true,
             });
         }
 
@@ -308,6 +388,7 @@ fn build_mcp_entries(
                         server.name, prompt.model_name
                     ),
                 },
+                show_on_empty_query: true,
             });
         }
     }
@@ -403,7 +484,10 @@ fn command_runs_directly(name: &str) -> bool {
         "help"
             | "clear"
             | "exit"
+            | "provider"
+            | "model"
             | "models"
+            | "modeldb"
             | "queue"
             | "stash"
             | "hooks"
@@ -415,6 +499,9 @@ fn command_runs_directly(name: &str) -> bool {
             | "compact"
             | "export"
             | "config"
+            | "fleet"
+            | "mode"
+            | "statusline"
             | "yolo"
             | "agent"
             | "plan"
@@ -613,7 +700,12 @@ impl CommandPaletteView {
             .entries
             .iter()
             .enumerate()
-            .filter_map(|(idx, entry)| entry_match_score(entry, &terms).map(|score| (idx, score)))
+            .filter_map(|(idx, entry)| {
+                if terms.is_empty() && !entry.show_on_empty_query {
+                    return None;
+                }
+                entry_match_score(entry, &terms).map(|score| (idx, score))
+            })
             .collect::<Vec<_>>();
 
         filtered.sort_by_key(|(idx, score)| {
@@ -700,6 +792,15 @@ impl ModalView for CommandPaletteView {
         self
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.move_selection(-1),
+            MouseEventKind::ScrollDown => self.move_selection(1),
+            _ => {}
+        }
+        ViewAction::None
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         match key.code {
             KeyCode::Esc => ViewAction::Close,
@@ -784,7 +885,11 @@ impl ModalView for CommandPaletteView {
             Style::default().fg(palette::TEXT_MUTED),
         )));
         let match_count = if self.query.is_empty() {
-            format!("{} entries", self.entries.len())
+            format!(
+                "{} shown / {} entries",
+                self.filtered.len(),
+                self.entries.len()
+            )
         } else {
             format!("{} / {} matches", self.filtered.len(), self.entries.len())
         };
@@ -976,6 +1081,7 @@ mod tests {
             action: CommandPaletteAction::InsertText {
                 text: command.to_string(),
             },
+            show_on_empty_query: true,
         }
     }
 
@@ -1110,6 +1216,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             configured_dir.as_path(),
+            false,
             workspace.as_path(),
             Path::new("mcp.json"),
             None,
@@ -1120,8 +1227,51 @@ mod tests {
             .map(|entry| entry.label.as_str())
             .collect::<Vec<_>>();
 
-        assert!(skill_labels.contains(&"skill:workspace-skill"));
-        assert!(skill_labels.contains(&"skill:configured-skill"));
+        assert!(skill_labels.contains(&"$workspace-skill"));
+        assert!(skill_labels.contains(&"$configured-skill"));
+    }
+
+    #[test]
+    fn command_palette_skills_respect_deepseek_only_scan() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let claude_skill_dir = workspace
+            .join(".claude")
+            .join("skills")
+            .join("claude-skill");
+        std::fs::create_dir_all(&claude_skill_dir).expect("create claude skill dir");
+        std::fs::write(
+            claude_skill_dir.join("SKILL.md"),
+            "---\nname: claude-skill\ndescription: Claude skill\n---\nbody",
+        )
+        .expect("write claude skill");
+        let deepseek_skill_dir = workspace
+            .join(".deepseek")
+            .join("skills")
+            .join("deepseek-skill");
+        std::fs::create_dir_all(&deepseek_skill_dir).expect("create deepseek skill dir");
+        std::fs::write(
+            deepseek_skill_dir.join("SKILL.md"),
+            "---\nname: deepseek-skill\ndescription: DeepSeek skill\n---\nbody",
+        )
+        .expect("write deepseek skill");
+
+        let entries = build_entries(
+            Locale::En,
+            workspace.join(".deepseek").join("skills").as_path(),
+            true,
+            workspace.as_path(),
+            Path::new("mcp.json"),
+            None,
+        );
+        let skill_labels: Vec<&str> = entries
+            .iter()
+            .filter(|entry| entry.section == PaletteSection::Skill)
+            .map(|entry| entry.label.as_str())
+            .collect();
+
+        assert!(skill_labels.contains(&"$deepseek-skill"));
+        assert!(!skill_labels.contains(&"$claude-skill"));
     }
 
     #[test]
@@ -1129,6 +1279,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
+            false,
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1141,9 +1292,111 @@ mod tests {
 
         assert!(command_labels.contains(&"/config"));
         assert!(command_labels.contains(&"/links"));
-        assert!(!command_labels.contains(&"/voice"));
+        assert!(command_labels.contains(&"/voice"));
         assert!(!command_labels.contains(&"/set"));
         assert!(!command_labels.contains(&"/deepseek"));
+    }
+
+    #[test]
+    fn command_palette_includes_workspace_user_commands() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let commands_dir = workspace.join(".deepseek").join("commands");
+        std::fs::create_dir_all(&commands_dir).expect("create commands dir");
+        std::fs::write(
+            commands_dir.join("review.md"),
+            "---\ndescription: Review with context\nargument-hint: <path>\n---\nReview $ARGUMENTS",
+        )
+        .expect("write user command");
+
+        let entries = build_entries(
+            Locale::En,
+            tmp.path().join("skills").as_path(),
+            false,
+            workspace.as_path(),
+            tmp.path().join("mcp.json").as_path(),
+            None,
+        );
+        let user_entry = entries
+            .iter()
+            .find(|entry| entry.section == PaletteSection::Command && entry.label == "/review")
+            .expect("user command should appear in command palette");
+
+        assert!(user_entry.description.contains("Review with context"));
+        assert!(user_entry.description.contains("<path>"));
+        assert!(matches!(
+            &user_entry.action,
+            CommandPaletteAction::InsertText { text } if text == "/review "
+        ));
+    }
+
+    #[test]
+    fn command_palette_excludes_hidden_user_commands() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let commands_dir = workspace.join(".deepseek").join("commands");
+        std::fs::create_dir_all(&commands_dir).expect("create commands dir");
+        std::fs::write(
+            commands_dir.join("secret.md"),
+            "---\ndescription: Internal workflow\nhidden: true\n---\nsecret",
+        )
+        .expect("write hidden user command");
+
+        let entries = build_entries(
+            Locale::En,
+            tmp.path().join("skills").as_path(),
+            false,
+            workspace.as_path(),
+            tmp.path().join("mcp.json").as_path(),
+            None,
+        );
+
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.section == PaletteSection::Command && entry.label == "/secret")
+        );
+    }
+
+    #[test]
+    fn command_palette_filters_shadowed_builtin_aliases_from_description() {
+        let tmp = TempDir::new().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let commands_dir = workspace.join(".deepseek").join("commands");
+        std::fs::create_dir_all(&commands_dir).expect("create commands dir");
+        std::fs::write(
+            commands_dir.join("image-review.md"),
+            "---\ndescription: Review an image\nalias: image\n---\nreview image",
+        )
+        .expect("write user command");
+
+        let entries = build_entries(
+            Locale::En,
+            tmp.path().join("skills").as_path(),
+            false,
+            workspace.as_path(),
+            tmp.path().join("mcp.json").as_path(),
+            None,
+        );
+        let attach = entries
+            .iter()
+            .find(|entry| entry.section == PaletteSection::Command && entry.label == "/attach")
+            .expect("built-in canonical command should remain visible");
+
+        assert!(
+            !attach.description.contains("aliases: image")
+                && !attach.description.contains(", image")
+                && !attach.description.contains("image,"),
+            "shadowed /image alias must not be advertised by /attach: {}",
+            attach.description
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.section == PaletteSection::Command
+                    && entry.label == "/image-review"),
+            "user command that owns the /image alias should be visible"
+        );
     }
 
     #[test]
@@ -1154,6 +1407,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             skills_dir.as_path(),
+            false,
             tmp.path(),
             mcp_config_path.as_path(),
             None,
@@ -1163,9 +1417,24 @@ mod tests {
             .iter()
             .filter(|entry| entry.section == PaletteSection::Command)
             .collect::<Vec<_>>();
-        assert_eq!(command_entries.len(), commands::COMMANDS.len());
+        let user_registry = commands::user_registry::registry_for_workspace(Some(tmp.path()));
+        let visible_user_commands = user_registry
+            .iter()
+            .filter(|command| !command.hidden)
+            .count();
+        let shadowed_builtins = commands::command_infos()
+            .iter()
+            .filter(|command| user_registry.get(command.name).is_some())
+            .count();
+        assert_eq!(
+            command_entries.len(),
+            commands::command_infos().len() - shadowed_builtins + visible_user_commands
+        );
 
-        for command in commands::COMMANDS {
+        for command in commands::command_infos() {
+            if user_registry.get(command.name).is_some() {
+                continue;
+            }
             let label = format!("/{}", command.name);
             let matching = command_entries
                 .iter()
@@ -1183,7 +1452,7 @@ mod tests {
             assert!(
                 entry
                     .description
-                    .contains(command.description_for(Locale::En)),
+                    .contains(&*command.description_for(Locale::En)),
                 "/{} palette description should include command help text",
                 command.name
             );
@@ -1199,10 +1468,48 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_inserts_model_command_for_argument_entry() {
+    fn command_palette_hides_toolbox_commands_until_searched() {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
+            false,
+            Path::new("."),
+            Path::new("mcp.json"),
+            None,
+        );
+        let mut view = CommandPaletteView::new(entries);
+        let root_labels = view
+            .filtered
+            .iter()
+            .map(|idx| view.entries[*idx].label.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(root_labels.contains(&"/provider"));
+        assert!(root_labels.contains(&"/model"));
+        assert!(root_labels.contains(&"/fleet"));
+        assert!(root_labels.contains(&"/config"));
+        assert!(root_labels.contains(&"/statusline"));
+        assert!(!root_labels.contains(&"/rlm"));
+        assert!(!root_labels.contains(&"/modeldb"));
+        assert!(!root_labels.contains(&"/models"));
+        assert!(!root_labels.contains(&"/subagents"));
+
+        view.query = "rlm".to_string();
+        view.refilter();
+        assert!(
+            view.filtered
+                .iter()
+                .any(|idx| view.entries[*idx].label == "/rlm"),
+            "advanced /rlm should still be searchable"
+        );
+    }
+
+    #[test]
+    fn command_palette_runs_model_command_to_open_picker() {
+        let entries = build_entries(
+            Locale::En,
+            Path::new("."),
+            false,
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1215,7 +1522,7 @@ mod tests {
         assert_eq!(model.command, "/model ");
         assert!(matches!(
             &model.action,
-            CommandPaletteAction::InsertText { text } if text == "/model "
+            CommandPaletteAction::ExecuteCommand { command } if command == "/model"
         ));
     }
 
@@ -1224,6 +1531,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
+            false,
             Path::new("."),
             Path::new("mcp.json"),
             None,
@@ -1285,6 +1593,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
+            false,
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
@@ -1339,6 +1648,7 @@ mod tests {
         let entries = build_entries(
             Locale::En,
             Path::new("."),
+            false,
             Path::new("."),
             Path::new("mcp.json"),
             Some(&snapshot),
@@ -1365,6 +1675,7 @@ mod tests {
             action: CommandPaletteAction::ExecuteCommand {
                 command: "/config".to_string(),
             },
+            show_on_empty_query: true,
         }];
         let mut view = CommandPaletteView::new(entries);
 

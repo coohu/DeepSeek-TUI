@@ -286,7 +286,7 @@ pub fn render_parsed_tagged(
             }
             Block::Paragraph { text } => {
                 let link_style = Style::default()
-                    .fg(palette::DEEPSEEK_BLUE)
+                    .fg(palette::WHALE_ACCENT_PRIMARY)
                     .add_modifier(Modifier::UNDERLINED);
                 out.extend(render_line_with_links_tagged(
                     text, width, base_style, link_style,
@@ -1119,7 +1119,7 @@ fn render_table_group(blocks: &[Block], width: usize, base_style: Style) -> Vec<
 
 fn link_style() -> Style {
     Style::default()
-        .fg(palette::DEEPSEEK_BLUE)
+        .fg(palette::WHALE_ACCENT_PRIMARY)
         .add_modifier(Modifier::UNDERLINED)
 }
 
@@ -1797,6 +1797,27 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect();
         assert_eq!(combined.matches('a').count(), 200);
+    }
+
+    #[test]
+    fn paragraph_wrap_breaks_no_whitespace_cjk_at_width_40() {
+        // #963: long CJK runs without whitespace must wrap by display width
+        // instead of overflowing or truncating. Each Han character is 2 cols.
+        let long = "界".repeat(300);
+        let rendered = render_paragraph_for_test(&long, 40);
+        for w in rendered_widths(&rendered) {
+            assert!(w <= 40, "rendered width {w} exceeds 40-col window");
+        }
+        let combined: String = rendered
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert_eq!(combined.chars().filter(|&ch| ch == '界').count(), 300);
+        assert!(
+            rendered.len() >= 15,
+            "300 double-width chars should wrap into many rows, got {}",
+            rendered.len()
+        );
     }
 
     #[test]

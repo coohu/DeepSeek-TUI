@@ -807,12 +807,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let _guard = set_spillover_root(tmp.path().join("tool_outputs"));
         let body = "checking crate ... error[E0425]: cannot find value\n".repeat(80);
-        let sha = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(body.as_bytes());
-            format!("{:x}", hasher.finalize())
-        };
+        let sha = crate::hashing::sha256_hex(body.as_bytes());
         crate::tools::truncate::write_sha_spillover(&sha, &body).unwrap();
 
         // Form: `sha:<hex>`

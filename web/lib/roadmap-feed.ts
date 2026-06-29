@@ -64,9 +64,9 @@ const FALLBACK_SHIPPED: RoadmapItem[] = [
 ];
 
 function withPinnedShipped(items: RoadmapItem[]): RoadmapItem[] {
-  const seen = new Set(items.map((item) => item.title));
-  const pinned = FALLBACK_SHIPPED.filter((item) => !seen.has(item.title));
-  return [...pinned, ...items];
+  // Safety net only: the static fallback entry must never sit ahead of live
+  // releases — use it solely when the live list is empty.
+  return items.length > 0 ? items : FALLBACK_SHIPPED;
 }
 
 function summarizeReleaseBody(body: string | null): string {

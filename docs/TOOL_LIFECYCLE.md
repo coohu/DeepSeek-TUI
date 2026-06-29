@@ -10,8 +10,8 @@ describes *what will be done* and the invariants any future diet PR must hold.
   Legacy subagent-name cleanup + guardrail tests in this policy rebase on #2684.
 - PR **#2685** — git-history active + RLM/field errors.
 
-All file:line citations are against the verified tree at
-`/Users/huntermbown/Desktop/whalebro/deepseek` as of v0.8.52/0.8.53.
+All file:line citations are against the verified tree at the current DeepSeek
+checkout as of v0.8.52/0.8.53.
 
 ---
 
@@ -46,6 +46,26 @@ real cost:
 The lifecycle policy exists to **shrink and discipline the model-visible
 surface** without ever breaking the ability to replay an old transcript that
 referenced a now-retired name.
+
+### Canonical work-tracking surface for v0.8.65
+
+The model-visible progress surface is `checklist_*`:
+`checklist_write`, `checklist_add`, `checklist_update`, and `checklist_list`.
+Agents and Fleet workers use that surface for concrete Work progress under the
+active runtime thread or durable task.
+
+`task_*` and the Fleet/WhaleFlow ledger remain the durable lifecycle owners.
+Checklist metadata is the model-visible projection of progress:
+`task_updates.checklist` carries the current items, completion percentage, and
+in-progress item. `update_plan` is optional high-level strategy metadata for
+complex initiatives; it must not duplicate checklist items or become a parallel
+progress store.
+
+The legacy `todo_*` names are deprecated hidden compatibility aliases. They
+remain registered and dispatchable against the same checklist state so old
+transcripts replay without data loss, but they are not advertised to the model
+catalog and their result metadata points callers to the corresponding
+`checklist_*` tool.
 
 ---
 
@@ -182,20 +202,10 @@ is "removed" in 0.8.53; replay is supported for everything listed.
 | `todo_update` | `checklist_update` | deprecated | 0.8.53 | TBD (≥ 0.9.x) | Yes |
 | `todo_list` | `checklist_list` | deprecated | 0.8.53 | TBD (≥ 0.9.x) | Yes |
 
-**Legacy subagent names — already non-visible, no manifest entry needed.**
-`agent_spawn`, `spawn_agent`, `agent_result`, `agent_wait`, `agent_send_input`,
-`send_input`, `agent_assign`, `agent_list`, `agent_cancel`, `resume_agent`, and
-`delegate_to_agent` exist only as `#[allow(dead_code)]` structs in
-`crates/tui/src/tools/subagent/mod.rs` and are **never instantiated** outside
-tests, so they are already not model-visible. Only `agent_open`, `agent_eval`,
-`tool_agent`, and `agent_close` are registered
-(`registry.rs:1017-1029`). The action for these legacy names is **dead-code
-cleanup + a guardrail test** (rebase on PR #2684), not a lifecycle transition.
-
-> **Keep the live internal methods.** `send_input`, `cancel`, and `resume` also
-> exist as live `SubAgentManager` methods
-> (`subagent/mod.rs:1605,1495,1521`) used internally by `agent_eval` /
-> `agent_close`. These are *not* the dead-code tool structs and must be kept.
+**Legacy subagent names — removed, no manifest entry needed.**
+The model-visible subagent surface is only `agent`. The old lifecycle names and
+the experimental tool-agent lane were removed rather than kept as hidden
+compatibility tools.
 
 `planned_removal_version` is intentionally `TBD`: a name only moves to **removed**
 once we formally drop replay for transcripts old enough to contain it, which is a
@@ -260,7 +270,7 @@ else or an explicit budget bump in this doc.
 | **Shell interact** | `exec_shell_interact` | `exec_interact` → hidden-compat | Same `ShellInteractTool` (`registry.rs:527,530`) |
 | **Checklist / todo** | `checklist_write` | `todo_write/add/update/list` → deprecated | Same `TodoWriteTool`, `::new` vs `::checklist` (`todo.rs:184-196`) |
 | **Speech / tts** | `speech` | `tts` → hidden-compat | Same `SpeechTool` (`registry.rs:787-792`) |
-| **Subagent lifecycle** | `agent_open`, `agent_eval`, `agent_close`, `tool_agent` (gated, §7) | all 11 legacy names → already non-visible dead code | Cleanup + guardrail test, rebase on #2684 |
+| **Subagent lifecycle** | `agent` | old lifecycle names and tool-agent lane removed | Single async launcher; child agents are leaf workers |
 | **Edit family** | `apply_patch`, `edit_file`, `write_file`, `fim_edit` | none — **all distinct niches** | NOT touched (per #2681 non-goals); doc-only canonical guidance |
 | **Search family** | `grep_files` (content), `file_search` (filename), `project_map` (structure) | none — **distinct niches** | NOT touched; no FTS5/BM25/semantic index exists today |
 
@@ -278,27 +288,23 @@ Python function, **not a tool** — so there is nothing to retire there.
 
 ---
 
-## 7. `tool_agent` decision: canonical but DeepSeek-V4-gated
+## 7. Subagent cutover decision: one visible launcher
 
-`tool_agent` **stays** as a canonical subagent tool
-(`registry.rs:1024`, `ToolAgentTool`). It is the fast, **non-thinking "Fin"
-executor lane**, built on `deepseek-v4-flash` (cf. `DEFAULT_CHILD_MODEL =
-"deepseek-v4-flash"`, `rlm.rs:26`).
+The old lifecycle trio and tool-agent lane are removed, not hidden compatibility
+tools.
 
-**Decision: gate `tool_agent` to DeepSeek-V4 models only.**
+**Decision: expose only `agent`.**
 
-- It is purpose-built around the V4-flash non-thinking executor profile. Exposing
-  it to other providers (e.g. Arcee Trinity, which is already WAF-narrowed to 8
-  read-only tools, `tool_catalog.rs:106-115`) offers no working executor lane and
-  only adds a confusing, mis-targeted option to weaker surfaces.
-- Gating is a **provider/model policy**, consistent with the existing
-  provider-aware first-turn policy (`apply_provider_tool_policy`,
-  `tool_catalog.rs:134-149`): on non-DeepSeek-V4 models, `tool_agent` is excluded
-  from the active set and from tool-search discovery. It remains **registered and
-  dispatchable** so transcripts created under a V4 model replay everywhere.
+- `agent` starts one focused background child and returns the agent id plus
+  transcript handle.
+- Child results arrive as completion events. The parent should keep working
+  instead of polling a lifecycle tool.
+- Child tool catalogs exclude subagent lifecycle tools, so children are leaf
+  workers and cannot recursively summon more agents.
+- Detailed inspection goes through `handle_read` on the returned transcript
+  handle.
 
-This is not a lifecycle transition — `tool_agent` is canonical. It is a
-*visibility gate* layered on the same machinery as the Arcee narrowing.
+This is a lifecycle simplification, not a provider gate.
 
 ---
 
@@ -361,10 +367,9 @@ Any diet PR (and the umbrella #2681 work) must add/keep:
    `tool_catalog.rs:169-196` invariant. The golden updates **only** as a
    reviewed, deliberate one-time edit when the diet lands.
 
-5. **Subagent guardrail test (rebase on #2684).** Assert only `agent_open`,
-   `agent_eval`, `tool_agent`, `agent_close` are registered as model-visible
-   subagent tools and that no legacy name from `subagent/mod.rs` is
-   instantiated outside tests.
+5. **Subagent guardrail test.** Assert only `agent` is registered as a
+   model-visible subagent tool and that hidden/legacy names from
+   `subagent/mod.rs` are not advertised.
 
-6. **`tool_agent` gating test.** Assert `tool_agent` is active/discoverable only
-   under DeepSeek-V4 models and excluded (but still registered) elsewhere.
+6. **Leaf-worker test.** Assert subagent tool catalogs exclude `agent` and
+   retired legacy lifecycle names.

@@ -1,7 +1,40 @@
 import type { Metadata } from "next";
+import { Fraunces, IBM_Plex_Sans, JetBrains_Mono, Noto_Serif_SC } from "next/font/google";
 import { Nav } from "@/components/nav";
 import { Footer } from "@/components/footer";
 import { locales, type Locale } from "@/lib/i18n/config";
+import { buildPageMetadata } from "@/lib/page-meta";
+import "../globals.css";
+
+const display = Fraunces({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-display",
+  display: "swap",
+});
+
+const body = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-body",
+  display: "swap",
+});
+
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-mono",
+  display: "swap",
+});
+
+// Noto Serif SC is heavy; load only what we need for decorative anchors.
+const cjk = Noto_Serif_SC({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  variable: "--font-cjk",
+  display: "swap",
+  preload: false,
+});
 
 export function generateStaticParams() {
   return locales.map((locale) => ({ locale }));
@@ -10,29 +43,16 @@ export function generateStaticParams() {
 export async function generateMetadata({ params }: { params: Promise<{ locale: string }> }): Promise<Metadata> {
   const { locale } = await params;
   const isZh = locale === "zh";
-  return {
-    title: isZh ? "DeepSeek · DeepSeek V4 智能体运行框架" : "DeepSeek · DeepSeek V4 Agent Harness",
+  return buildPageMetadata({
+    path: "/",
+    locale,
+    title: isZh
+      ? "DeepSeek — 适配任意模型的终端编程智能体，开放模型优先"
+      : "DeepSeek — the terminal coding agent for any model, open models first",
     description: isZh
-      ? "面向 DeepSeek V4 和开放模型的本地 Agent 运行框架：自我、冲突法、本地工具、证据与恢复。"
-      : "Local-first agent harness for DeepSeek V4 and open models, with operating identity, conflict law, local tools, evidence, and recovery.",
-    metadataBase: new URL("https://deepseek.net"),
-    openGraph: {
-      title: "DeepSeek",
-      description: isZh
-        ? "本地 Agent 运行框架，内置自我、冲突法、本地工具、证据与恢复。"
-        : "Local-first agent harness with operating identity, conflict law, local tools, evidence, and recovery.",
-      url: "https://deepseek.net",
-      siteName: "DeepSeek",
-      type: "website",
-    },
-    twitter: { card: "summary_large_image" },
-    alternates: {
-      languages: {
-        en: "/en",
-        zh: "/zh",
-      },
-    },
-  };
+      ? "开源终端编程智能体：适配任意模型，开放模型优先。从 DeepSeek、本地 vLLM/Ollama 到原生 Claude 与 OpenAI，内置审批制工具、沙箱隔离与 /restore 回滚。"
+      : "Open-source terminal coding agent for any model, open models first: broad provider support from DeepSeek and local vLLM/Ollama to native Claude and OpenAI, with approval-gated tools, sandboxing, and /restore rollback.",
+  });
 }
 
 export default async function LocaleLayout({
@@ -45,10 +65,15 @@ export default async function LocaleLayout({
   const { locale } = await params;
 
   return (
-    <>
-      <Nav locale={locale as Locale} />
-      <main>{children}</main>
-      <Footer locale={locale as Locale} />
-    </>
+    <html
+      lang={locale === "zh" ? "zh" : "en"}
+      className={`${display.variable} ${body.variable} ${mono.variable} ${cjk.variable}`}
+    >
+      <body>
+        <Nav locale={locale as Locale} />
+        <main>{children}</main>
+        <Footer locale={locale as Locale} />
+      </body>
+    </html>
   );
 }

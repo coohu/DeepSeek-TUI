@@ -6,8 +6,8 @@ loops practical, but the contribution shape should remain portable to other
 open/open-weight paths as they mature. One practical way to help is to let
 DeepSeek inspect itself and return a small, reviewable improvement.
 
-This is the "100-to-1 model": one clear prompt, many cheap agent-hours, one
-artifact a maintainer can review. It is not a benchmark and not permission to
+This is the "100-to-1 model": one clear prompt, many bounded agent runs, one
+artifact a maintainer can review. It is not a scorecard and not permission to
 rewrite the project. It is a contribution shape.
 
 > [!Tip]

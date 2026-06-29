@@ -5,9 +5,12 @@
 //! engine module from accumulating unrelated context-policy details.
 
 use crate::compaction::estimate_tokens;
+use crate::config::ApiProvider;
+use crate::context_budget::ContextBudget;
 use crate::error_taxonomy::ErrorCategory;
 use crate::models::{Message, SystemPrompt, context_window_for_model};
 use crate::tools::spec::ToolResult;
+use deepseek_config::route::RouteLimits;
 use serde_json::Value;
 
 /// Max output tokens requested for normal agent turns. Generous on purpose:
@@ -55,12 +58,29 @@ pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
         capped.min(API_MAX_OUTPUT_TOKENS)
     }
 }
+
+pub(super) fn effective_max_output_tokens_for_route(
+    model: &str,
+    route_limits: Option<RouteLimits>,
+) -> u32 {
+    let cap = effective_max_output_tokens(model);
+    let cap = crate::route_budget::route_output_limit_tokens(route_limits)
+        .map_or(cap, |route_cap| cap.min(route_cap));
+    let Some(window) = route_limits
+        .and_then(|limits| limits.context_tokens)
+        .and_then(|tokens| u32::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+    else {
+        return cap;
+    };
+    u32::try_from(ContextBudget::new(u64::from(window), 0, u64::from(cap)).output_cap_tokens)
+        .unwrap_or(cap)
+        .max(1)
+}
 /// Keep this many most recent messages when emergency trimming is required.
 pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
 /// Allow a few emergency recovery attempts before failing the turn.
 pub(super) const MAX_CONTEXT_RECOVERY_ATTEMPTS: u8 = 2;
-/// Reserve additional headroom to avoid hitting provider hard limits.
-const CONTEXT_HEADROOM_TOKENS: usize = 1024;
 /// Hard cap for any tool output inserted into model context.
 const TOOL_RESULT_CONTEXT_HARD_LIMIT_CHARS: usize = 12_000;
 /// Soft cap for known noisy tools inserted into model context.
@@ -68,11 +88,11 @@ const TOOL_RESULT_CONTEXT_SOFT_LIMIT_CHARS: usize = 2_000;
 /// Snippet length kept when compacting tool output for model context.
 const TOOL_RESULT_CONTEXT_SNIPPET_CHARS: usize = 900;
 /// Hard cap for tool output inserted into a large-context model.
-const LARGE_CONTEXT_TOOL_RESULT_HARD_LIMIT_CHARS: usize = 180_000;
+const LARGE_CONTEXT_TOOL_RESULT_HARD_LIMIT_CHARS: usize = 48_000;
 /// Soft cap for known noisy tools inserted into a large-context model.
-const LARGE_CONTEXT_TOOL_RESULT_SOFT_LIMIT_CHARS: usize = 60_000;
-/// Snippet length kept when compacting large-context tool output.
-const LARGE_CONTEXT_TOOL_RESULT_SNIPPET_CHARS: usize = 40_000;
+const LARGE_CONTEXT_TOOL_RESULT_SOFT_LIMIT_CHARS: usize = 8_000;
+/// Snippet length kept when compacting large-context noisy output.
+const LARGE_CONTEXT_TOOL_RESULT_SNIPPET_CHARS: usize = 4_000;
 /// Context window size at which tool output limits can be relaxed.
 const LARGE_CONTEXT_WINDOW_TOKENS: u32 = 500_000;
 /// Max chars to keep from metadata-provided output summaries.
@@ -227,16 +247,7 @@ fn summarize_subagent_snapshot(snapshot: &serde_json::Value, index: usize) -> St
 }
 
 fn compact_subagent_tool_result_for_context(tool_name: &str, raw: &str) -> Option<String> {
-    if !matches!(
-        tool_name,
-        "agent_open"
-            | "agent_eval"
-            | "agent_close"
-            | "agent_result"
-            | "agent_wait"
-            | "tool_agent"
-            | "wait"
-    ) {
+    if tool_name != "agent" {
         return None;
     }
 
@@ -251,7 +262,7 @@ fn compact_subagent_tool_result_for_context(tool_name: &str, raw: &str) -> Optio
     out.push_str(
         "Child results are self-reports; verify side effects with tools like read_file or list_dir before claiming success.\n",
     );
-    out.push_str("Use `agent_eval` for a fresh projection or `handle_read` on `transcript_handle` for bounded transcript slices.\n");
+    out.push_str("Use `handle_read` on `transcript_handle` for bounded transcript slices when the returned summary is not enough.\n");
     for (idx, snapshot) in snapshots.iter().enumerate() {
         if idx >= 8 {
             out.push_str(&format!(
@@ -562,9 +573,12 @@ pub(super) fn estimate_input_tokens_conservative(
 /// window does not underflow to a negative budget.
 const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 
-/// Internal input-side token budget for a model: `window - reserved_output -
-/// headroom`. Used by the preflight check, emergency recovery, and capacity
-/// trimming to decide when to compact.
+/// Internal input-side token budget for a provider/model route:
+/// `window - reserved_output - headroom`. Used by the preflight check,
+/// emergency recovery, and capacity trimming to decide when to compact.
+/// Unknown model ids fall back to the provider's conservative default instead
+/// of disabling preflight; custom long-context deployments can still advertise
+/// their window with a `-256k`/`-1024k` model suffix.
 ///
 /// The reserved-output term is window-dependent:
 ///   * `window >= 500K` (V4-class large-context) -> [`TURN_MAX_OUTPUT_TOKENS`]
@@ -575,18 +589,63 @@ const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 ///     `256K - 262K - 1K`, which underflows `checked_sub` to `None` and
 ///     *silently disables every preflight and emergency recovery path* — the
 ///     session then runs until the provider hard-rejects on context length.
-pub(super) fn context_input_budget(model: &str) -> Option<usize> {
-    let window_tokens = context_window_for_model(model)?;
-    let window = usize::try_from(window_tokens).ok()?;
-    let reserved_output = if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
+#[cfg(test)]
+pub(super) fn context_input_budget_for_provider(
+    provider: ApiProvider,
+    model: &str,
+) -> Option<usize> {
+    context_input_budget_for_route(provider, model, None, 0)
+}
+
+pub(super) fn context_input_budget_for_route(
+    provider: ApiProvider,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    input_tokens: usize,
+) -> Option<usize> {
+    route_context_budget_for_route(provider, model, route_limits, input_tokens)
+        .and_then(|budget| usize::try_from(budget.available_input_tokens).ok())
+}
+
+#[cfg(test)]
+pub(super) fn route_context_budget_for_provider(
+    provider: ApiProvider,
+    model: &str,
+    input_tokens: usize,
+) -> Option<ContextBudget> {
+    route_context_budget_for_route(provider, model, None, input_tokens)
+}
+
+pub(super) fn route_context_budget_for_route(
+    provider: ApiProvider,
+    model: &str,
+    route_limits: Option<RouteLimits>,
+    input_tokens: usize,
+) -> Option<ContextBudget> {
+    let window = crate::route_budget::route_context_window_tokens(provider, model, route_limits);
+    let output_cap = route_output_reservation_for_window(model, window, route_limits);
+    crate::route_budget::route_context_budget(
+        provider,
+        model,
+        route_limits,
+        input_tokens,
+        output_cap,
+    )
+}
+
+fn route_output_reservation_for_window(
+    model: &str,
+    window_tokens: u32,
+    route_limits: Option<RouteLimits>,
+) -> u32 {
+    if let Some(route_cap) = crate::route_budget::route_output_limit_tokens(route_limits) {
+        return route_cap.min(TURN_MAX_OUTPUT_TOKENS);
+    }
+    if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
         TURN_MAX_OUTPUT_TOKENS
     } else {
         effective_max_output_tokens(model)
-    };
-    let output = usize::try_from(reserved_output).ok()?;
-    window
-        .checked_sub(output)
-        .and_then(|v| v.checked_sub(CONTEXT_HEADROOM_TOKENS))
+    }
 }
 
 pub(super) fn is_context_length_error_message(message: &str) -> bool {

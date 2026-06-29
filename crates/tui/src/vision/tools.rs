@@ -1,6 +1,6 @@
 //! `image_analyze` tool — analyze images using a dedicated vision model.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -38,6 +38,34 @@ impl ImageAnalyzeTool {
         let mime_type = Self::detect_mime_type(path)?;
         let base64_data = BASE64.encode(&bytes);
         Ok((base64_data, mime_type))
+    }
+
+    fn resolve_image_path(workspace: &Path, image_path: &str) -> Result<PathBuf, ToolError> {
+        let image_path_buf = Path::new(image_path);
+        if image_path_buf.components().any(|c| {
+            matches!(
+                c,
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir
+            )
+        }) {
+            return Err(ToolError::execution_failed(
+                "image_path must be a relative path within the workspace and cannot escape it.",
+            ));
+        }
+
+        let workspace = workspace.canonicalize().map_err(|e| {
+            ToolError::execution_failed(format!("Failed to resolve workspace path: {e}"))
+        })?;
+        let candidate = workspace.join(image_path_buf);
+        let resolved = candidate.canonicalize().map_err(|e| {
+            ToolError::execution_failed(format!("Failed to resolve image file: {e}"))
+        })?;
+        if !resolved.starts_with(&workspace) {
+            return Err(ToolError::execution_failed(
+                "image_path must resolve within the workspace and cannot escape it.",
+            ));
+        }
+        Ok(resolved)
     }
 
     fn detect_mime_type(path: &Path) -> Result<String, ToolError> {
@@ -163,18 +191,7 @@ impl ToolSpec for ImageAnalyzeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("Describe this image in detail.");
 
-        let image_path_buf = Path::new(image_path);
-        if image_path_buf.components().any(|c| {
-            matches!(
-                c,
-                Component::Prefix(_) | Component::RootDir | Component::ParentDir
-            )
-        }) {
-            return Err(ToolError::execution_failed(
-                "image_path must be a relative path within the workspace and cannot escape it.",
-            ));
-        }
-        let resolved_path = context.workspace.join(image_path_buf);
+        let resolved_path = Self::resolve_image_path(&context.workspace, image_path)?;
         let (image_data, mime_type) = Self::read_image_file(&resolved_path).await?;
 
         let payload = self.request_payload(prompt, &image_data, &mime_type);
@@ -262,6 +279,22 @@ impl ToolSpec for ImageAnalyzeTool {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    fn create_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(
+        target: &std::path::Path,
+        link: &std::path::Path,
+    ) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
 
     fn fake_config() -> VisionModelConfig {
         VisionModelConfig {
@@ -386,6 +419,30 @@ mod tests {
             err.to_string()
                 .contains("relative path within the workspace"),
             "error must call out the workspace boundary; got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_symlink_that_resolves_outside_workspace() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        let outside_image = outside.path().join("outside.png");
+        std::fs::write(&outside_image, b"not a real png").expect("write outside image");
+        let link = workspace.path().join("linked.png");
+        if let Err(err) = create_file_symlink(&outside_image, &link) {
+            eprintln!("skipping symlink assertion: {err}");
+            return;
+        }
+
+        let ctx = ToolContext::new(workspace.path().to_path_buf());
+        let tool = ImageAnalyzeTool::new(fake_config());
+        let err = tool
+            .execute(json!({"image_path": "linked.png"}), &ctx)
+            .await
+            .expect_err("symlink target outside workspace must reject before reading");
+        assert!(
+            err.to_string().contains("resolve within the workspace"),
+            "error must call out the canonical workspace boundary; got {err}"
         );
     }
 }

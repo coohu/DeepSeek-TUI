@@ -1,10 +1,10 @@
-//! Slop Ledger — durable tracking of unresolved architectural residue.
+//! Debt ledger — durable tracking of unresolved architectural residue.
 //!
-//! AI agents often leave behind invisible "slop" after a task:
+//! AI agents often leave behind unresolved residue after a task:
 //! compatibility shims, unmigrated callers, duplicated concepts,
 //! naming drift, stale docs/tests, suspected dead code, and tool gaps.
 //!
-//! The Slop Ledger makes this residue **visible and queryable** so the
+//! The debt ledger makes this residue **visible and queryable** so the
 //! next agent (or human) doesn't rediscover it, amplify it, or mistake
 //! it for intended architecture.
 //!
@@ -33,7 +33,7 @@ use crate::tools::spec::{
 
 // ── Enums ──────────────────────────────────────────────────────────────────
 
-/// Classification bucket for a slop entry.
+/// Classification bucket for a debt entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SlopBucket {
@@ -144,7 +144,7 @@ impl SlopConfidence {
     }
 }
 
-/// Lifecycle status of a slop entry.
+/// Lifecycle status of a debt entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SlopEntryStatus {
@@ -170,7 +170,7 @@ impl SlopEntryStatus {
 
 // ── Core data structures ───────────────────────────────────────────────────
 
-/// A single slop ledger entry.
+/// A single debt ledger entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlopEntry {
     /// Unique identifier (UUID v4).
@@ -250,7 +250,7 @@ pub struct SlopLedgerFilter {
 
 // ── Ledger (collection + persistence) ──────────────────────────────────────
 
-/// The slop ledger — a collection of entries with JSON file persistence.
+/// The debt ledger — a collection of entries with JSON file persistence.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SlopLedger {
     entries: Vec<SlopEntry>,
@@ -259,9 +259,11 @@ pub struct SlopLedger {
 }
 
 impl SlopLedger {
-    /// Resolve the default ledger path.
+    /// Resolve the default ledger path under the primary `~/.deepseek` root
+    /// (with one-time legacy migration) so loads and saves never perpetuate
+    /// `~/.deepseek` (#3240).
     pub fn default_path() -> io::Result<PathBuf> {
-        deepseek_config::resolve_state_dir("slop_ledger")
+        deepseek_config::ensure_state_dir("slop_ledger")
             .map(|p| p.join("slop_ledger.json"))
             .map_err(io::Error::other)
     }
@@ -285,7 +287,7 @@ impl SlopLedger {
         let mut ledger: SlopLedger = serde_json::from_str(&data).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("failed to parse slop ledger JSON: {e}"),
+                format!("failed to parse debt ledger JSON: {e}"),
             )
         })?;
         ledger.ledger_path = path.to_path_buf();
@@ -294,6 +296,9 @@ impl SlopLedger {
 
     /// Persist the ledger to disk.
     pub fn save(&self) -> io::Result<()> {
+        // `ledger_path` is resolved by `default_path()` against the primary
+        // ~/.deepseek root (with one-time legacy migration), so persisting
+        // here never perpetuates ~/.deepseek (#3240).
         if let Some(parent) = self.ledger_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -403,7 +408,7 @@ impl SlopLedger {
             None => self.entries.iter().collect(),
         };
 
-        let heading = title.unwrap_or("Slop Ledger Export");
+        let heading = title.unwrap_or("Debt Ledger Export");
         let mut out = format!("# {heading}\n\n");
         out.push_str(&format!(
             "_Generated at {} — {} entries_\n\n",
@@ -485,7 +490,7 @@ impl SlopLedger {
         }
 
         let mut out = format!(
-            "Slop Ledger: {} total | {} open | {} resolved | {} accepted\n",
+            "Debt ledger: {} total | {} open | {} resolved | {} accepted\n",
             self.entries.len(),
             open_count,
             resolved_count,
@@ -501,7 +506,7 @@ impl SlopLedger {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 
-/// `slop_ledger_append` — append one or more entries to the slop ledger.
+/// `slop_ledger_append` — append one or more entries to the debt ledger.
 pub struct SlopLedgerAppendTool;
 
 #[async_trait]
@@ -511,7 +516,7 @@ impl ToolSpec for SlopLedgerAppendTool {
     }
 
     fn description(&self) -> &'static str {
-        "Append one or more entries to the slop ledger — a durable record of \
+        "Append one or more entries to the debt ledger — a durable record of \
          unresolved architectural residue (compatibility shims, unmigrated \
          callers, duplicate concepts, stale docs/tests, suspected dead code, \
          tool gaps, etc.). Use this when you complete a task and notice \
@@ -525,7 +530,7 @@ impl ToolSpec for SlopLedgerAppendTool {
             "properties": {
                 "entries": {
                     "type": "array",
-                    "description": "One or more slop entries to append.",
+                    "description": "One or more debt entries to append.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -582,7 +587,7 @@ impl ToolSpec for SlopLedgerAppendTool {
             .ok_or_else(|| ToolError::invalid_input("'entries' must be a non-empty array"))?;
 
         let mut ledger = SlopLedger::load()
-            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
+            .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         let mut appended = Vec::new();
         for entry_val in entries_val {
@@ -632,10 +637,10 @@ impl ToolSpec for SlopLedgerAppendTool {
 
         ledger
             .save()
-            .map_err(|e| ToolError::execution_failed(format!("failed to save slop ledger: {e}")))?;
+            .map_err(|e| ToolError::execution_failed(format!("failed to save debt ledger: {e}")))?;
 
         Ok(ToolResult::success(format!(
-            "Appended {} slop ledger entr{} ({} total): {}",
+            "Appended {} debt ledger entr{} ({} total): {}",
             appended_count,
             if appended_count == 1 { "y" } else { "ies" },
             total,
@@ -644,7 +649,7 @@ impl ToolSpec for SlopLedgerAppendTool {
     }
 }
 
-/// `slop_ledger_query` — query the slop ledger.
+/// `slop_ledger_query` — query the debt ledger.
 pub struct SlopLedgerQueryTool;
 
 #[async_trait]
@@ -654,7 +659,7 @@ impl ToolSpec for SlopLedgerQueryTool {
     }
 
     fn description(&self) -> &'static str {
-        "Query the slop ledger for unresolved architectural residue. \
+        "Query the debt ledger for unresolved architectural residue. \
          Filter by bucket, severity, status, or text search."
     }
 
@@ -720,14 +725,14 @@ impl ToolSpec for SlopLedgerQueryTool {
         };
 
         let ledger = SlopLedger::load()
-            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
+            .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         if ledger.is_empty() {
-            return Ok(ToolResult::success("Slop ledger is empty."));
+            return Ok(ToolResult::success("Debt ledger is empty."));
         }
 
         let results = ledger.query(&filter);
-        let mut out = format!("Found {} matching slop ledger entries:\n\n", results.len());
+        let mut out = format!("Found {} matching debt ledger entries:\n\n", results.len());
         for entry in &results {
             out.push_str(&format!(
                 "- [{}] **{}** ({:?} | {:?} | {:?}) — {}\n",
@@ -756,7 +761,7 @@ impl ToolSpec for SlopLedgerUpdateTool {
     }
 
     fn description(&self) -> &'static str {
-        "Update a slop ledger entry's status (e.g., mark as resolved, accepted, or in-progress)."
+        "Update a debt ledger entry's status (e.g., mark as resolved, accepted, or in-progress)."
     }
 
     fn input_schema(&self) -> Value {
@@ -803,20 +808,20 @@ impl ToolSpec for SlopLedgerUpdateTool {
             .map(String::from);
 
         let mut ledger = SlopLedger::load()
-            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
+            .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         match ledger.update_status(id, status, cleanup) {
             Ok(Some(entry)) => Ok(ToolResult::success(format!(
-                "Updated slop ledger entry {} ({}) → {:?}",
+                "Updated debt ledger entry {} ({}) → {:?}",
                 short_id(&entry.id),
                 entry.title,
                 entry.status
             ))),
             Ok(None) => Ok(ToolResult::success(format!(
-                "No slop ledger entry found matching '{id}'. Use slop_ledger_query to list entries."
+                "No debt ledger entry found matching '{id}'. Use slop_ledger_query to list entries."
             ))),
             Err(e) => Err(ToolError::execution_failed(format!(
-                "failed to update slop ledger: {e}"
+                "failed to update debt ledger: {e}"
             ))),
         }
     }
@@ -832,7 +837,7 @@ impl ToolSpec for SlopLedgerExportTool {
     }
 
     fn description(&self) -> &'static str {
-        "Export the slop ledger as a Markdown report. Use this for handoffs, \
+        "Export the debt ledger as a Markdown report. Use this for handoffs, \
          compaction relays, or GitHub issue creation. The output is suitable \
          for pasting directly into a GitHub issue body."
     }
@@ -843,7 +848,7 @@ impl ToolSpec for SlopLedgerExportTool {
             "properties": {
                 "title": {
                     "type": "string",
-                    "description": "Optional: report title (default 'Slop Ledger Export')"
+                    "description": "Optional: report title (default 'Debt Ledger Export')"
                 },
                 "bucket": {
                     "type": "string",
@@ -896,7 +901,7 @@ impl ToolSpec for SlopLedgerExportTool {
         };
 
         let ledger = SlopLedger::load()
-            .map_err(|e| ToolError::execution_failed(format!("failed to load slop ledger: {e}")))?;
+            .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         let markdown = ledger.export_markdown(title, filter.as_ref());
         Ok(ToolResult::success(markdown))
@@ -971,7 +976,7 @@ fn redact_exported_text(text: &mut String) {
 
 impl SlopLedger {
     /// Completion-gate / verifier hook: returns `true` when there are
-    /// unresolved slop entries (status `Open` or `InProgress`) that the
+    /// unresolved debt entries (status `Open` or `InProgress`) that the
     /// agent should review before claiming the task is done.
     ///
     /// Tools and engine hooks can call this on claim-of-done to surface
@@ -1007,7 +1012,7 @@ impl SlopLedger {
             return None;
         }
         let mut out = format!(
-            "## ⚠️ SlopLedger gate — {} open slop entries\n\n",
+            "## ⚠️ Debt ledger gate — {} open debt entries\n\n",
             open.len()
         );
         out.push_str("Review these before claiming completion:\n\n");

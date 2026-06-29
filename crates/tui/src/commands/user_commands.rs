@@ -19,12 +19,22 @@
 //! 4. `<workspace>/.cursor/commands/`    (Cursor interop)
 //! 5. `~/.deepseek/commands/`           (user-global)
 //! 6. `~/.deepseek/commands/`            (legacy user-global)
+//!
+//! ## Permanent Role
+//!
+//! This module is the lower-level scanning, frontmatter parsing, and template
+//! layer for [`super::user_registry::UserCommandRegistry`]. Runtime dispatch
+//! lives in `user_registry.rs`; this file remains as the shared file I/O and
+//! parsing boundary documented in `docs/architecture/command-dispatch.md`.
 
+#[cfg(test)]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use crate::tui::app::{App, AppAction, HuntVerdict};
 
+#[cfg(test)]
 use super::CommandResult;
 
 /// Path to the global user commands directory: `~/.deepseek/commands/`.
@@ -39,7 +49,7 @@ fn legacy_global_commands_dir() -> PathBuf {
 }
 
 /// Return all candidate commands directories in precedence order.
-fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
+pub(crate) fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(ws) = workspace {
         dirs.push(ws.join(".deepseek").join("commands"));
@@ -54,7 +64,7 @@ fn commands_dirs(workspace: Option<&Path>) -> Vec<PathBuf> {
 
 /// Scan a single commands directory for `.md` files and return
 /// `(name, content)` pairs. Errors are silently skipped.
-fn load_commands_from_dir(dir: &Path) -> Vec<(String, String)> {
+pub(crate) fn load_commands_from_dir(dir: &Path) -> Vec<(String, String)> {
     let mut commands: Vec<(String, String)> = Vec::new();
 
     if !dir.is_dir() {
@@ -91,6 +101,7 @@ fn load_commands_from_dir(dir: &Path) -> Vec<(String, String)> {
 ///
 /// Pass `None` for the workspace to scan only the global directory
 /// (backward-compatible with callers that don't have workspace context).
+#[cfg(test)]
 pub fn load_user_commands(workspace: Option<&Path>) -> Vec<(String, String)> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut commands: Vec<(String, String)> = Vec::new();
@@ -162,7 +173,7 @@ fn strip_matched_quotes(value: &str) -> &str {
     value
 }
 
-fn parse_allowed_tools(value: &str) -> Vec<String> {
+pub(crate) fn parse_allowed_tools(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(|tool| {
@@ -181,7 +192,7 @@ fn parse_allowed_tools(value: &str) -> Vec<String> {
 /// prefix (e.g. `/mycmd` or `/mycmd with args`). Only exact matches
 /// on the command name are considered (no partial/alias matching).
 /// Substitute $1, $2, $ARGUMENTS placeholders in a command template.
-fn apply_template(template: &str, args: &str) -> String {
+pub(crate) fn apply_template(template: &str, args: &str) -> String {
     let positional: Vec<&str> = args.split_whitespace().collect();
     let mut result = template.replace("$ARGUMENTS", args);
     for (i, arg) in positional.iter().enumerate() {
@@ -190,6 +201,7 @@ fn apply_template(template: &str, args: &str) -> String {
     result
 }
 
+#[cfg(test)]
 pub fn try_dispatch_user_command(app: &mut App, input: &str) -> Option<CommandResult> {
     let parts: Vec<&str> = input.trim().splitn(2, ' ').collect();
     let command = parts[0].to_lowercase();
@@ -205,10 +217,27 @@ pub fn try_dispatch_user_command(app: &mut App, input: &str) -> Option<CommandRe
             app.hunt.started_at = None;
             app.hunt.verdict = HuntVerdict::Hunting;
             app.hunt.token_budget = None;
+            app.hunt.tokens_used = 0;
+            app.hunt.time_used_seconds = 0;
+            app.hunt.continuation_count = 0;
             app.active_allowed_tools = None;
             app.pausable = false;
             app.paused = false;
             app.paused_quarry = None;
+            // Clear todos and plan state from the previous command so they
+            // don't bleed into the next one. Both are behind the same locks
+            // the sidebar reads; a contended/poisoned lock is logged and
+            // skipped rather than blocking dispatch.
+            if let Ok(mut todos) = app.todos.try_lock() {
+                todos.clear();
+            } else {
+                tracing::warn!(target: "commands", "todos lock contended or poisoned — previous todos not cleared");
+            }
+            if let Ok(mut plan) = app.plan_state.try_lock() {
+                *plan = crate::tools::plan::PlanState::default();
+            } else {
+                tracing::warn!(target: "commands", "plan_state lock contended or poisoned — previous plan not cleared");
+            }
             for (key, value) in &metadata {
                 match key.as_str() {
                     "description" => {
@@ -607,6 +636,61 @@ mod tests {
     }
 
     #[test]
+    fn new_user_command_clears_previous_todos_and_plan() {
+        use crate::config::Config;
+        use crate::tools::plan::UpdatePlanArgs;
+        use crate::tools::todo::TodoStatus;
+
+        let tmp = TempDir::new().unwrap();
+        let ws = tmp.path().to_path_buf();
+        let commands_dir = ws.join(".deepseek").join("commands");
+        write_command(&commands_dir, "first", "first command body");
+        write_command(&commands_dir, "second", "second command body");
+
+        let mut app = App::new(test_options(ws), &Config::default());
+
+        // Seed the state a previous command would leave behind: a non-empty
+        // todo list and a non-empty plan. These should NOT bleed into the
+        // next command. The shared lists are tokio async mutexes, so seed and
+        // observe through `try_lock` (the same sync path dispatch uses).
+        {
+            let mut todos = app.todos.try_lock().expect("todos lock");
+            todos.add(
+                "leftover task from first command".to_string(),
+                TodoStatus::Pending,
+            );
+        }
+        {
+            let mut plan = app.plan_state.try_lock().expect("plan_state lock");
+            plan.update(UpdatePlanArgs {
+                title: Some("leftover plan".to_string()),
+                objective: Some("old goal".to_string()),
+                ..Default::default()
+            });
+        }
+
+        // Dispatch a fresh command — dispatch must reset both.
+        let _ = try_dispatch_user_command(&mut app, "/second").unwrap();
+
+        assert!(
+            app.todos
+                .try_lock()
+                .expect("todos lock")
+                .snapshot()
+                .items
+                .is_empty(),
+            "previous command's todos must be cleared on new command dispatch"
+        );
+        assert!(
+            app.plan_state
+                .try_lock()
+                .expect("plan_state lock")
+                .is_empty(),
+            "previous command's plan must be cleared on new command dispatch"
+        );
+    }
+
+    #[test]
     fn review_regression_empty_allowed_tools_blocks_all_tools() {
         use crate::config::Config;
 
@@ -667,11 +751,17 @@ mod tests {
 
         app.hunt.verdict = crate::tui::app::HuntVerdict::Escaped;
         app.hunt.token_budget = Some(42);
+        app.hunt.tokens_used = 100;
+        app.hunt.time_used_seconds = 5;
+        app.hunt.continuation_count = 1;
         let _ = try_dispatch_user_command(&mut app, "/plain").unwrap();
         assert_eq!(app.hunt.quarry, None);
         assert_eq!(app.hunt.started_at, None);
         assert_eq!(app.hunt.verdict, crate::tui::app::HuntVerdict::Hunting);
         assert_eq!(app.hunt.token_budget, None);
+        assert_eq!(app.hunt.tokens_used, 0);
+        assert_eq!(app.hunt.time_used_seconds, 0);
+        assert_eq!(app.hunt.continuation_count, 0);
         assert_eq!(app.active_allowed_tools, None);
     }
 

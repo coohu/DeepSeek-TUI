@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -346,7 +345,7 @@ fn compact_content_block(block: &ContentBlock) -> Value {
             "type": "text",
             "text": text,
         }),
-        ContentBlock::Thinking { thinking } => json!({
+        ContentBlock::Thinking { thinking, .. } => json!({
             "type": "thinking",
             "redacted": true,
             "chars": thinking.chars().count(),
@@ -451,9 +450,7 @@ pub fn derive_session_name(source_hint: Option<&str>) -> String {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    crate::hashing::sha256_hex(bytes)
 }
 
 #[cfg(test)]

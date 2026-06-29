@@ -263,11 +263,15 @@ impl ToolSpec for RlmEvalTool {
     }
 
     fn capabilities(&self) -> Vec<ToolCapability> {
-        vec![ToolCapability::Network, ToolCapability::ExecutesCode]
+        vec![
+            ToolCapability::Network,
+            ToolCapability::ExecutesCode,
+            ToolCapability::RequiresApproval,
+        ]
     }
 
     fn approval_requirement(&self) -> ApprovalRequirement {
-        ApprovalRequirement::Auto
+        ApprovalRequirement::Required
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
@@ -703,6 +707,16 @@ mod tests {
         assert_eq!(RlmEvalTool::new(None).name(), "rlm_eval");
         assert_eq!(RlmConfigureTool.name(), "rlm_configure");
         assert_eq!(RlmCloseTool.name(), "rlm_close");
+    }
+
+    #[test]
+    fn rlm_eval_requires_approval() {
+        let tool = RlmEvalTool::new(None);
+        assert_eq!(tool.approval_requirement(), ApprovalRequirement::Required);
+        assert!(
+            tool.capabilities()
+                .contains(&ToolCapability::RequiresApproval)
+        );
     }
 
     #[test]

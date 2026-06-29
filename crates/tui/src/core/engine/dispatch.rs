@@ -45,8 +45,10 @@ pub(super) struct ToolExecutionPlan {
     pub(super) interactive: bool,
     pub(super) approval_required: bool,
     pub(super) approval_description: String,
+    pub(super) approval_force_prompt: bool,
     pub(super) supports_parallel: bool,
     pub(super) read_only: bool,
+    pub(super) detached_start: bool,
     pub(super) blocked_error: Option<ToolError>,
     pub(super) guard_result: Option<ToolResult>,
 }
@@ -99,8 +101,17 @@ pub(super) fn caller_allowed_for_tool(
     requested == "direct"
 }
 
+/// Whole-word check for "mode"/"modes" — a plain `contains("mode")` also
+/// matched "model", letting provider model errors skip the actionable-hint
+/// suffix (#3020).
+fn mentions_mode_word(lower: &str) -> bool {
+    lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|word| word == "mode" || word == "modes")
+}
+
 pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
-    match err {
+    let message = match err {
         ToolError::InvalidInput { message } => {
             format!("Invalid input for tool '{tool_name}': {message}")
         }
@@ -117,7 +128,16 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
         ),
         ToolError::NotAvailable { message } => {
             let lower = message.to_ascii_lowercase();
-            if lower.contains("current tool catalog") || lower.contains("did you mean:") {
+            // #3020: Pass through self-explanatory messages that already name the
+            // cause (mode switch, allow_shell, feature flag).  Avoids appending a
+            // conflicting "Check mode, feature flags" suffix on top of
+            // "switch to Agent or YOLO mode" which already gives the recovery path.
+            if lower.contains("current tool catalog")
+                || lower.contains("did you mean:")
+                || mentions_mode_word(&lower)
+                || lower.contains("allow_shell")
+                || lower.contains("feature flag")
+            {
                 message.clone()
             } else {
                 format!(
@@ -125,10 +145,117 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
                 )
             }
         }
-        ToolError::PermissionDenied { message } => format!(
-            "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
-        ),
+        ToolError::PermissionDenied { message } => {
+            let lower = message.to_ascii_lowercase();
+            // #3020: Pass through messages that already name the denial cause.
+            if mentions_mode_word(&lower)
+                || lower.contains("allow_shell")
+                || lower.contains("denied by user")
+            {
+                message.clone()
+            } else {
+                format!(
+                    "Tool '{tool_name}' was denied: {message}. Adjust approval mode or request permission."
+                )
+            }
+        }
+    };
+
+    with_transient_tool_fallback_hint(message, err, tool_name)
+}
+
+fn with_transient_tool_fallback_hint(message: String, err: &ToolError, tool_name: &str) -> String {
+    if message_already_has_recovery_hint(&message) {
+        return message;
     }
+
+    let Some(hint) = transient_tool_fallback_hint(err, tool_name, &message) else {
+        return message;
+    };
+
+    format!("{message} Fallback: {hint}")
+}
+
+fn message_already_has_recovery_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("recovery:") || lower.contains("fallback:")
+}
+
+fn transient_tool_fallback_hint(
+    err: &ToolError,
+    tool_name: &str,
+    formatted_message: &str,
+) -> Option<&'static str> {
+    if !is_transient_tool_failure(err, formatted_message) {
+        return None;
+    }
+
+    let lower_tool = tool_name.to_ascii_lowercase();
+    if lower_tool.contains("web_search")
+        || lower_tool.contains("web_run")
+        || lower_tool == "web.run"
+    {
+        return Some(
+            "after one retry, switch to a direct URL/open/fetch path or cached context instead of repeating the same search.",
+        );
+    }
+
+    if lower_tool.contains("fetch_url") {
+        return Some(
+            "after one retry, try a narrower URL/source, use search results or cached context, or state the access limit instead of repeating the same request.",
+        );
+    }
+
+    if lower_tool.contains("file_search") || lower_tool.contains("grep") {
+        return Some(
+            "after one retry, narrow the query/path or inspect likely files directly instead of repeating the same search unchanged.",
+        );
+    }
+
+    if lower_tool.contains("exec_shell")
+        || lower_tool.contains("run_tests")
+        || lower_tool.contains("run_verifiers")
+    {
+        return Some(
+            "after one retry, narrow the command/scope, increase timeout only for expected long runs, or switch to file-level evidence.",
+        );
+    }
+
+    if lower_tool.contains("agent") {
+        return Some(
+            "after one retry, reduce delegated scope or continue in the parent context instead of repeatedly spawning the same agent.",
+        );
+    }
+
+    Some(
+        "after one retry, choose a different tool or narrower strategy instead of repeating the same call unchanged.",
+    )
+}
+
+fn is_transient_tool_failure(err: &ToolError, formatted_message: &str) -> bool {
+    if matches!(err, ToolError::Timeout { .. }) {
+        return true;
+    }
+
+    if !matches!(err, ToolError::ExecutionFailed { .. }) {
+        return false;
+    }
+
+    let lower = formatted_message.to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "request failed",
+        "connection",
+        "network",
+        "http 429",
+        "rate limit",
+        "http 5",
+        "anti-bot",
+        "captcha",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 // === Streaming-buffer parsing =========================================
@@ -146,6 +273,9 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
 ///      (the per-delta parser has already mirrored the most recent valid
 ///      partial parse into `tool_state.input`).
 pub(super) fn final_tool_input(state: &ToolUseState) -> serde_json::Value {
+    if state.input_parse_error.is_some() {
+        return malformed_tool_arguments_input(&state.input_buffer);
+    }
     if !state.input_buffer.trim().is_empty()
         && let Some(parsed) = parse_tool_input(&state.input_buffer)
     {
@@ -178,6 +308,14 @@ pub(super) fn parse_tool_input(buffer: &str) -> Option<serde_json::Value> {
     }
     extract_json_segment(trimmed)
         .and_then(|segment| serde_json::from_str::<serde_json::Value>(&segment).ok())
+}
+
+pub(super) fn malformed_tool_arguments_input(buffer: &str) -> serde_json::Value {
+    json!({ "raw_arguments": buffer })
+}
+
+pub(super) fn malformed_tool_arguments_error(buffer: &str) -> String {
+    format!("malformed tool arguments from model: expected valid JSON, got {buffer:?}")
 }
 
 fn strip_code_fences(text: &str) -> Option<String> {
@@ -272,11 +410,17 @@ pub(super) fn parse_parallel_tool_calls(
 
 #[cfg(test)]
 pub(super) fn should_parallelize_tool_batch(plans: &[ToolExecutionPlan]) -> bool {
-    !plans.is_empty() && plans.iter().all(tool_plan_is_parallel_safe)
+    !plans.is_empty() && plans.iter().all(tool_plan_can_join_parallel_batch)
 }
 
 pub(super) fn tool_plan_is_parallel_safe(plan: &ToolExecutionPlan) -> bool {
     plan.read_only && plan.supports_parallel && !plan.approval_required && !plan.interactive
+}
+
+pub(super) fn tool_plan_can_join_parallel_batch(plan: &ToolExecutionPlan) -> bool {
+    plan.blocked_error.is_none()
+        && (tool_plan_is_parallel_safe(plan)
+            || (plan.detached_start && !plan.approval_required && !plan.interactive))
 }
 
 pub(super) fn plan_tool_execution_batches(
@@ -286,7 +430,7 @@ pub(super) fn plan_tool_execution_batches(
     let mut parallel_chunk = Vec::new();
 
     for plan in plans {
-        if tool_plan_is_parallel_safe(&plan) {
+        if tool_plan_can_join_parallel_batch(&plan) {
             parallel_chunk.push(plan);
             continue;
         }
@@ -320,6 +464,9 @@ pub(super) fn should_force_update_plan_first(mode: AppMode, content: &str) -> bo
     }
 
     let lower = content.to_ascii_lowercase();
+    // Only shortcut genuinely lightweight plan asks. Bare "make a plan" wording
+    // is often used for repo/version/build work where Plan mode still needs to
+    // inspect available context before publishing the handoff artifact.
     let asks_for_direct_plan = [
         "quick plan",
         "short plan",
@@ -330,10 +477,6 @@ pub(super) fn should_force_update_plan_first(mode: AppMode, content: &str) -> bo
         "three step plan",
         "high-level plan",
         "high level plan",
-        "give me a plan",
-        "make a plan",
-        "outline a plan",
-        "draft a plan",
     ]
     .iter()
     .any(|needle| lower.contains(needle));
@@ -351,10 +494,24 @@ pub(super) fn should_force_update_plan_first(mode: AppMode, content: &str) -> bo
         "review the code",
         "analyze the code",
         "investigate",
+        "figure out",
+        "figuring out",
         "look through",
         "understand the current",
+        "current state",
         "ground it in the codebase",
         "based on the codebase",
+        "repo",
+        "codebase",
+        "version",
+        "ver ",
+        "release",
+        "build",
+        "benchmark",
+        "api server",
+        "github.com",
+        "http://",
+        "https://",
     ]
     .iter()
     .any(|needle| lower.contains(needle));

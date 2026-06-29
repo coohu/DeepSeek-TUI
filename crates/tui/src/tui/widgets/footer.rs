@@ -41,13 +41,11 @@ pub struct FooterProps {
     pub text_muted_color: Color,
     /// Background color for the full footer/status bar row.
     pub footer_bg: Color,
-    /// Status label like `"ready"`, `"thinking ⌫"`, `"working"`. When the
-    /// label equals `"ready"` the footer hides the status segment entirely.
+    /// Status label like `"idle"`, `"busy"`, `"working"`. When the label
+    /// equals `"ready"` the footer hides the status segment entirely.
     pub state_label: String,
     /// Color used for the status label.
     pub state_color: Color,
-    /// Coherence chip spans (empty when no active intervention).
-    pub coherence: Vec<Span<'static>>,
     /// Sub-agent count chip spans (empty when zero in-flight).
     pub agents: Vec<Span<'static>>,
     /// Reasoning-replay chip spans (empty when zero / not applicable).
@@ -148,22 +146,20 @@ pub fn footer_working_label(frame: u64, locale: Locale) -> String {
     let dots = (frame % 4) as usize;
     let base = tr(locale, MessageId::FooterWorking);
     let mut out = String::with_capacity(base.len() + dots);
-    out.push_str(base);
+    out.push_str(&base);
     for _ in 0..dots {
         out.push('.');
     }
     out
 }
 
-/// Build a "⏳ shell running" chip span when a foreground shell command is
-/// active. Empty when no shell is running, which hides the chip entirely.
 #[must_use]
-pub fn footer_shell_chip(active: bool) -> Vec<Span<'static>> {
-    if !active {
+pub fn footer_shell_label_chip(label: String) -> Vec<Span<'static>> {
+    if label.trim().is_empty() {
         return Vec::new();
     }
     vec![Span::styled(
-        "\u{23F3} shell running".to_string(),
+        format!("\u{23F3} {label}"),
         Style::default().fg(palette::STATUS_WARNING),
     )]
 }
@@ -243,8 +239,8 @@ pub struct FooterToast {
 
 impl FooterProps {
     /// Build footer props from common app state. Helpers in `tui/ui.rs`
-    /// (e.g. `footer_state_label`, `footer_coherence_spans`) supply the
-    /// pre-styled spans and labels — this constructor just bundles them.
+    /// supply the pre-styled spans and labels — this constructor just bundles
+    /// them.
     ///
     /// Argument fan-out is intentional: each input maps 1:1 to a piece of
     /// pre-computed footer content the caller resolved from `App`. Forcing
@@ -257,7 +253,6 @@ impl FooterProps {
         toast: Option<FooterToast>,
         state_label: &'static str,
         state_color: Color,
-        coherence: Vec<Span<'static>>,
         agents: Vec<Span<'static>>,
         reasoning_replay: Vec<Span<'static>>,
         cache: Vec<Span<'static>>,
@@ -290,7 +285,6 @@ impl FooterProps {
             footer_bg: app.ui_theme.footer_bg,
             state_label: state_label.to_string(),
             state_color,
-            coherence,
             agents,
             reasoning_replay,
             cache,
@@ -308,11 +302,13 @@ impl FooterProps {
 fn mode_style(app: &App) -> (&'static str, Color) {
     let label = match app.mode {
         AppMode::Agent => "agent",
+        AppMode::Auto => "auto",
         AppMode::Yolo => "yolo",
         AppMode::Plan => "plan",
     };
     let color = match app.mode {
         AppMode::Agent => app.ui_theme.mode_agent,
+        AppMode::Auto => app.ui_theme.mode_agent,
         AppMode::Yolo => app.ui_theme.mode_yolo,
         AppMode::Plan => app.ui_theme.mode_plan,
     };
@@ -332,11 +328,10 @@ impl FooterWidget {
 
     fn auxiliary_spans(&self, max_width: usize) -> Vec<Span<'static>> {
         // `cost` is rendered in the left cluster now — keep it out of the
-        // right-hand chip parade. Coherence / agents / replay / cache are
-        // transient signals; they belong on the right where they appear and
+        // right-hand chip parade. Agents / replay / cache are transient
+        // signals; they belong on the right where they appear and
         // disappear without disturbing the steady mode·model·cost line.
         let parts: Vec<&Vec<Span<'static>>> = [
-            &self.props.coherence,
             &self.props.agents,
             &self.props.reasoning_replay,
             &self.props.cache,
@@ -759,7 +754,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
         );
         // `from_app` reads the process-wide retry-status surface; pin
         // `Idle` so footer tests don't pick up state set by retry-banner
@@ -781,7 +775,6 @@ mod tests {
         assert_eq!(props.text_hint_color, palette::TEXT_HINT);
         assert_eq!(props.text_muted_color, palette::TEXT_MUTED);
         assert_eq!(props.model, "deepseek-v4-flash");
-        assert!(props.coherence.is_empty());
         assert!(props.agents.is_empty());
         assert!(props.cache.is_empty());
         assert!(props.cost.is_empty());
@@ -860,14 +853,13 @@ mod tests {
     }
 
     #[test]
-    fn from_app_loading_state_uses_thinking_label_and_warning_color() {
+    fn from_app_loading_state_uses_busy_label_and_working_color() {
         let app = make_app();
         let props = FooterProps::from_app(
             &app,
             None,
-            "thinking \u{238B}",
-            palette::STATUS_WARNING,
-            Vec::<Span<'static>>::new(),
+            "busy",
+            palette::DEEPSEEK_SKY,
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
@@ -875,8 +867,8 @@ mod tests {
             Vec::<Span<'static>>::new(),
         );
 
-        assert!(props.state_label.starts_with("thinking"));
-        assert_eq!(props.state_color, palette::STATUS_WARNING);
+        assert_eq!(props.state_label, "busy");
+        assert_eq!(props.state_color, palette::DEEPSEEK_SKY);
     }
 
     #[test]
@@ -943,7 +935,6 @@ mod tests {
             None,
             "ready",
             palette::TEXT_MUTED,
-            Vec::<Span<'static>>::new(),
             agents,
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
@@ -1211,7 +1202,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
         )
     }
 
@@ -1306,7 +1296,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
             vec![Span::styled(cost.to_string(), Style::default())],
             Vec::<Span<'static>>::new(),
         )
@@ -1324,7 +1313,6 @@ mod tests {
             None,
             "ready",
             palette::TEXT_MUTED,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             long_cache,
@@ -1357,7 +1345,6 @@ mod tests {
             None,
             "ready",
             palette::TEXT_MUTED,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             cache,
@@ -1422,7 +1409,6 @@ mod tests {
             Some(toast),
             "ready",
             palette::TEXT_MUTED,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),

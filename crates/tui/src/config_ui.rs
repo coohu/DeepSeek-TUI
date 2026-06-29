@@ -83,6 +83,11 @@ pub struct SettingsSection {
     pub max_history: usize,
     pub cost_currency: CostCurrencyValue,
     pub prefer_external_pdftotext: bool,
+    #[schemars(
+        title = "Follow symlinks",
+        description = "Follow symbolic links during workspace file discovery walks. Enable for symlink-based multi-project workspaces."
+    )]
+    pub workspace_follow_symlinks: bool,
     pub default_model: Option<String>,
 }
 
@@ -150,6 +155,7 @@ pub enum WebConfigSessionEvent {
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalModeValue {
     Auto,
+    Bypass,
     Suggest,
     Never,
 }
@@ -239,7 +245,7 @@ pub enum CostCurrencyValue {
 #[serde(rename_all = "snake_case")]
 pub enum SidebarFocusValue {
     Auto,
-    Work,
+    Pinned,
     Tasks,
     Agents,
     Context,
@@ -280,7 +286,6 @@ pub enum StatusItemValue {
     Model,
     Cost,
     Status,
-    Coherence,
     Agents,
     ReasoningReplay,
     PrefixStability,
@@ -325,7 +330,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             approval_mode: app.approval_mode.into(),
         },
         settings: SettingsSection {
-            auto_compact: settings.auto_compact,
+            auto_compact: app.auto_compact,
             calm_mode: settings.calm_mode,
             low_motion: settings.low_motion,
             fancy_animations: settings.fancy_animations,
@@ -352,6 +357,7 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             max_history: settings.max_input_history,
             cost_currency: CostCurrencyValue::from_setting(&settings.cost_currency)?,
             prefer_external_pdftotext: settings.prefer_external_pdftotext,
+            workspace_follow_symlinks: settings.workspace_follow_symlinks,
             default_model,
         },
         config: ConfigSection {
@@ -552,6 +558,10 @@ pub fn apply_document(
             "prefer_external_pdftotext",
             bool_str(doc.settings.prefer_external_pdftotext),
         ),
+        (
+            "workspace_follow_symlinks",
+            bool_str(doc.settings.workspace_follow_symlinks),
+        ),
         ("mcp_config_path", doc.config.mcp_config_path.as_str()),
     ] {
         let result = commands::set_config_value(app, key, value, persist);
@@ -649,11 +659,12 @@ fn reload_runtime_config(app: &mut App, config: &mut Config) -> Result<()> {
     let reloaded = Config::load(app.config_path.clone(), app.config_profile.as_deref())?;
     *config = reloaded.clone();
     app.api_provider = reloaded.api_provider();
-    app.reasoning_effort = ReasoningEffort::from_setting(
-        reloaded
-            .reasoning_effort()
-            .unwrap_or_else(|| app.reasoning_effort.as_setting()),
-    );
+    app.reasoning_effort =
+        ReasoningEffort::from_setting(reloaded.reasoning_effort().unwrap_or_else(|| {
+            app.reasoning_effort
+                .as_setting_for_provider(app.api_provider)
+        }))
+        .normalize_for_provider(app.api_provider);
     app.last_effective_reasoning_effort = None;
     app.update_model_compaction_budget();
     app.mcp_config_path = reloaded.mcp_config_path();
@@ -680,7 +691,8 @@ fn apply_reasoning_effort(
     value: ReasoningEffortValue,
     persist: bool,
 ) -> Result<()> {
-    let effort: ReasoningEffort = value.into();
+    let effort: ReasoningEffort =
+        ReasoningEffort::from(value).normalize_for_provider(app.api_provider);
     app.reasoning_effort = effort;
     app.last_effective_reasoning_effort = None;
     app.update_model_compaction_budget();
@@ -688,10 +700,10 @@ fn apply_reasoning_effort(
         crate::config_persistence::persist_root_string_key(
             app.config_path.as_deref(),
             "reasoning_effort",
-            effort.as_setting(),
+            effort.as_setting_for_provider(app.api_provider),
         )?;
     }
-    config.reasoning_effort = Some(effort.as_setting().to_string());
+    config.reasoning_effort = Some(effort.as_setting_for_provider(app.api_provider).to_string());
     Ok(())
 }
 
@@ -703,6 +715,7 @@ impl ApprovalModeValue {
     fn as_setting(self) -> &'static str {
         match self {
             Self::Auto => "auto",
+            Self::Bypass => "bypass",
             Self::Suggest => "suggest",
             Self::Never => "never",
         }
@@ -856,7 +869,7 @@ impl SidebarFocusValue {
     fn as_setting(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Work => "work",
+            Self::Pinned => "pinned",
             Self::Tasks => "tasks",
             Self::Agents => "agents",
             Self::Context => "context",
@@ -869,6 +882,7 @@ impl From<ApprovalMode> for ApprovalModeValue {
     fn from(value: ApprovalMode) -> Self {
         match value {
             ApprovalMode::Auto => Self::Auto,
+            ApprovalMode::Bypass => Self::Bypass,
             ApprovalMode::Suggest => Self::Suggest,
             ApprovalMode::Never => Self::Never,
         }
@@ -939,6 +953,7 @@ impl From<&str> for DefaultModeValue {
         match AppMode::from_setting(value) {
             AppMode::Agent => Self::Agent,
             AppMode::Plan => Self::Plan,
+            AppMode::Auto => Self::Agent,
             AppMode::Yolo => Self::Yolo,
         }
     }
@@ -994,7 +1009,7 @@ impl From<&str> for SidebarFocusValue {
     fn from(value: &str) -> Self {
         match SidebarFocus::from_setting(value) {
             SidebarFocus::Auto => Self::Auto,
-            SidebarFocus::Work => Self::Work,
+            SidebarFocus::Pinned => Self::Pinned,
             SidebarFocus::Tasks => Self::Tasks,
             SidebarFocus::Agents => Self::Agents,
             SidebarFocus::Context => Self::Context,
@@ -1010,7 +1025,6 @@ impl From<StatusItem> for StatusItemValue {
             StatusItem::Model => Self::Model,
             StatusItem::Cost => Self::Cost,
             StatusItem::Status => Self::Status,
-            StatusItem::Coherence => Self::Coherence,
             StatusItem::Agents => Self::Agents,
             StatusItem::ReasoningReplay => Self::ReasoningReplay,
             StatusItem::PrefixStability => Self::PrefixStability,
@@ -1032,7 +1046,6 @@ impl From<StatusItemValue> for StatusItem {
             StatusItemValue::Model => Self::Model,
             StatusItemValue::Cost => Self::Cost,
             StatusItemValue::Status => Self::Status,
-            StatusItemValue::Coherence => Self::Coherence,
             StatusItemValue::Agents => Self::Agents,
             StatusItemValue::ReasoningReplay => Self::ReasoningReplay,
             StatusItemValue::PrefixStability => Self::PrefixStability,
@@ -1205,7 +1218,7 @@ background_color = "#1A1B26"
         let approval_mode = &schema["$defs"]["ApprovalModeValue"]["enum"];
         assert_eq!(
             approval_mode,
-            &serde_json::json!(["auto", "suggest", "never"])
+            &serde_json::json!(["auto", "bypass", "suggest", "never"])
         );
         let locale = &schema["$defs"]["UiLocale"]["enum"];
         assert_eq!(

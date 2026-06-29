@@ -17,13 +17,14 @@ pub(crate) fn persist_status_items(items: &[StatusItem]) -> anyhow::Result<PathB
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut doc: toml::Value = if path.exists() {
+    let (mut doc, original_raw) = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
+        let doc: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+        (doc, Some(raw))
     } else {
-        toml::Value::Table(toml::value::Table::new())
+        (toml::Value::Table(toml::value::Table::new()), None)
     };
 
     let table = doc
@@ -41,9 +42,13 @@ pub(crate) fn persist_status_items(items: &[StatusItem]) -> anyhow::Result<PathB
         .collect::<Vec<_>>();
     tui_table.insert("status_items".to_string(), toml::Value::Array(array));
 
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    fs::write(&path, body)
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    if let Some(raw) = original_raw {
+        save_toml_preserving_comments(&path, &doc, &raw)?;
+    } else {
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        fs::write(&path, body)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
     Ok(path)
 }
 
@@ -61,21 +66,26 @@ pub(crate) fn persist_root_string_key(
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut doc: toml::Value = if path.exists() {
+    let (mut doc, original_raw) = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
+        let doc: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+        (doc, Some(raw))
     } else {
-        toml::Value::Table(toml::value::Table::new())
+        (toml::Value::Table(toml::value::Table::new()), None)
     };
     let table = doc
         .as_table_mut()
         .context("config.toml root must be a table")?;
     table.insert(key.to_string(), toml::Value::String(value.to_string()));
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    fs::write(&path, body)
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    if let Some(raw) = original_raw {
+        save_toml_preserving_comments(&path, &doc, &raw)?;
+    } else {
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        fs::write(&path, body)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
     Ok(path)
 }
 
@@ -93,21 +103,26 @@ pub(crate) fn persist_root_bool_key(
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut doc: toml::Value = if path.exists() {
+    let (mut doc, original_raw) = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
+        let doc: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+        (doc, Some(raw))
     } else {
-        toml::Value::Table(toml::value::Table::new())
+        (toml::Value::Table(toml::value::Table::new()), None)
     };
     let table = doc
         .as_table_mut()
         .context("config.toml root must be a table")?;
     table.insert(key.to_string(), toml::Value::Boolean(value));
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    fs::write(&path, body)
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    if let Some(raw) = original_raw {
+        save_toml_preserving_comments(&path, &doc, &raw)?;
+    } else {
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        fs::write(&path, body)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
     Ok(path)
 }
 
@@ -125,13 +140,14 @@ pub(crate) fn persist_tui_integer_key(
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut doc: toml::Value = if path.exists() {
+    let (mut doc, original_raw) = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
+        let doc: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+        (doc, Some(raw))
     } else {
-        toml::Value::Table(toml::value::Table::new())
+        (toml::Value::Table(toml::value::Table::new()), None)
     };
     let table = doc
         .as_table_mut()
@@ -144,9 +160,76 @@ pub(crate) fn persist_tui_integer_key(
         .context("`tui` section in config.toml must be a table")?;
     let value = i64::try_from(value).context("integer value is too large for TOML")?;
     tui_table.insert(key.to_string(), toml::Value::Integer(value));
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    fs::write(&path, body)
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    if let Some(raw) = original_raw {
+        save_toml_preserving_comments(&path, &doc, &raw)?;
+    } else {
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        fs::write(&path, body)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
+    Ok(path)
+}
+
+pub(crate) fn persist_subagents_bool_key(
+    config_path: Option<&Path>,
+    key: &str,
+    value: bool,
+) -> anyhow::Result<PathBuf> {
+    persist_subagents_value_key(config_path, key, toml::Value::Boolean(value))
+}
+
+pub(crate) fn persist_subagents_integer_key(
+    config_path: Option<&Path>,
+    key: &str,
+    value: u64,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+
+    let value = i64::try_from(value).context("integer value is too large for TOML")?;
+    persist_subagents_value_key(config_path, key, toml::Value::Integer(value))
+}
+
+fn persist_subagents_value_key(
+    config_path: Option<&Path>,
+    key: &str,
+    value: toml::Value,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = config_toml_path(config_path)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let (mut doc, original_raw) = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        let doc: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+        (doc, Some(raw))
+    } else {
+        (toml::Value::Table(toml::value::Table::new()), None)
+    };
+    let table = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    let subagents_entry = table
+        .entry("subagents".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let subagents_table = subagents_entry
+        .as_table_mut()
+        .context("`subagents` section in config.toml must be a table")?;
+    subagents_table.insert(key.to_string(), value);
+
+    if let Some(raw) = original_raw {
+        save_toml_preserving_comments(&path, &doc, &raw)?;
+    } else {
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        fs::write(&path, body)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
     Ok(path)
 }
 
@@ -164,13 +247,14 @@ pub(crate) fn persist_provider_base_url_key(
             .with_context(|| format!("failed to create config directory {}", parent.display()))?;
     }
 
-    let mut doc: toml::Value = if path.exists() {
+    let (mut doc, original_raw) = if path.exists() {
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config at {}", path.display()))?;
-        toml::from_str(&raw)
-            .with_context(|| format!("failed to parse config at {}", path.display()))?
+        let doc: toml::Value = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?;
+        (doc, Some(raw))
     } else {
-        toml::Value::Table(toml::value::Table::new())
+        (toml::Value::Table(toml::value::Table::new()), None)
     };
     let table = doc
         .as_table_mut()
@@ -191,9 +275,13 @@ pub(crate) fn persist_provider_base_url_key(
         toml::Value::String(value.to_string()),
     );
 
-    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
-    fs::write(&path, body)
-        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    if let Some(raw) = original_raw {
+        save_toml_preserving_comments(&path, &doc, &raw)?;
+    } else {
+        let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+        fs::write(&path, body)
+            .with_context(|| format!("failed to write config at {}", path.display()))?;
+    }
     Ok(path)
 }
 
@@ -202,8 +290,10 @@ fn provider_base_url_table_key(provider: ApiProvider) -> anyhow::Result<&'static
         ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
             anyhow::bail!("DeepSeek uses the root base_url setting")
         }
+        ApiProvider::DeepseekAnthropic => Ok("deepseek_anthropic"),
         ApiProvider::NvidiaNim => Ok("nvidia_nim"),
         ApiProvider::Openai => Ok("openai"),
+        ApiProvider::Anthropic => Ok("anthropic"),
         ApiProvider::Atlascloud => Ok("atlascloud"),
         ApiProvider::WanjieArk => Ok("wanjie_ark"),
         ApiProvider::Volcengine => Ok("volcengine"),
@@ -214,12 +304,82 @@ fn provider_base_url_table_key(provider: ApiProvider) -> anyhow::Result<&'static
         ApiProvider::Siliconflow | ApiProvider::SiliconflowCn => Ok("siliconflow"),
         ApiProvider::Arcee => Ok("arcee"),
         ApiProvider::Huggingface => Ok("huggingface"),
+        ApiProvider::Deepinfra => Ok("deepinfra"),
         ApiProvider::Moonshot => Ok("moonshot"),
         ApiProvider::Sglang => Ok("sglang"),
         ApiProvider::Vllm => Ok("vllm"),
         ApiProvider::Ollama => Ok("ollama"),
         ApiProvider::ShengSuanYun => Ok("sheng_suan_yun"),
+        ApiProvider::Together => Ok("together"),
+        ApiProvider::Qianfan => Ok("qianfan"),
+        ApiProvider::OpenaiCodex => Ok("openai_codex"),
+        ApiProvider::Openmodel => Ok("openmodel"),
+        ApiProvider::Zai => Ok("zai"),
+        ApiProvider::Stepfun => Ok("stepfun"),
+        ApiProvider::Minimax => Ok("minimax"),
+        ApiProvider::Sakana => Ok("sakana"),
+        // Custom providers live under a user-chosen `[providers.<name>]` table,
+        // not a fixed key. Persisting base_url through this static-key path is
+        // out of scope for the #1519 constrained slice; users edit the named
+        // table directly.
+        ApiProvider::Custom => {
+            anyhow::bail!("custom providers store base_url in their named [providers.<name>] table")
+        }
     }
+}
+
+pub(crate) fn persist_hotbar_bindings(
+    config_path: Option<&Path>,
+    bindings: &[deepseek_config::HotbarBindingToml],
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = config_toml_path(config_path)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let raw = if path.exists() {
+        Some(
+            fs::read_to_string(&path)
+                .with_context(|| format!("failed to read config at {}", path.display()))?,
+        )
+    } else {
+        None
+    };
+    let mut document = match raw.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .parse::<toml_edit::DocumentMut>()
+            .with_context(|| format!("failed to edit config at {}", path.display()))?,
+        _ => toml_edit::DocumentMut::new(),
+    };
+
+    let table = document.as_table_mut();
+    table.remove("hotbar");
+    if bindings.is_empty() {
+        table.insert(
+            "hotbar",
+            toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())),
+        );
+    } else {
+        let mut hotbar = toml_edit::ArrayOfTables::new();
+        for binding in bindings {
+            let mut table = toml_edit::Table::new();
+            table["slot"] = toml_edit::value(i64::from(binding.slot));
+            table["action"] = toml_edit::value(binding.action.clone());
+            if let Some(label) = binding.label.as_deref() {
+                table["label"] = toml_edit::value(label);
+            }
+            hotbar.push(table);
+        }
+        table.insert("hotbar", toml_edit::Item::ArrayOfTables(hotbar));
+    }
+
+    fs::write(&path, document.to_string())
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
 }
 
 pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -228,7 +388,7 @@ pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
     if let Some(path) = config_path {
         return Ok(expand_path(path.to_string_lossy().as_ref()));
     }
-    if let Ok(env) = std::env::var("CODEWHALE_CONFIG_PATH") {
+    if let Ok(env) = std::env::var("DEEPSEEK_CONFIG_PATH") {
         let trimmed = env.trim();
         if !trimmed.is_empty() {
             return Ok(PathBuf::from(trimmed));
@@ -251,6 +411,25 @@ pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<Pat
         return Ok(legacy);
     }
     Ok(primary)
+}
+
+/// Write `doc` to `path`, merging comments from `original_raw` so user
+/// annotations survive the rewrite.
+fn save_toml_preserving_comments(
+    path: &Path,
+    doc: &toml::Value,
+    original_raw: &str,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let serialized = toml::to_string_pretty(doc).context("failed to serialize config.toml")?;
+    let body = deepseek_config::merge_and_preserve_comments(&serialized, original_raw)
+        .unwrap_or_else(|e| {
+            tracing::warn!("failed to merge config comments, saving without them: {e:#}");
+            serialized
+        });
+    std::fs::write(path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -277,14 +456,14 @@ mod tests {
             let config_str = OsString::from(config_path.as_os_str());
             let home_prev = env::var_os("HOME");
             let userprofile_prev = env::var_os("USERPROFILE");
-            let deepseek_config_prev = env::var_os("CODEWHALE_CONFIG_PATH");
+            let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
             let deepseek_config_prev = env::var_os("DEEPSEEK_CONFIG_PATH");
 
             // Safety: test-only environment mutation guarded by process-wide mutex.
             unsafe {
                 env::set_var("HOME", &home_str);
                 env::set_var("USERPROFILE", &home_str);
-                env::remove_var("CODEWHALE_CONFIG_PATH");
+                env::remove_var("DEEPSEEK_CONFIG_PATH");
                 env::set_var("DEEPSEEK_CONFIG_PATH", &config_str);
             }
 
@@ -326,12 +505,12 @@ mod tests {
             if let Some(value) = self.deepseek_config_path.take() {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::set_var("CODEWHALE_CONFIG_PATH", value);
+                    env::set_var("DEEPSEEK_CONFIG_PATH", value);
                 }
             } else {
                 // Safety: test-only environment mutation guarded by a global mutex.
                 unsafe {
-                    env::remove_var("CODEWHALE_CONFIG_PATH");
+                    env::remove_var("DEEPSEEK_CONFIG_PATH");
                 }
             }
 
@@ -412,22 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn config_toml_path_prefers_deepseek_env_over_legacy_env() {
-        let temp_root = temp_root("deepseek-config-path-env");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-        let preferred = temp_root.join("preferred.toml");
-        let legacy = temp_root.join("legacy.toml");
-
-        unsafe {
-            env::set_var("CODEWHALE_CONFIG_PATH", &preferred);
-            env::set_var("DEEPSEEK_CONFIG_PATH", &legacy);
-        }
-
-        assert_eq!(config_toml_path(None).unwrap(), preferred);
-    }
-
-    #[test]
     fn persist_status_items_preserves_existing_unrelated_keys() {
         let temp_root = temp_root("deepseek-statusline-preserve");
         fs::create_dir_all(&temp_root).unwrap();
@@ -456,5 +619,129 @@ mod tests {
             body.contains("status_items"),
             "expected status_items in {body}"
         );
+    }
+
+    #[test]
+    fn persist_bool_key_preserves_comments() {
+        let temp_root = temp_root("deepseek-persist-comments");
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "# my note\nmodel = \"deepseek-v4-flash\"\n# disabled = true\n",
+        )
+        .unwrap();
+
+        let written = persist_root_bool_key(Some(&path), "allow_shell", true)
+            .expect("persist should succeed");
+        let body = fs::read_to_string(&written).expect("written file should be readable");
+        assert!(body.contains("# my note"), "prefix comment lost: {body}");
+        assert!(
+            body.contains("# disabled = true"),
+            "disabled key lost: {body}"
+        );
+        assert!(
+            body.contains("allow_shell = true"),
+            "new key not written: {body}"
+        );
+    }
+
+    #[test]
+    fn persist_hotbar_bindings_writes_primary_config_path_for_fresh_installs() {
+        let temp_root = temp_root("deepseek-hotbar-persist-fresh");
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        unsafe {
+            env::remove_var("DEEPSEEK_CONFIG_PATH");
+        }
+
+        let bindings = vec![deepseek_config::HotbarBindingToml {
+            slot: 1,
+            action: "mode.plan".to_string(),
+            label: Some("Plan".to_string()),
+        }];
+        let path = persist_hotbar_bindings(None, &bindings).expect("persist should succeed");
+
+        assert_eq!(path, temp_root.join(".deepseek").join("config.toml"));
+        let body = fs::read_to_string(&path).expect("written file should be readable");
+        assert!(body.contains("[[hotbar]]"), "hotbar table missing: {body}");
+        let parsed: deepseek_config::ConfigToml =
+            toml::from_str(&body).expect("written hotbar config should parse");
+        assert_eq!(parsed.hotbar, Some(bindings));
+    }
+
+    #[test]
+    fn persist_hotbar_bindings_preserves_comments_and_replaces_existing_tables() {
+        let temp_root = temp_root("deepseek-hotbar-persist-comments");
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"# model note
+model = "deepseek-v4-flash"
+
+[[hotbar]]
+slot = 1
+action = "mode.plan"
+label = "Plan"
+
+# notification note
+[notifications]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let bindings = vec![deepseek_config::HotbarBindingToml {
+            slot: 2,
+            action: "session.compact".to_string(),
+            label: Some("Compact".to_string()),
+        }];
+        let written =
+            persist_hotbar_bindings(Some(&path), &bindings).expect("persist should succeed");
+        let body = fs::read_to_string(&written).expect("written file should be readable");
+
+        assert!(body.contains("# model note"), "prefix comment lost: {body}");
+        assert!(
+            body.contains("# notification note"),
+            "section comment lost: {body}"
+        );
+        assert!(
+            !body.contains("mode.plan"),
+            "old hotbar table was not replaced: {body}"
+        );
+        assert!(body.contains("[[hotbar]]"), "hotbar table missing: {body}");
+        assert!(
+            body.contains("action = \"session.compact\""),
+            "new action missing: {body}"
+        );
+        let parsed: deepseek_config::ConfigToml =
+            toml::from_str(&body).expect("written hotbar config should parse");
+        assert_eq!(parsed.hotbar, Some(bindings));
+    }
+
+    #[test]
+    fn persist_hotbar_bindings_writes_empty_array_to_disable_defaults() {
+        let temp_root = temp_root("deepseek-hotbar-persist-empty");
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let path = temp_root.join(".deepseek").join("config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let written = persist_hotbar_bindings(Some(&path), &[]).expect("persist should succeed");
+        let body = fs::read_to_string(&written).expect("written file should be readable");
+
+        assert!(body.contains("hotbar = []"), "empty hotbar missing: {body}");
+        let parsed: deepseek_config::ConfigToml =
+            toml::from_str(&body).expect("written hotbar config should parse");
+        assert_eq!(parsed.hotbar, Some(Vec::new()));
     }
 }

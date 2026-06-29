@@ -30,17 +30,15 @@ Configure these as protected CNB environment variables or secrets:
 - `LIGHTHOUSE_HOST`: public IP or DNS name of the Lighthouse instance
 - `LIGHTHOUSE_SSH_TARGET`: SSH target, for example `ubuntu@203.0.113.10`
 - `LIGHTHOUSE_SSH_PRIVATE_KEY`: private deploy key allowed to update the server
-- `CODEWHALE_REPO_BRANCH`: branch or tag to deploy, for example `main`
+- `DEEPSEEK_REPO_BRANCH`: branch or tag to deploy, for example `main`
 
 Optional:
 
-- `CODEWHALE_REPO_URL`: defaults to the CNB mirror URL
+- `DEEPSEEK_REPO_URL`: defaults to the CNB mirror URL
 - `LIGHTHOUSE_SSH_PORT`: defaults to `22`
 
-The server side should already have `/opt/whalebro/deepseek`,
-`/etc/deepseek/runtime.env`, `/etc/deepseek/feishu-bridge.env`, and the
-`deepseek-runtime` / `deepseek-feishu-bridge` systemd services from
-`docs/TENCENT_LIGHTHOUSE_HK.md`.
+The server side should already have the runtime checkout, environment files,
+and systemd services installed by the maintainer-owned server setup process.
 
 ## Safety Notes
 

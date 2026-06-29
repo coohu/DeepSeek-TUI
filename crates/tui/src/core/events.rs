@@ -7,9 +7,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use serde_json::Value;
 
-use crate::core::coherence::CoherenceState;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
+use crate::tools::goal::GoalSnapshot;
 use crate::tools::spec::{ToolError, ToolResult};
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::user_input::UserInputRequest;
@@ -72,10 +72,6 @@ pub enum Event {
         input: Value,
     },
 
-    /// Tool execution progress (for long-running tools)
-    #[allow(dead_code)]
-    ToolCallProgress { id: String, output: String },
-
     /// Tool call completed
     ToolCallComplete {
         id: String,
@@ -97,6 +93,10 @@ pub enum Event {
         /// API base URL used by this turn's client.
         base_url: Option<String>,
     },
+
+    /// Runtime goal state changed inside the engine, usually from model-visible
+    /// `create_goal` or `update_goal` tool calls.
+    GoalUpdated { snapshot: GoalSnapshot },
 
     /// Context compaction started.
     CompactionStarted {
@@ -148,59 +148,22 @@ pub enum Event {
         message: String,
     },
 
-    /// Capacity decision telemetry.
-    #[allow(dead_code)]
-    CapacityDecision {
-        session_id: String,
-        turn_id: String,
-        h_hat: f64,
-        c_hat: f64,
-        slack: f64,
-        min_slack: f64,
-        violation_ratio: f64,
-        p_fail: f64,
-        risk_band: String,
-        action: String,
-        cooldown_blocked: bool,
-        reason: String,
-    },
-
-    /// Capacity intervention telemetry.
-    #[allow(dead_code)]
-    CapacityIntervention {
-        session_id: String,
-        turn_id: String,
-        action: String,
-        before_prompt_tokens: usize,
-        after_prompt_tokens: usize,
-        compaction_size_reduction: usize,
-        replay_outcome: Option<String>,
-        replan_performed: bool,
-    },
-
-    /// Capacity memory persistence failure telemetry.
-    #[allow(dead_code)]
-    CapacityMemoryPersistFailed {
-        session_id: String,
-        turn_id: String,
-        action: String,
-        error: String,
-    },
-
-    /// Plain-language session coherence state.
-    CoherenceState {
-        state: CoherenceState,
-        label: String,
-        description: String,
-        reason: String,
-    },
-
     // === Sub-Agent Events ===
     /// A sub-agent has been spawned
-    AgentSpawned { id: String, prompt: String },
+    AgentSpawned {
+        id: String,
+        prompt: String,
+        parent_run_id: Option<String>,
+        spawn_depth: u32,
+    },
 
     /// Sub-agent progress update
-    AgentProgress { id: String, status: String },
+    AgentProgress {
+        id: String,
+        status: String,
+        parent_run_id: Option<String>,
+        spawn_depth: u32,
+    },
 
     /// Sub-agent completed
     AgentComplete { id: String, result: String },
@@ -254,6 +217,9 @@ pub enum Event {
         /// Displayed in the approval view so users understand *why* the change
         /// is being made before reviewing *what* will change.
         intent_summary: Option<String>,
+        /// When true, the UI must show the prompt instead of consuming
+        /// session/auto approval shortcuts.
+        approval_force_prompt: bool,
     },
 
     /// Request user input for a tool call

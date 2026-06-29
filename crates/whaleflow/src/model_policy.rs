@@ -22,7 +22,7 @@ pub enum ModelRole {
 impl From<AgentType> for ModelRole {
     fn from(agent_type: AgentType) -> Self {
         match agent_type {
-            AgentType::General | AgentType::Explore | AgentType::ToolAgent => Self::LeafReasoner,
+            AgentType::General | AgentType::Explore => Self::LeafReasoner,
             AgentType::Plan => Self::Planner,
             AgentType::Review | AgentType::Verifier => Self::Reviewer,
             AgentType::Implementer => Self::Implementer,

@@ -9,13 +9,11 @@ use windows::Win32::Foundation::{DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HAND
 #[cfg(windows)]
 use windows::Win32::System::Threading::GetCurrentProcess;
 
-// `env_lock` exists only to serialize Unix-only env-mutating tests.
-// Windows builds gate that test out, so the helper would be dead code
-// under `-Dwarnings` if the import + helper were unconditional.
-#[cfg(unix)]
+// `env_lock` serializes tests that mutate the process environment.
+#[cfg(any(unix, windows))]
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -149,6 +147,276 @@ fn wait_for_completed_shell(manager: &mut ShellManager, task_id: &str) -> ShellR
 }
 
 #[test]
+fn exec_shell_parallel_flags_are_input_aware() {
+    let tool = ExecShellTool;
+    let readonly = json!({"command": "git status -s"});
+    assert!(tool.supports_parallel_for(&readonly));
+    assert!(tool.is_read_only_for(&readonly));
+    assert_eq!(
+        tool.approval_requirement_for(&readonly),
+        ApprovalRequirement::Auto
+    );
+
+    let bash_readonly = json!({"command": "bash -lc 'rg TODO crates/tui/src/tools'"});
+    assert!(tool.supports_parallel_for(&bash_readonly));
+    assert!(tool.is_read_only_for(&bash_readonly));
+    assert_eq!(
+        tool.approval_requirement_for(&bash_readonly),
+        ApprovalRequirement::Auto
+    );
+
+    for input in [
+        json!({"command": "git status -s", "background": true}),
+        json!({"command": "git status -s", "stdin": ""}),
+        json!({"command": "cargo build"}),
+        json!({"command": "bash -lc 'rg TODO crates | head'"}),
+    ] {
+        assert!(!tool.supports_parallel_for(&input), "{input:?}");
+        assert!(!tool.is_read_only_for(&input), "{input:?}");
+        assert_eq!(
+            tool.approval_requirement_for(&input),
+            ApprovalRequirement::Required,
+            "{input:?}"
+        );
+    }
+
+    assert!(tool.starts_detached_for(&json!({
+        "command": "cargo check --workspace",
+        "background": true
+    })));
+    assert!(tool.starts_detached_for(&json!({
+        "command": "cargo test -p deepseek-tui --bins",
+        "tty": true
+    })));
+    assert!(!tool.starts_detached_for(&json!({
+        "command": "cargo check --workspace"
+    })));
+    assert!(!tool.starts_detached_for(&json!({
+        "command": "cargo check --workspace",
+        "background": true,
+        "interactive": true
+    })));
+}
+
+#[test]
+fn exec_shell_interact_requires_approval() {
+    let tool = ShellInteractTool::new("exec_shell_interact");
+    assert_eq!(tool.approval_requirement(), ApprovalRequirement::Required);
+    assert!(
+        tool.capabilities()
+            .contains(&ToolCapability::RequiresApproval)
+    );
+}
+
+#[tokio::test]
+async fn read_only_shell_policy_blocks_non_readonly_commands() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path())
+        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+    let tool = ExecShellTool;
+
+    let result = tool
+        .execute(json!({"command": "cargo build"}), &ctx)
+        .await
+        .expect("execute");
+    assert!(!result.success);
+    assert!(result.content.contains("read-only shell policy"));
+
+    let result = tool
+        .execute(
+            json!({"command": "git status -s", "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("execute");
+    assert!(!result.success);
+    assert!(result.content.contains("read-only shell policy"));
+}
+
+#[tokio::test]
+async fn read_only_shell_policy_allows_readonly_inspection() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path())
+        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+
+    let result = ExecShellTool
+        .execute(json!({"command": "pwd"}), &ctx)
+        .await
+        .expect("execute");
+
+    assert!(
+        result.success,
+        "unexpected shell failure: {}",
+        result.content
+    );
+    assert_eq!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("status"))
+            .and_then(Value::as_str),
+        Some("Completed")
+    );
+}
+
+#[test]
+fn exec_shell_wait_schema_defaults_to_nonblocking_snapshot() {
+    let schema = ShellWaitTool::new("exec_shell_wait").input_schema();
+    assert_eq!(schema["properties"]["wait"]["default"], json!(false));
+    assert!(
+        ShellWaitTool::new("exec_shell_wait")
+            .description()
+            .contains("without blocking by default")
+    );
+}
+
+#[tokio::test]
+async fn exec_shell_wait_without_wait_arg_returns_snapshot() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let start_result = ExecShellTool
+        .execute(
+            json!({"command": sleep_command(2), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start background");
+    let task_id = start_result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("task_id"))
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let started = Instant::now();
+    let wait_result = ShellWaitTool::new("exec_shell_wait")
+        .execute(json!({"task_id": task_id, "timeout_ms": 5_000}), &ctx)
+        .await
+        .expect("wait snapshot");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1_000),
+        "default wait path should return a snapshot instead of blocking"
+    );
+    assert_eq!(
+        wait_result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("status"))
+            .and_then(Value::as_str),
+        Some("Running")
+    );
+}
+
+#[tokio::test]
+async fn background_start_advertises_task_status_completion() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let result = ExecShellTool
+        .execute(
+            json!({"command": sleep_command(1), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start background");
+
+    assert!(result.content.contains("completion is tracked"));
+    let metadata = result.metadata.as_ref().expect("metadata");
+    assert_eq!(
+        metadata
+            .get("auto_resume_on_completion")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        metadata.get("completion_surface").and_then(Value::as_str),
+        Some("task_status")
+    );
+    assert_eq!(
+        metadata.get("background_policy").and_then(Value::as_str),
+        Some("nonblocking")
+    );
+}
+
+#[tokio::test]
+async fn background_shell_job_carries_subagent_owner() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path()).with_owner_agent("agent_owner", "verifier");
+    let result = ExecShellTool
+        .execute(
+            json!({"command": sleep_command(2), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start owned background shell");
+
+    let metadata = result.metadata.as_ref().expect("metadata");
+    assert_eq!(
+        metadata.get("owner_agent_id").and_then(Value::as_str),
+        Some("agent_owner")
+    );
+    assert_eq!(
+        metadata.get("owner_agent_name").and_then(Value::as_str),
+        Some("verifier")
+    );
+    let task_id = metadata
+        .get("task_id")
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    {
+        let mut manager = ctx.shell_manager.lock().expect("shell manager");
+        let snapshot = manager
+            .list_jobs()
+            .into_iter()
+            .find(|job| job.id == task_id)
+            .expect("owned shell job snapshot");
+        assert_eq!(snapshot.owner_agent_id.as_deref(), Some("agent_owner"));
+        assert_eq!(snapshot.owner_agent_name.as_deref(), Some("verifier"));
+    }
+
+    ShellCancelTool
+        .execute(json!({"task_id": task_id}), &ctx)
+        .await
+        .expect("cancel owned background shell");
+}
+
+#[tokio::test]
+async fn drain_finished_jobs_reports_once() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let result = ExecShellTool
+        .execute(
+            json!({"command": echo_command("drain-finished-once"), "background": true}),
+            &ctx,
+        )
+        .await
+        .expect("start background");
+    let task_id = result
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("task_id"))
+        .and_then(Value::as_str)
+        .expect("task id")
+        .to_string();
+
+    let mut manager = ctx.shell_manager.lock().expect("shell manager");
+    let completed = wait_for_completed_shell(&mut manager, &task_id);
+    assert_ne!(completed.status, ShellStatus::Running);
+
+    let first = manager.drain_finished_jobs();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].task_id, task_id);
+    assert_eq!(first[0].status, ShellStatus::Completed);
+    assert!(first[0].stdout_tail.contains("drain-finished-once"));
+
+    let second = manager.drain_finished_jobs();
+    assert!(second.is_empty(), "completion should be reported only once");
+}
+
+#[test]
 #[cfg(unix)]
 fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
     let _guard = env_lock().lock().expect("env lock");
@@ -189,6 +457,58 @@ fn shell_execution_scrubs_parent_env_and_keeps_explicit_env() {
 
     assert_eq!(result.status, ShellStatus::Completed);
     assert_eq!(result.stdout, "unset\nexplicit-value\n");
+}
+
+#[test]
+#[cfg(windows)]
+fn shell_execution_preserves_custom_windows_sdk_root_env() {
+    let _guard = env_lock().lock().expect("env lock");
+    let previous_sdk = std::env::var_os("BIMRV_SDK_ROOT");
+    let previous_secret = std::env::var_os("MY_SECRET_ROOT");
+    unsafe {
+        std::env::set_var("BIMRV_SDK_ROOT", r"F:\Lib\BimRv27.5");
+        std::env::set_var("MY_SECRET_ROOT", r"F:\Secrets");
+    }
+
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+    let command = if crate::shell_dispatcher::global_dispatcher()
+        .kind()
+        .is_powershell()
+    {
+        r#"[Console]::WriteLine($env:BIMRV_SDK_ROOT); if ($null -eq $env:MY_SECRET_ROOT) { [Console]::WriteLine("secret-unset") } else { [Console]::WriteLine("secret-set") }"#
+            .to_string()
+    } else {
+        r#"echo %BIMRV_SDK_ROOT% & if defined MY_SECRET_ROOT (echo secret-set) else (echo secret-unset)"#
+            .to_string()
+    };
+
+    let result = manager
+        .execute(&command, None, 5000, false)
+        .expect("execute");
+
+    unsafe {
+        match previous_sdk {
+            Some(value) => std::env::set_var("BIMRV_SDK_ROOT", value),
+            None => std::env::remove_var("BIMRV_SDK_ROOT"),
+        }
+        match previous_secret {
+            Some(value) => std::env::set_var("MY_SECRET_ROOT", value),
+            None => std::env::remove_var("MY_SECRET_ROOT"),
+        }
+    }
+
+    assert_eq!(result.status, ShellStatus::Completed);
+    assert!(
+        result.stdout.contains(r"F:\Lib\BimRv27.5"),
+        "custom SDK root should reach exec_shell stdout: {:?}",
+        result
+    );
+    assert!(
+        result.stdout.contains("secret-unset"),
+        "secret-like env should stay scrubbed: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -366,6 +686,57 @@ fn test_job_list_poll_cancel_and_stale_snapshot() {
         .expect("stale job");
     assert!(stale.stale);
     assert_eq!(stale.linked_task_id.as_deref(), Some("task_old"));
+}
+
+#[test]
+fn running_job_snapshot_marks_no_output_stale_after_threshold() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let started = manager
+        .execute(&sleep_command(5), None, 5000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+
+    {
+        let shell = manager.processes.get_mut(&task_id).expect("live shell");
+        shell.last_output_at = Instant::now() - STALE_NO_OUTPUT_AFTER - Duration::from_millis(1);
+    }
+
+    let job = manager
+        .list_jobs()
+        .into_iter()
+        .find(|job| job.id == task_id)
+        .expect("running job");
+
+    assert_eq!(job.status, ShellStatus::Running);
+    assert!(job.stale, "silent running job should be marked stale");
+    assert!(
+        job.elapsed_since_output_ms
+            .is_some_and(|elapsed| elapsed >= STALE_NO_OUTPUT_AFTER.as_millis() as u64),
+        "elapsed no-output time should be exposed: {job:?}"
+    );
+}
+
+#[test]
+fn running_job_snapshot_keeps_recent_no_output_fresh() {
+    let tmp = tempdir().expect("tempdir");
+    let mut manager = ShellManager::new(tmp.path().to_path_buf());
+
+    let started = manager
+        .execute(&sleep_command(5), None, 5000, true)
+        .expect("execute");
+    let task_id = started.task_id.expect("task id");
+
+    let job = manager
+        .list_jobs()
+        .into_iter()
+        .find(|job| job.id == task_id)
+        .expect("running job");
+
+    assert_eq!(job.status, ShellStatus::Running);
+    assert!(!job.stale, "fresh running job should not start stale");
+    assert!(job.elapsed_since_output_ms.is_some());
 }
 
 #[test]
@@ -549,6 +920,58 @@ fn shell_delta_result_keeps_existing_summary_for_generic_cargo_failure() {
 }
 
 #[test]
+fn shell_delta_result_surfaces_python_build_dependency_hint() {
+    let tmp = tempdir().expect("tempdir");
+    let ctx = ToolContext::new(tmp.path());
+    let result = ShellResult {
+        task_id: None,
+        status: ShellStatus::Failed,
+        exit_code: Some(1),
+        stdout: String::new(),
+        stderr: "running build_ext\nModuleNotFoundError: No module named 'setuptools'\n"
+            .to_string(),
+        duration_ms: 12,
+        stdout_len: 0,
+        stderr_len: 72,
+        stdout_omitted: 0,
+        stderr_omitted: 0,
+        stdout_truncated: false,
+        stderr_truncated: false,
+        sandboxed: false,
+        sandbox_type: None,
+        sandbox_denied: false,
+    };
+
+    let tool_result = build_shell_delta_tool_result(
+        ShellDeltaResult {
+            command: "python setup.py build_ext --inplace".to_string(),
+            result,
+            stdout_total_len: 0,
+            stderr_total_len: 72,
+        },
+        &ctx,
+    );
+
+    assert!(!tool_result.success);
+    assert!(
+        tool_result
+            .content
+            .starts_with("Python build dependency missing")
+    );
+    let metadata = tool_result.metadata.expect("metadata");
+    assert_eq!(
+        metadata["python_build_dependency_hint"]["kind"],
+        json!("missing_setuptools")
+    );
+    assert!(
+        metadata["python_build_dependency_hint"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("setuptools")
+    );
+}
+
+#[test]
 fn test_summarize_output_strips_truncation_note() {
     let long_output = "x".repeat(60_000);
     let (truncated, _meta) = truncate_with_meta(&long_output);
@@ -643,6 +1066,20 @@ async fn test_exec_shell_foreground_timeout_guides_background_rerun() {
     );
 }
 
+#[test]
+fn test_exec_shell_schema_guides_gt_five_second_work_to_background() {
+    let schema = ExecShellTool.input_schema();
+    let description = schema["properties"]["background"]["description"]
+        .as_str()
+        .expect("background description");
+    // The schema must steer >5s work to the background and point at the wait
+    // tool for early output. The wording references `exec_shell_wait` (the
+    // model-visible wait tool); the older `task_shell_start` phrasing was
+    // dropped, but the >5s + wait-tool guidance is the load-bearing contract.
+    assert!(description.contains(">5 seconds"), "{description}");
+    assert!(description.contains("exec_shell_wait"), "{description}");
+}
+
 #[tokio::test]
 async fn test_exec_shell_foreground_cancel_kills_process() {
     let tmp = tempdir().expect("tempdir");
@@ -712,7 +1149,9 @@ async fn test_exec_shell_foreground_can_move_to_background() {
 
     assert!(result.success);
     assert!(result.content.contains("Command moved to background"));
-    assert!(result.content.contains("exec_shell_cancel"));
+    // The detach message points the model at the wait tool for early output
+    // (the cancel-tool reference was reworded to `exec_shell_wait`).
+    assert!(result.content.contains("exec_shell_wait"));
 
     let meta = result.metadata.expect("metadata");
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Running"));

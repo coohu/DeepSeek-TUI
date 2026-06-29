@@ -1,23 +1,23 @@
 # Opt-in DeepSeek toolbox workflow.
 #
 # Usage:
-#   CODEWHALE_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
-#   CODEWHALE_TOOLBOX_IMAGE=deepseek-toolbox:my-project \
-#   CODEWHALE_HOME_VOLUME=deepseek-my-project-home \
-#   CODEWHALE_WORKSPACE="$PWD" \
+#   DEEPSEEK_IMAGE=ghcr.io/hmbown/deepseek:vX.Y.Z \
+#   DEEPSEEK_TOOLBOX_IMAGE=deepseek-toolbox:my-project \
+#   DEEPSEEK_HOME_VOLUME=deepseek-my-project-home \
+#   DEEPSEEK_WORKSPACE="$PWD" \
 #   docker compose -f docs/examples/compose.toolbox.yml run --rm deepseek
 #
-# Keep CODEWHALE_HOME_VOLUME distinct per project so sessions, config, skills,
+# Keep DEEPSEEK_HOME_VOLUME distinct per project so sessions, config, skills,
 # memory, and queued work do not bleed across workspaces.
 
 services:
   deepseek:
-    image: ${CODEWHALE_TOOLBOX_IMAGE:-deepseek-toolbox:local}
+    image: ${DEEPSEEK_TOOLBOX_IMAGE:-deepseek-toolbox:local}
     build:
       context: ../..
       dockerfile: docs/examples/Dockerfile.toolbox
       args:
-        CODEWHALE_IMAGE: ${CODEWHALE_IMAGE:-ghcr.io/hmbown/deepseek:latest}
+        DEEPSEEK_IMAGE: ${DEEPSEEK_IMAGE:-ghcr.io/hmbown/deepseek:latest}
         TOOLBOX_PACKAGES: ${TOOLBOX_PACKAGES:-git openssh-client curl build-essential pkg-config python3 python3-pip nodejs npm}
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
@@ -25,16 +25,16 @@ services:
       - DEEPSEEK_NO_COLOR
     volumes:
       - deepseek-home:/home/deepseek/.deepseek
-      - ${CODEWHALE_WORKSPACE:?set CODEWHALE_WORKSPACE to the project directory}:/workspace
+      - ${DEEPSEEK_WORKSPACE:?set DEEPSEEK_WORKSPACE to the project directory}:/workspace
       # Mount SSH material only for projects that need it, and prefer read-only.
       # - ${HOME}/.ssh:/home/deepseek/.ssh:ro
       # Mount local CA certificates only when starting through a command that
       # runs `sudo update-ca-certificates` inside this toolbox image.
-      # - ${CODEWHALE_CERTS_DIR:-../../docker/certs}:/usr/local/share/ca-certificates/local:ro
+      # - ${DEEPSEEK_CERTS_DIR:-../../docker/certs}:/usr/local/share/ca-certificates/local:ro
     working_dir: /workspace
     stdin_open: true
     tty: true
 
 volumes:
   deepseek-home:
-    name: ${CODEWHALE_HOME_VOLUME:-deepseek-toolbox-home}
+    name: ${DEEPSEEK_HOME_VOLUME:-deepseek-toolbox-home}

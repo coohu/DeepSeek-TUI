@@ -47,7 +47,7 @@ Each repo can carry two distinct, complementary files:
   a legacy `WHALE.md`.
 
   This is the **local-law** layer in DeepSeek's hierarchy: *base myth & global
-  Constitution* (the model prompt in `prompts/base.md`, including the Brother
+  Constitution* (the model prompt in `prompts/constitution.md`, including the Brother
   Whale identity anchor) → *repo constitution* (`.deepseek/constitution.json`,
   this file) → *task packet* (the current objective) → *runtime policy*
   (permissions/sandbox/cost limits enforced in code). The repo constitution
@@ -63,6 +63,32 @@ Each repo can carry two distinct, complementary files:
 > global DeepSeek Constitution shipped in the model prompt is a separate thing
 > and is unaffected.)
 
+### Overriding the global base prompt (#3638)
+
+The global Constitution (the base system prompt, normally compiled in from
+`prompts/constitution.md`) can be replaced per-user without rebuilding. Because
+this is a prompt trust boundary, it takes **two deliberate steps** — a file
+alone is not enough:
+
+1. Drop the replacement at `~/.deepseek/prompts/constitution.md` (under
+   `$DEEPSEEK_HOME` when set).
+2. Set the explicit opt-in flag `DEEPSEEK_ALLOW_BASE_PROMPT_OVERRIDE=1`
+   (`true`/`on`/`yes` also accepted).
+
+If the file exists but the flag is unset, the override is **ignored** (with a
+log line pointing to the flag) and the bundled Constitution stays in place.
+This is intended for repurposing the TUI beyond software engineering — e.g.
+long-form writing or document review — where the engineering-oriented base
+prompt is a poor fit. It is loaded once at startup; a **missing or empty file
+is a no-op**, so existing installs keep the bundled prompt.
+
+Scope is deliberately narrow: only the byte-stable **base prompt segment** is
+overridable. Mode deltas, the approval policy, the tool taxonomy, Context
+Management, and the Compaction Relay are still owned by DeepSeek's runtime
+assembly, so an override **cannot remove safety-relevant guidance** (sandbox,
+approvals) — it only swaps the task/voice framing. To customize per-repo
+behavior instead, prefer `AGENTS.md` + `.deepseek/constitution.json` above.
+
 ## Where It Looks
 
 Default config path:
@@ -73,10 +99,24 @@ Default config path:
 Overrides:
 
 - CLI: `deepseek --config /path/to/config.toml`
-- Env: `CODEWHALE_CONFIG_PATH=/path/to/config.toml`
+- Env: `DEEPSEEK_CONFIG_PATH=/path/to/config.toml`
 - Legacy env alias: `DEEPSEEK_CONFIG_PATH=/path/to/config.toml`
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
+
+### TUI editability audit
+
+Inside the TUI, run `/config audit` to see which documented keys can be changed
+from the current session, which ones can also be persisted, and which ones stay
+file-only or restart-only. The audit includes current values for the high-impact
+runtime controls such as `approval_policy`, `allow_shell`,
+`stream_chunk_timeout_secs`, `base_url`, `mcp_config_path`, and the
+`[subagents]` concurrency/depth/timeout keys.
+
+Use the command's "Command / reason" column as the source of truth before
+editing by hand. For example, `/config approval_mode on-request --save` writes
+top-level `approval_policy = "on-request"`, while provider base URLs are saved
+but still require restarting the model client.
 
 ### User workspace entries
 
@@ -94,40 +134,39 @@ this user-owned override.
 
 In interactive mode, the per-project overlay
 `<workspace>/.deepseek/config.toml` is applied after this user entry. A
-project-level `allow_shell = false` still takes precedence.
+project-level `allow_shell = false` can still tighten the session; project-level
+`allow_shell = true` is ignored.
 
 ### Per-project overlay (#485)
 
-When the TUI starts in a workspace that contains a
-`<workspace>/.deepseek/config.toml` file, the values declared in that
-file are merged on top of the global config. Legacy
-`<workspace>/.deepseek/config.toml` files are still read when the
-DeepSeek path is absent. This lets a repo lock its own provider,
-model, sandbox policy, or approval policy without touching the user's
-`~/.deepseek/config.toml`. Pass
-`--no-project-config` to skip the overlay for one launch.
+When the TUI starts in a workspace that contains a regular-file
+`<workspace>/.deepseek/config.toml`, the safe values declared in that file are
+merged on top of the global config. Legacy
+`<workspace>/.deepseek/config.toml` files are still read when the DeepSeek path
+is absent. Symlinked project config files are rejected. This lets a repo suggest
+a model or tighten local safety posture without touching the user's
+`~/.deepseek/config.toml`. Pass `--no-project-config` to skip the overlay for
+one launch.
 
 Supported keys in the project overlay (top-level fields only):
 
 | Key | Effect |
 |---|---|
-| `provider` | switch backend (e.g. `"nvidia-nim"` for an enterprise repo) |
 | `model` | override `default_text_model` |
-| `api_key` | use a per-repo key (typically read from `.env`, **not committed**) |
-| `base_url` | point at a self-hosted endpoint |
 | `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
-| `approval_policy` | `"never"` / `"on-request"` / `"untrusted"` for opinionated repos |
-| `sandbox_mode` | `"read-only"` / `"workspace-write"` / `"danger-full-access"` |
-| `mcp_config_path` | per-repo MCP server set |
+| `approval_policy` | only values that tighten the user's current approval posture |
+| `sandbox_mode` | only values that tighten the user's current sandbox posture |
 | `notes_path` | keep notes in-repo |
-| `max_subagents` | clamp concurrency for a constrained repo (clamped to 1..=20) |
-| `allow_shell` | gate shell tool access on `false` |
+| `max_subagents` | clamp sub-agent concurrency for a constrained repo (clamped to 1..=20) |
+| `allow_shell` | `false` can disable shell access; `true` is ignored |
 
 The overlay is intentionally narrow — it covers the fields a repo
 maintainer is most likely to want to standardize across contributors.
-Other settings (skills_dir, hooks, capacity, retry, etc.) stay
-user-global. If your repo needs more, file an issue describing the
-specific use case.
+Credential, endpoint, provider-selection, MCP config, hooks, skills, capacity,
+retry, hotbar bindings, and `instructions = [...]` settings stay user-global.
+If a repo-local config declares `api_key`, `base_url`, `provider`,
+`mcp_config_path`, `hotbar`, `allow_shell = true`, or `instructions`,
+DeepSeek ignores that key and keeps the user's global setting.
 
 The `deepseek` facade and `deepseek-tui` binary share the same config file for
 DeepSeek auth and model defaults. `deepseek auth set --provider deepseek` (and
@@ -142,14 +181,17 @@ file, OS keyring backend, environment variable, winning source, and last-four
 label without printing the key itself. The command only probes the active
 provider's keyring entry.
 
-For hosted, generic OpenAI-compatible, or self-hosted providers, set
-`provider = "nvidia-nim"`, `"openai"`, `"atlascloud"`, `"wanjie-ark"`,
-`"volcengine"`, `"openrouter"`, `"xiaomi-mimo"`, `"novita"`, `"fireworks"`,
-`"siliconflow"`, `"siliconflow-CN"`, `"arcee"`, `"moonshot"`, `"sglang"`,
-`"vllm"`, or `"ollama"` or pass
-`deepseek --provider <name>`.
-For the provider-by-provider registry, including auth variables, default base
-URLs, model IDs, and capability metadata, see [PROVIDERS.md](PROVIDERS.md).
+For hosted, generic OpenAI-compatible, self-hosted, OpenAI Responses, or native
+Anthropic providers, set `provider = "<id>"` or pass
+`deepseek --provider <id>`. The canonical provider IDs are `deepseek`,
+`nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`,
+`openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `arcee`,
+`siliconflow-CN`, `moonshot`, `sglang`, `vllm`, `ollama`, `huggingface`,
+`together`, `qianfan`, `openai-codex`, `anthropic`, `openmodel`, `zai`,
+`stepfun`, `minimax`, and `deepinfra`.
+For the provider-by-provider registry, including wire protocol, auth variables,
+default base URLs, model IDs, and capability metadata, see
+[PROVIDERS.md](PROVIDERS.md).
 The facade saves provider credentials to the shared user config and forwards
 the resolved key, base URL, provider, and model to the TUI process. Use
 `deepseek auth set --provider nvidia-nim --api-key "YOUR_NVIDIA_API_KEY"` or
@@ -159,8 +201,9 @@ the resolved key, base URL, provider, and model to the TUI process. Use
 `deepseek auth set --provider xiaomi-mimo --api-key "YOUR_XIAOMI_KEY"` or
 `deepseek auth set --provider fireworks --api-key "YOUR_FIREWORKS_API_KEY"` or
 `deepseek auth set --provider siliconflow --api-key "YOUR_SILICONFLOW_API_KEY"` or
-`deepseek auth set --provider arcee --api-key "YOUR_ARCEE_API_KEY"`
-to save provider keys through the facade. The generic `openai` provider defaults
+`deepseek auth set --provider arcee --api-key "YOUR_ARCEE_API_KEY"` or the
+matching provider ID from [PROVIDERS.md](PROVIDERS.md) to save provider keys
+through the facade. The generic `openai` provider defaults
 to `https://api.openai.com/v1`, accepts `OPENAI_BASE_URL`, and defaults to
 `deepseek-v4-pro` for OpenAI-compatible gateways. `atlascloud` defaults to
 `https://api.atlascloud.ai/v1`, accepts `ATLASCLOUD_BASE_URL`, and uses
@@ -178,8 +221,8 @@ when a local server does require bearer auth.
 SiliconFlow defaults to `https://api.siliconflow.com/v1`, accepts
 `SILICONFLOW_BASE_URL`, and uses `deepseek-ai/DeepSeek-V4-Pro` by default.
 `provider = "siliconflow-CN"` selects the China regional default
-`https://api.siliconflow.cn/v1` while sharing the same
-`[providers.siliconflow]` table and `SILICONFLOW_API_KEY` credential slot.
+`https://api.siliconflow.cn/v1` with the `[providers.siliconflow_cn]` table and
+`SILICONFLOW_API_KEY` credential slot.
 Arcee AI defaults to `https://api.arcee.ai/api/v1`, accepts `ARCEE_BASE_URL`,
 and uses `trinity-large-thinking` by default for DeepSeek agent work.
 `trinity-large-preview` is also listed as a direct Arcee API model; OpenRouter's
@@ -209,6 +252,28 @@ legacy top-level `base_url`, so the OpenAI-compatible provider receives it.
 provider tables in one config, `[providers.openai].model` can be used as the
 OpenAI-provider-specific override.
 
+Alibaba Bailian / Model Studio DashScope Qwen routes use the same OpenAI
+provider shape:
+
+```toml
+provider = "openai"
+
+[providers.openai]
+api_key = "YOUR_DASHSCOPE_API_KEY"
+base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+model = "qwen-plus"
+context_window = 1000000
+```
+
+Use the regional DashScope `compatible-mode/v1` base URL that matches the
+region of your API key. DeepSeek keeps `qwen-plus` scoped to the `openai`
+provider route and does not infer a different provider from the model prefix.
+The same rule applies to all provider-prefixed model strings: a prefix such as
+`deepseek-ai/...` or `deepseek/...` is a provider-owned wire ID under the
+selected provider, not an automatic switch to the DeepSeek provider.
+Set `context_window` to the gateway/model's real total context window when it
+differs from DeepSeek's static model metadata.
+
 If the gateway accepts `POST /chat/completions` but rejects
 `/v1/chat/completions`, set a provider-local `path_suffix`:
 
@@ -222,11 +287,11 @@ The suffix applies only to chat-completion requests. Model listing and
 DeepSeek beta paths keep their built-in routing so a generic gateway override
 does not accidentally rewrite `/models` or `/beta/completions`.
 
-For private gateways with broken or intercepted certificates, prefer
-`SSL_CERT_FILE` with a trusted CA bundle. As a last resort, a provider table can
-set `insecure_skip_tls_verify = true`; this disables certificate verification
-only for the active LLM provider client, leaves other HTTP clients unchanged,
-and is reported by `deepseek doctor`.
+For private gateways with broken or intercepted certificates, use
+`SSL_CERT_FILE` with a trusted CA bundle. The legacy provider-table key
+`insecure_skip_tls_verify = true` is still parsed so `deepseek doctor` can
+report stale configs, but provider clients reject it instead of disabling TLS
+certificate verification.
 
 Local HTTP endpoints such as Ollama, SGLang, and vLLM are allowed by default
 when they use localhost or loopback addresses. For a non-local `http://`
@@ -307,7 +372,7 @@ update_uri = "https://internal.mirror.example/deepseek/releases/latest"
 ```
 
 When `update_uri` is not set, startup checks honor release mirror environment
-variables such as `CODEWHALE_RELEASE_BASE_URL` before falling back to the
+variables such as `DEEPSEEK_RELEASE_BASE_URL` before falling back to the
 official GitHub API endpoint. If a configured `update_uri` cannot be fetched or
 parsed and a release mirror env var is set, the TUI falls back to that mirror
 instead of failing startup.
@@ -405,29 +470,31 @@ Unknown posture names or unknown keys inside a harness profile fail config
 deserialization instead of silently becoming `custom`. That is intentional:
 once runtime wiring consumes these profiles, a typo should be visible.
 The v0.9 implementation order and automatic-creator boundary are documented in
-[`HARNESS_PROFILE_CUTLINE.md`](HARNESS_PROFILE_CUTLINE.md).
+[`HARNESS_PROFILE_CUTLINE.md`](rfcs/HARNESS_PROFILE_CUTLINE.md).
 
 ## Environment Variables
 
 Most runtime environment variables override config values. API-key variables are
 fallbacks after saved config and keyring credentials.
 
-The three user-facing slots — provider, model, base URL — expose `CODEWHALE_*`
-aliases. When both forms are set the `CODEWHALE_*` value wins; the
+The three user-facing slots — provider, model, base URL — expose `DEEPSEEK_*`
+aliases. When both forms are set the `DEEPSEEK_*` value wins; the
 `DEEPSEEK_*` form is kept for older shells:
 
-- `CODEWHALE_PROVIDER` (preferred) / `DEEPSEEK_PROVIDER` (legacy alias) —
-  `deepseek|nvidia-nim|openai|atlascloud|wanjie-ark|volcengine|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|siliconflow-CN|arcee|moonshot|sglang|vllm|ollama`
-- `CODEWHALE_MODEL` (preferred) / `DEEPSEEK_MODEL` (legacy alias) — default model for the active provider
-- `CODEWHALE_BASE_URL` (preferred) / `DEEPSEEK_BASE_URL` (legacy alias) — base URL for the active provider
+- `DEEPSEEK_PROVIDER` (preferred) / `DEEPSEEK_PROVIDER` (legacy alias) —
+  `deepseek|deepseek-anthropic|nvidia-nim|openai|atlascloud|wanjie-ark|volcengine|openrouter|xiaomi-mimo|novita|fireworks|siliconflow|arcee|siliconflow-CN|moonshot|sglang|vllm|ollama|huggingface|together|qianfan|openai-codex|anthropic|openmodel|zai|stepfun|minimax|deepinfra`
+- `DEEPSEEK_MODEL` (preferred) / `DEEPSEEK_MODEL` (legacy alias) — default model for the active provider
+- `DEEPSEEK_BASE_URL` (preferred) / `DEEPSEEK_BASE_URL` (legacy alias) — base URL for the active provider
 
 Remaining variables:
 
 - `DEEPSEEK_API_KEY`
+- `DEEPSEEK_ANTHROPIC_BASE_URL`
 - `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
 - `DEEPSEEK_DEFAULT_TEXT_MODEL` (extra legacy alias of `DEEPSEEK_MODEL`)
 - `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` (stream idle timeout in seconds; default `300`, clamped to `1..=3600`)
 - `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS` (connection setup + response-header wait in seconds; default `45`, clamped to `5..=300`; distinct from the per-chunk idle timeout)
+- `DEEPSEEK_CACHE_MAXIMAL` (`1`/`true`/`on`/`yes`) — cache-maximal context mode (#528). When on, the Repo Working Set block materializes the **full current contents** of the top active files into the system prompt each turn (deterministic order, byte-bounded), instead of only listing their paths. The block stays byte-stable while those files are unchanged so DeepSeek's KV prefix cache keeps hitting; editing a file cache-misses from its block onward. Off by default (path list only). Byte caps default to 24 KB per file / 96 KB total.
 - `NVIDIA_API_KEY` or `NVIDIA_NIM_API_KEY` (preferred when provider is `nvidia-nim`; falls back to `DEEPSEEK_API_KEY`)
 - `NVIDIA_NIM_BASE_URL`, `NIM_BASE_URL`, or `NVIDIA_BASE_URL`
 - `NVIDIA_NIM_MODEL`
@@ -445,14 +512,17 @@ Remaining variables:
 - `VOLCENGINE_MODEL` or `VOLCENGINE_ARK_MODEL`
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_BASE_URL`
+- `OPENROUTER_MODEL`
 - `XIAOMI_MIMO_TOKEN_PLAN_API_KEY`, `MIMO_TOKEN_PLAN_API_KEY`, `XIAOMI_MIMO_API_KEY`, `XIAOMI_API_KEY`, or `MIMO_API_KEY`
 - `XIAOMI_MIMO_BASE_URL` or `MIMO_BASE_URL`
 - `XIAOMI_MIMO_MODEL` or `MIMO_MODEL`
 - `XIAOMI_MIMO_MODE` or `MIMO_MODE`
 - `NOVITA_API_KEY`
 - `NOVITA_BASE_URL`
+- `NOVITA_MODEL`
 - `FIREWORKS_API_KEY`
 - `FIREWORKS_BASE_URL`
+- `FIREWORKS_MODEL`
 - `HUGGINGFACE_API_KEY` or `HF_TOKEN` (`HF_TOKEN` is a fallback alias accepted when provider is `huggingface`)
 - `HUGGINGFACE_BASE_URL` or `HF_BASE_URL`
 - `HUGGINGFACE_MODEL` or `HF_MODEL`
@@ -462,6 +532,31 @@ Remaining variables:
 - `ARCEE_API_KEY`
 - `ARCEE_BASE_URL`
 - `ARCEE_MODEL`
+- `TOGETHER_API_KEY`
+- `TOGETHER_BASE_URL`
+- `TOGETHER_MODEL`
+- `QIANFAN_API_KEY` or `BAIDU_QIANFAN_API_KEY`
+- `QIANFAN_BASE_URL` or `BAIDU_QIANFAN_BASE_URL`
+- `QIANFAN_MODEL` or `BAIDU_QIANFAN_MODEL`
+- `OPENAI_CODEX_ACCESS_TOKEN` or `CODEX_ACCESS_TOKEN`
+- `OPENAI_CODEX_BASE_URL` or `CODEX_BASE_URL`
+- `OPENAI_CODEX_MODEL` or `CODEX_MODEL`
+- `OPENAI_CODEX_ACCOUNT_ID` or `CODEX_ACCOUNT_ID`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_MODEL`
+- `ZAI_API_KEY` or `Z_AI_API_KEY`
+- `ZAI_BASE_URL` or `Z_AI_BASE_URL`
+- `ZAI_MODEL` or `Z_AI_MODEL`
+- `STEPFUN_API_KEY` or `STEP_API_KEY`
+- `STEPFUN_BASE_URL` or `STEP_BASE_URL`
+- `STEPFUN_MODEL` or `STEP_MODEL`
+- `MINIMAX_API_KEY`
+- `MINIMAX_BASE_URL`
+- `MINIMAX_MODEL`
+- `DEEPINFRA_API_KEY` or `DEEPINFRA_TOKEN`
+- `DEEPINFRA_BASE_URL`
+- `DEEPINFRA_MODEL`
 - `MOONSHOT_API_KEY` or `KIMI_API_KEY`
 - `MOONSHOT_BASE_URL` or `KIMI_BASE_URL`
 - `MOONSHOT_MODEL`, `KIMI_MODEL_NAME`, or `KIMI_MODEL`
@@ -491,10 +586,10 @@ Remaining variables:
   legacy directory exists)
 - `DEEPSEEK_ALLOW_INSECURE_HTTP` (`1`/`true` allows non-local `http://` base URLs; default is reject)
 - `DEEPSEEK_FORCE_HTTP1` (`1|true|yes|on` pins the HTTP client to HTTP/1.1, disabling HTTP/2; useful on Windows or behind proxies that mishandle long-lived H2 streams)
-- `CODEWHALE_HOME` (override the base data directory; defaults to `~/.deepseek`).
-  If you previously exported `DEEPSEEK_HOME`, rename it to `CODEWHALE_HOME`;
+- `DEEPSEEK_HOME` (override the base data directory; defaults to `~/.deepseek`).
+  If you previously exported `DEEPSEEK_HOME`, rename it to `DEEPSEEK_HOME`;
   the old env var is not used for new DeepSeek state paths.
-- `CODEWHALE_RELEASE_BASE_URL` (release asset mirror used by `deepseek update`
+- `DEEPSEEK_RELEASE_BASE_URL` (release asset mirror used by `deepseek update`
   and by TUI startup update checks when `[update].update_uri` is not set, or as
   a fallback when that configured URI cannot be fetched)
 - `DEEPSEEK_AUTOMATIONS_DIR` (override the automations storage directory; uses
@@ -545,12 +640,10 @@ Rules:
   truncated with a `[…elided]` marker rather than skipped.
 - Missing files are skipped with a tracing warning so a stale
   entry doesn't fail the launch.
-- Project config (`<workspace>/.deepseek/config.toml`, or legacy
-  `<workspace>/.deepseek/config.toml`)
-  **replaces** the user array wholesale rather than merging.
-  If you want both, list `~/global.md` inside the project
-  array. Set `instructions = []` in the project to clear the
-  user list for that repo.
+- Only user-owned config, profiles, and managed config may set this array.
+  Project config (`<workspace>/.deepseek/config.toml`, or legacy
+  `<workspace>/.deepseek/config.toml`) ignores `instructions` so a cloned repo
+  cannot choose arbitrary local files to place into the prompt.
 
 ### `/hooks` listing
 
@@ -612,7 +705,100 @@ receives the text produced by the previous hook. Hooks marked
 `background = true` are observer-only and cannot transform or block
 the message. Existing environment variables remain available.
 `shell_env` hooks keep their existing `KEY=VALUE` stdout contract;
-the JSON stdout contract applies only to `message_submit`.
+JSON stdout contracts exist for `message_submit` (above) and
+`tool_call_before` (below).
+
+### `tool_call_before` decision hooks
+
+`tool_call_before` hooks run before each tool call executes. In
+addition to the legacy hard deny (exit code `2`, which always wins
+regardless of stdout), a foreground hook may print a JSON decision on
+stdout with exit code `0`:
+
+```json
+{
+  "decision": "allow" | "deny" | "ask",
+  "reason": "human-readable explanation (used for deny)",
+  "updatedInput": { "command": "ls -la" },
+  "additionalContext": "text appended to the tool result for the model"
+}
+```
+
+All fields are optional. Empty stdout, non-JSON stdout, and JSON
+without a `decision` field behave exactly as before (allow). An
+unrecognized `decision` string logs a warning and is treated as allow.
+
+- `deny` blocks the tool; the model receives a permission-denied tool
+  result containing `reason`.
+- `ask` forces the interactive approval prompt even for tools that
+  would otherwise auto-run.
+- `updatedInput` must be a JSON object; it replaces the tool input
+  before execution. When several hooks supply it, the last hook wins.
+- `additionalContext` is appended to the tool result sent back to the
+  model as `[hook context] ...`. Multiple hooks' contexts are
+  concatenated.
+
+When multiple hooks match, precedence is deny > ask > allow. Hooks
+marked `background = true` cannot steer tool calls — they exit
+immediately without a captured result.
+
+Example deny hook:
+
+```toml
+[[hooks.hooks]]
+event = "tool_call_before"
+command = '''echo '{"decision":"deny","reason":"blocked by project policy"}' '''
+condition = { type = "tool_name", name = "exec_shell" }
+```
+
+Example ask hook (force approval for every MCP tool):
+
+```toml
+[[hooks.hooks]]
+event = "tool_call_before"
+command = '''echo '{"decision":"ask"}' '''
+condition = { type = "tool_name", name = "mcp__*" }
+```
+
+Example input rewrite:
+
+```toml
+[[hooks.hooks]]
+event = "tool_call_before"
+command = "~/.deepseek/hooks/clamp-shell-timeout.sh"
+condition = { type = "tool_name", name = "exec_shell" }
+```
+
+where the script reads the hook context, then prints
+`{"updatedInput": {...}}` with the adjusted arguments.
+
+`tool_name` conditions support `*` globs: `mcp__*` matches every MCP
+tool (e.g. `mcp__github__create_issue`) but not built-ins like
+`read_file`; exact names keep matching exactly. Other regex
+metacharacters in the pattern are matched literally.
+
+### Project-local hooks
+
+Repositories can ship policy in `<workspace>/.deepseek/hooks.toml`,
+using the same shape as the `[hooks]` table (top-level fields plus
+`[[hooks]]` entries). Project hooks are executable shell
+configuration, so DeepSeek only loads them after the workspace has
+been trusted in user-owned config through the trust prompt or a
+`[projects."<workspace>"] trust_level = "trusted"` entry. Session
+`/trust on` mode does not enable repo-supplied hooks by itself, and
+repo-local legacy markers such as `.deepseek/trusted` do not enable
+project hooks. Once trusted, project hooks are appended after global
+hooks from `config.toml`, so they run last and, for `updatedInput`,
+win ties. A malformed trusted project file logs a warning and startup
+falls back to global hooks only.
+
+```toml
+# .deepseek/hooks.toml
+[[hooks]]
+event = "tool_call_before"
+command = '''echo '{"decision":"deny","reason":"no shell in this repo"}' '''
+condition = { type = "tool_name", name = "exec_shell" }
+```
 
 ### Turn-end observer hooks
 
@@ -720,8 +906,8 @@ continue_on_error = true
 ```
 
 Previews are capped before delivery so lifecycle hooks do not receive full
-sub-agent prompts, transcripts, or unbounded results. Use `agent_eval` from a
-normal model/tool flow when full sub-agent details are needed.
+sub-agent prompts, transcripts, or unbounded results. Use the transcript handle
+returned by `agent` when full sub-agent details are needed.
 
 ### Composer stash (`/stash`, Ctrl+S)
 
@@ -730,7 +916,9 @@ Press **Ctrl+S** in the composer to park the current draft to
 drafts with one-line previews and timestamps; `/stash pop`
 restores the most recently parked draft (LIFO); `/stash clear`
 wipes the file. Capped at 200 entries; multiline drafts
-round-trip intact.
+round-trip intact. When a turn is already running and queued follow-ups exist,
+the pending-input preview advertises **Ctrl+S send now**; in that state Ctrl+S
+sends the next queued follow-up into the active turn instead of stashing.
 
 ## Settings File (Persistent UI Preferences)
 
@@ -740,12 +928,12 @@ deepseek also stores user preferences in:
 - `~/.deepseek/settings.toml` or the legacy platform config-dir
   `deepseek/settings.toml` when an existing settings file is present
 
-Notable settings include `auto_compact` (default `false` for 1M-class models,
-model-aware default-on for 256K-class models), which opts into replacement-style
-summarization before the active model limit. The trigger defaults to
-`auto_compact_threshold_percent = 80`. The default V4 path preserves the stable
-message prefix for cache reuse; use manual `/compact` / Ctrl+L or enable
-`auto_compact` when you explicitly want automatic replacement compaction.
+Notable settings include `auto_compact`, which uses a model-aware default-on
+policy for known context windows up to the 1M-token V4 class. Automatic
+compaction runs before the active model limit and carries the compacted summary
+forward into the next request. The trigger defaults to
+`auto_compact_threshold_percent = 80`. Users who prefer manual continuity can
+persist `auto_compact = false`; manual `/compact` / Ctrl+L remains available.
 You can inspect or update these from the TUI with `/settings` and `/config`
 (interactive editor).
 
@@ -757,7 +945,8 @@ Common settings keys:
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the TUI. Aliases such as `whale`, `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
-- `auto_compact` (on/off, default off)
+- `auto_compact` (on/off, model-aware default on for known context windows
+  unless explicitly configured)
 - `auto_compact_threshold_percent` (10-100, default `80`): pre-send
   auto-compaction threshold used only when `auto_compact` is enabled.
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
@@ -789,12 +978,16 @@ Common settings keys:
   context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (agent, plan, yolo; legacy `normal` is accepted and normalized to `agent`)
-- `sidebar_focus` (`auto`, `work`, `tasks`, `agents`, `context`, `hidden`; default
-  `auto`): selects the right sidebar focus. `auto` prioritizes Work, Tasks,
-  Agents, then optional Context, and uses Work as the single quiet empty state.
+- `sidebar_focus` (`pinned`, `auto`, `tasks`, `agents`, `context`, `hidden`; default
+  `pinned`): selects the right sidebar focus. `pinned` keeps the right sidebar
+  visible when the terminal is wide enough and composes Work, Tasks, Agents,
+  and optional Context as they have live content. `auto` uses the same composed
+  panels but collapses while idle. Saving
+  `/sidebar auto --save` records an explicit auto-collapse opt-in so upgraded
+  settings files that only captured the old default can migrate back to `pinned`.
   `hidden` disables the right sidebar entirely so raw terminal selection cannot
   cross from the transcript into sidebar borders. Legacy `plan` and `todos`
-  values are accepted and normalized to `work`.
+  values, plus the old `work` name, are accepted and normalized to `pinned`.
 - `max_history` (number of submitted input history entries; cleared drafts are
   also kept locally for composer history search)
 - `default_model` (model name override)
@@ -812,10 +1005,6 @@ Readability semantics:
 
 - Selection uses a unified style across transcript, composer menus, and modals.
 - Footer hints use a dedicated semantic role (`FOOTER_HINT`) so hint text stays readable across themes.
-- The footer includes a compact `coherence` chip that describes how stable and
-  focused the current session is right now. Possible states are `healthy`,
-  `crowded`, `refreshing`, `verifying`, and `resetting`; these are derived from
-  capacity and compaction events without exposing internal formulas in normal UI.
 
 ### Token Quantities and Drivers
 
@@ -831,12 +1020,13 @@ separate:
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
 | Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
 
-For the default V4 path, replacement compaction remains opt-in
-(`auto_compact = false` by default) and fires at the active model's
-compaction threshold when enabled. For 256K-class models, auto-compaction is
-enabled by default unless the user explicitly configures `auto_compact`. The
-Flash seam manager remains opt-in (`[context].enabled = false`), and the
-capacity controller remains disabled unless configured.
+For known context-window models, including 1M-class V4 models, replacement
+compaction is enabled by default unless the user explicitly configures
+`auto_compact = false`. It fires at the active model's compaction threshold and
+replays the generated summary through the stable system prompt on the next
+request. Unknown model ids remain opt-in. The Flash seam manager remains opt-in
+(`[context].enabled = false`), and the capacity controller remains disabled
+unless configured.
 
 ### Command Migration Notes
 
@@ -855,13 +1045,22 @@ If you are upgrading from older releases:
 
 ### Core keys (used by the TUI/engine)
 
-- `provider` (string, optional): `deepseek` (default), `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `siliconflow-CN`, `arcee`, `moonshot`, `sglang`, `vllm`, or `ollama`. Legacy `deepseek-cn` configs are still accepted as an alias for `deepseek`; DeepSeek uses the same official host [`https://api.deepseek.com`](https://api-docs.deepseek.com/) worldwide. `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `openai` targets a generic OpenAI-compatible endpoint, defaulting to `https://api.openai.com/v1`; `atlascloud` targets AtlasCloud's OpenAI-compatible endpoint at `https://api.atlascloud.ai/v1`; `wanjie-ark` targets Wanjie Ark's OpenAI-compatible endpoint at `https://maas-openapi.wanjiedata.com/api/v1`; `volcengine` targets Volcengine Ark's OpenAI-compatible coding endpoint at `https://ark.cn-beijing.volces.com/api/coding/v3`; `openrouter` targets `https://openrouter.ai/api/v1`; `xiaomi-mimo` targets Xiaomi MiMo's OpenAI-compatible endpoint, using `https://token-plan-sgp.xiaomimimo.com/v1` by default for Token Plan keys (`tp-...`) and `https://api.xiaomimimo.com/v1` for pay-as-you-go keys; set `base_url` explicitly if your Token Plan account uses the China region; `novita` targets `https://api.novita.ai/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `siliconflow` targets SiliconFlow, defaulting to `https://api.siliconflow.com/v1`; `siliconflow-CN` targets the SiliconFlow China regional endpoint while sharing `[providers.siliconflow]`; `arcee` targets Arcee AI's OpenAI-compatible endpoint at `https://api.arcee.ai/api/v1`; `moonshot` targets Moonshot/Kimi, defaulting to `https://api.moonshot.ai/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`.
+- `provider` (string, optional): `deepseek` (default), `deepseek-anthropic`, `nvidia-nim`, `openai`, `atlascloud`, `wanjie-ark`, `volcengine`, `openrouter`, `xiaomi-mimo`, `novita`, `fireworks`, `siliconflow`, `arcee`, `siliconflow-CN`, `moonshot`, `sglang`, `vllm`, `ollama`, `huggingface`, `together`, `qianfan`, `openai-codex`, `anthropic`, `openmodel`, `zai`, `stepfun`, `minimax`, `deepinfra`, or `sakana`. Legacy `deepseek-cn` configs are still accepted as an alias for `deepseek`; DeepSeek uses the same official host [`https://api.deepseek.com`](https://api-docs.deepseek.com/) worldwide. `deepseek-anthropic` targets DeepSeek's Anthropic Messages-compatible endpoint at `https://api.deepseek.com/anthropic` using `DEEPSEEK_API_KEY`; `nvidia-nim` targets NVIDIA's NIM-hosted DeepSeek endpoints through `https://integrate.api.nvidia.com/v1`; `openai` targets a generic OpenAI-compatible endpoint, defaulting to `https://api.openai.com/v1`; `atlascloud` targets AtlasCloud's OpenAI-compatible endpoint at `https://api.atlascloud.ai/v1`; `wanjie-ark` targets Wanjie Ark's OpenAI-compatible endpoint at `https://maas-openapi.wanjiedata.com/api/v1`; `volcengine` targets Volcengine Ark's OpenAI-compatible coding endpoint at `https://ark.cn-beijing.volces.com/api/coding/v3`; `openrouter` targets `https://openrouter.ai/api/v1`; `xiaomi-mimo` targets Xiaomi MiMo's OpenAI-compatible endpoint, using `https://token-plan-sgp.xiaomimimo.com/v1` by default for Token Plan keys (`tp-...`) and `https://api.xiaomimimo.com/v1` for pay-as-you-go keys; set `base_url` explicitly if your Token Plan account uses the China region; `novita` targets `https://api.novita.ai/openai/v1`; `fireworks` targets `https://api.fireworks.ai/inference/v1`; `siliconflow` targets SiliconFlow, defaulting to `https://api.siliconflow.com/v1`; `arcee` targets Arcee AI's OpenAI-compatible endpoint at `https://api.arcee.ai/api/v1`; `siliconflow-CN` targets the SiliconFlow China regional endpoint through `[providers.siliconflow_cn]`; `moonshot` targets Moonshot/Kimi, defaulting to `https://api.moonshot.ai/v1`; `sglang` targets a self-hosted OpenAI-compatible endpoint, defaulting to `http://localhost:30000/v1`; `vllm` targets a self-hosted vLLM OpenAI-compatible endpoint, defaulting to `http://localhost:8000/v1`; `ollama` targets Ollama's OpenAI-compatible endpoint, defaulting to `http://localhost:11434/v1`; `huggingface` targets Hugging Face Inference Providers at `https://router.huggingface.co/v1`; `together` targets Together AI at `https://api.together.xyz/v1`; `qianfan` targets Baidu Qianfan at `https://api.baiduqianfan.ai/v1`; `openai-codex` targets ChatGPT/Codex OAuth; `anthropic` targets Claude's native Messages API; `openmodel` targets OpenModel's Anthropic-compatible Messages API at `https://api.openmodel.ai`; `zai` targets Z.ai at `https://api.z.ai/api/coding/paas/v4`; `stepfun` targets StepFun at `https://api.stepfun.ai/v1`; `minimax` targets MiniMax at `https://api.minimax.io/v1`; `deepinfra` targets DeepInfra at `https://api.deepinfra.com/v1/openai`; `sakana` targets Sakana AI Fugu at `https://api.sakana.ai/v1`.
 - `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
-- `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API, including legacy `provider = "deepseek-cn"` configs. Other defaults are `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://ark.cn-beijing.volces.com/api/coding/v3` for `volcengine`, `https://openrouter.ai/api/v1` for `openrouter`, `https://token-plan-sgp.xiaomimimo.com/v1` for `xiaomi-mimo` when the API key starts with `tp-...` and `https://api.xiaomimimo.com/v1` otherwise, `https://api.novita.ai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.siliconflow.cn/v1` for `siliconflow-CN`, `https://api.arcee.ai/api/v1` for `arcee`, `https://api.moonshot.ai/v1` for `moonshot`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `base_url = "https://token-plan-cn.xiaomimimo.com/v1"` explicitly if your Xiaomi MiMo Token Plan account is provisioned in the China region. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
+- `base_url` (string, optional): defaults to `https://api.deepseek.com/beta` for DeepSeek's OpenAI-compatible Chat Completions API, including legacy `provider = "deepseek-cn"` configs. Other defaults are `https://api.deepseek.com/anthropic` for `deepseek-anthropic`, `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://ark.cn-beijing.volces.com/api/coding/v3` for `volcengine`, `https://openrouter.ai/api/v1` for `openrouter`, `https://token-plan-sgp.xiaomimimo.com/v1` for `xiaomi-mimo` when the API key starts with `tp-...` and `https://api.xiaomimimo.com/v1` otherwise, `https://api.novita.ai/openai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.siliconflow.cn/v1` for `siliconflow-CN`, `https://api.arcee.ai/api/v1` for `arcee`, `https://api.moonshot.ai/v1` for `moonshot`, `https://api.minimax.io/v1` for `minimax`, `https://api.openmodel.ai` for `openmodel`, `https://api.z.ai/api/coding/paas/v4` for `zai`, `https://api.stepfun.ai/v1` for `stepfun`, `https://api.deepinfra.com/v1/openai` for `deepinfra`, `https://api.sakana.ai/v1` for `sakana`, `https://router.huggingface.co/v1` for `huggingface`, `https://api.together.xyz/v1` for `together`, `https://api.baiduqianfan.ai/v1` for `qianfan`, `https://chatgpt.com/backend-api` for `openai-codex`, `https://api.anthropic.com` for `anthropic`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `base_url = "https://token-plan-cn.xiaomimimo.com/v1"` explicitly if your Xiaomi MiMo Token Plan account is provisioned in the China region. Set `https://api.deepseek.com` or `https://api.deepseek.com/v1` explicitly to opt out of DeepSeek beta features.
+- `context_window` (integer, optional provider-table key): override the total context window for the active `[providers.<name>]` route when an OpenAI-compatible gateway, hosted model alias, or self-hosted runtime has a different limit than DeepSeek's static model table. For example, `[providers.openai] context_window = 1000000` lets an OpenAI-compatible DashScope/Qwen route budget against a 1M-token window instead of the conservative fallback. The value must be greater than 0 and affects prompt context notes, compaction thresholds, context-pressure checks, and request output caps.
 - `path_suffix` (string, optional provider-table key): override the chat-completions path for OpenAI-compatible gateways that do not serve `/v1/chat/completions`. For example, `[providers.openai] path_suffix = "/chat/completions"` sends chat requests to the unversioned base URL plus `/chat/completions`; `models` and `beta/*` requests keep their normal routing.
-- `insecure_skip_tls_verify` (bool, optional provider-table key): disabled by default. When true on the active provider table, only the LLM provider HTTP client skips TLS certificate verification. Prefer `SSL_CERT_FILE` for corporate or private CA bundles; `deepseek doctor` reports this setting when enabled.
-- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `DeepSeek-V4-Pro` for Volcengine Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow, `trinity-large-thinking` for Arcee AI, `kimi-k2.6` for Moonshot, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026, except SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `minimax/minimax-m3`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-flash`, `qwen/qwen3.6-35b-a3b`, `qwen/qwen3.6-max-preview`, `qwen/qwen3.6-27b`, `qwen/qwen3.6-plus`, `google/gemma-4-31b-it`, and `moonshotai/kimi-k2.6`; direct Arcee uses bare IDs such as `trinity-large-thinking` and `trinity-large-preview`; direct Xiaomi MiMo recognizes chat IDs `mimo-v2.5-pro` and `mimo-v2.5`, while TTS IDs are selected through `deepseek speech` / `tts`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, `arcee`, and Ollama model IDs are passed through unchanged after known aliases are normalized. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `CODEWHALE_MODEL` overrides this for a single process; `DEEPSEEK_MODEL` is the legacy alias.
-- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, or `max`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
+- `reasoning_stream_style` (string, optional provider-table key): override how streaming reasoning is separated from answer text for the active provider route. Use `separate_field` for `reasoning_content` / `reasoning` deltas, `inline_tags` for gateways that stream `<think>...</think>` inside `delta.content`, or `none` to render incoming content exactly as answer text.
+- `[providers.<name>.auth]` (table, optional): provider-scoped auth source metadata. `source = "command"` stores a command argv plus optional `timeout_ms`; `source = "secret"` stores a `secret_id`. This slice lets provider readiness, `/provider`, and doctor JSON report the auth source class without exposing command argv output or secret values; executing commands and resolving external secret material is handled by the follow-up resolver work.
+- `insecure_skip_tls_verify` (bool, optional provider-table key): legacy compatibility key, disabled by default. When true on the active provider table, provider clients reject the configuration instead of skipping TLS certificate verification. Use `SSL_CERT_FILE` for corporate or private CA bundles; `deepseek doctor` reports stale uses of this setting.
+- `default_text_model` (string, optional): defaults to `deepseek-v4-pro` for DeepSeek, `deepseek-anthropic`, and generic OpenAI-compatible endpoints, `deepseek-ai/deepseek-v4-pro` for NVIDIA NIM, `deepseek-ai/deepseek-v4-flash` for AtlasCloud, `deepseek-reasoner` for Wanjie Ark, `DeepSeek-V4-Pro` for Volcengine Ark, `deepseek/deepseek-v4-pro` for OpenRouter and Novita, `mimo-v2.5-pro` for Xiaomi MiMo, `accounts/fireworks/models/deepseek-v4-pro` for Fireworks, `deepseek-ai/DeepSeek-V4-Pro` for SiliconFlow and DeepInfra, `trinity-large-thinking` for Arcee AI, `kimi-k2.7-code` for Moonshot, `MiniMax-M3` for MiniMax, `GLM-5.2` for Z.ai, `step-3.7-flash` for StepFun, `ernie-4.0-turbo-8k` for Qianfan, `fugu` for Sakana AI, `deepseek-ai/DeepSeek-V4-Pro` for SGLang/vLLM, and `deepseek-coder:1.3b` for Ollama. Hugging Face and Together AI both default to `deepseek-ai/DeepSeek-V4-Pro`; `openai-codex` defaults to `gpt-5.5`; `anthropic` defaults to `claude-sonnet-4-6`; `openmodel` defaults to `deepseek-v4-flash`. Current public DeepSeek IDs are `deepseek-v4-pro` and `deepseek-v4-flash`, both with 1M context windows, 384K max output, and thinking mode enabled by default. Legacy `deepseek-chat` and `deepseek-reasoner` remain compatibility aliases for `deepseek-v4-flash` until July 24, 2026, except SiliconFlow maps `deepseek-reasoner` and `deepseek-r1` to its Pro model while `deepseek-chat` and `deepseek-v3` map to Flash. Provider-specific mappings translate `deepseek-v4-pro` / `deepseek-v4-flash` to each provider's model ID where supported. OpenRouter also recognizes recent large IDs such as `arcee-ai/trinity-large-thinking`, `minimax/minimax-m3`, `minimax/minimax-m2.7`, `xiaomi/mimo-v2.5-pro`, `qwen/qwen3.6-flash`, `qwen/qwen3.6-35b-a3b`, `qwen/qwen3.6-max-preview`, `qwen/qwen3.6-27b`, `qwen/qwen3.6-plus`, `qwen/qwen3.7-max`, `google/gemma-4-31b-it`, `moonshotai/kimi-k2.7-code`, `moonshotai/kimi-k2.6`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free`, and `nvidia/nemotron-3-ultra-550b-a55b`; direct Arcee uses bare IDs such as `trinity-large-thinking` and `trinity-large-preview`; direct Moonshot recognizes `kimi-k2.7-code`, `kimi-k2.6`, and Kimi Code's stable `kimi-for-coding`; direct MiniMax recognizes `MiniMax-M3` and the documented M2.x chat model IDs; direct Sakana recognizes `fugu` and `fugu-ultra-20260615`; direct Xiaomi MiMo recognizes chat IDs `mimo-v2.5-pro` and `mimo-v2.5`, while TTS IDs are selected through `deepseek speech` / `tts`. Generic `openai`, `atlascloud`, `wanjie-ark`, `xiaomi-mimo`, `arcee`, `moonshot`, `minimax`, `openmodel`, `zai`, `stepfun`, `qianfan`, `sakana`, and Ollama model IDs are passed through unchanged after known aliases are normalized. OpenRouter and SiliconFlow provider configs with a custom `base_url` also preserve explicit model values, which lets OpenAI-compatible gateways accept bare model IDs. Use `/models` or `deepseek models` to discover live IDs from your configured endpoint. `DEEPSEEK_MODEL` overrides this for a single process; `DEEPSEEK_MODEL` is the legacy alias.
+- `reasoning_effort` (string, optional): `off`, `low`, `medium`, `high`, `max`, `xhigh`, or `ultracode`; defaults to the configured UI tier. DeepSeek Platform receives top-level `thinking` / `reasoning_effort` fields. OpenAI Codex normalizes stale `off` to `low` and sends `max` / `ultracode` as Responses `xhigh`. Z.ai receives documented `thinking` controls and treats enabled thinking as the GLM coding high/max lane. NVIDIA NIM receives equivalent settings through `chat_template_kwargs`.
+- `verbosity` (string, optional): `normal` or `concise`. `normal` keeps the
+  default conversational prompt. `concise` appends a prompt discipline block
+  for direct, low-chatter output; CLI noninteractive commands (`exec` and
+  `eval`) default to `concise` unless config/env/CLI overrides it.
+  Override per process with `DEEPSEEK_VERBOSITY` or the legacy
+  `DEEPSEEK_VERBOSITY` alias.
 - `allow_shell` (bool, optional): defaults to `false`; shell tools must be explicitly enabled.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
@@ -875,35 +1074,172 @@ If you are upgrading from older releases:
   records loaded next to `config.toml`, for example
   `~/.deepseek/permissions.toml`. This schema foundation accepts
   `[[rules]]` entries with `tool` plus optional `command` or `path` fields.
-  Loaded rules feed the execution policy engine and force approval in approval
-  modes that can ask; under `approval_policy = "never"`, matching ask rules are
-  rejected because no prompt can be shown. This intentionally does not accept
-  typed allow/deny records, glob expansion, or approval UI persistence yet.
+  Loaded rules feed the execution policy engine and force approval in
+  non-YOLO approval modes that can ask; under `approval_policy = "never"`,
+  matching ask rules are rejected because no prompt can be shown. YOLO / auto
+  approval retains complete freedom: ask rules do not downgrade YOLO into
+  prompting or blocking.
+
+  In a supported approval card, press `S` to approve the request once and
+  append exact ask rules to this file. Supported saves are intentionally narrow:
+  `exec_shell` stores the exact approved command string; `write_file` and
+  `edit_file` store the exact workspace-relative file path; `apply_patch`
+  stores one exact workspace-relative `path` rule per validated touched file
+  from apply-patch preflight. Existing exec command matching remains
+  arity-aware, and file paths are normalized to the same workspace-relative
+  form used by runtime matching.
+
+  `read_file` rules can still be authored manually when you want future reads
+  of a specific path to ask, but the approval UI does not save `read_file`
+  rules. This schema still does not accept typed allow/deny records, glob
+  expansion, broad directory/recursive rules, or UI editing/deleting of saved
+  rules.
+- `[[hotbar]]` (array of tables, optional): user-owned 1-8 slot bindings for
+  the TUI hotbar. Each entry has `slot`, `action`, and optional `label`.
+  Omitting `hotbar` uses the built-in default eight slots. Setting
+  `hotbar = []` disables all default slots. When one or more `[[hotbar]]`
+  tables are present, that list replaces the defaults; missing slots stay
+  empty. Invalid slots outside `1..=8` are skipped with a warning, duplicate
+  slots use the later entry, and unknown action IDs are kept so the UI can show
+  a disabled/unknown cell instead of silently deleting user config. Trusted
+  user config, profiles, and managed config replace the whole list; project
+  overlays cannot change hotbar bindings. Setup or wizard flows that persist
+  hotbar bindings write this same schema to the resolved `~/.deepseek/config.toml`
+  path, preserving legacy `~/.deepseek/config.toml` only when that fallback file
+  is already the active config.
+
+  ```toml
+  [[hotbar]]
+  slot = 1
+  action = "mode.plan"
+  label = "Plan"
+
+  [[hotbar]]
+  slot = 2
+  action = "session.compact"
+  ```
+- `[auto_review]` (table, optional): deterministic tool-call review policy.
+  This layer sits on top of existing approval modes; it can force a prompt or
+  block a tool call, but it is not an auto-push, auto-merge, or hosted review
+  service. Block rules are checked first, then the built-in safety floor, then
+  allow rules. The safety floor still holds publish-like actions and
+  destructive background/headless actions for review even if an allow rule
+  matches.
+
+  ```toml
+  [auto_review]
+  natural_language_guidance = "Prefer read-only inspection until the user asks for writes."
+
+  [[auto_review.allow]]
+  id = "read-only-inspection"
+  action_kind = "read"
+  reason = "Read-only inspection is safe to run automatically."
+
+  [[auto_review.block]]
+  id = "no-release-publish"
+  action_kind = "publish"
+  reason = "Release and publish actions require maintainer review."
+  ```
+
+  Rule matchers are exact `tool`, `action_kind`, and/or
+  `text_contains` against the current user intent. At least one matcher is
+  required. `action_kind` accepts `read`, `write`, `shell`, `network`, `git`,
+  `mcp_read`, `mcp_action`, `browser`, `secret`, `publish`, `destructive`, or
+  `unknown`; invalid names fail config validation instead of becoming broad
+  rules. `natural_language_guidance` is recorded on the runtime policy and audit
+  event, but deterministic rules and the built-in safety floor are the enforced
+  behavior in v0.8.65.
+
+  Auto-review decisions emit `tool.auto_review_decision` audit events when tool
+  audit logging is enabled. Future PreToolUse/PostToolUse hooks can add
+  observer input around this layer, but the configured auto-review policy is
+  evaluated before a tool call is allowed to proceed.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
-- `max_subagents` (int, optional): defaults to `10` and is clamped to `1..=20`.
-- `subagents.*` (optional): per-role/type model defaults for `agent_open` and
-  related persistent sub-agent sessions. Explicit tool `model` values win, then role/type
+- `max_subagents` (int, optional): defaults to `20` and is clamped to `1..=20`.
+- `subagents.*` (optional): per-role/type model defaults for `agent`.
+  Explicit tool `model` values win, then role/type
   overrides, then the parent runtime model. Supported convenience keys are
   `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`, `max_concurrent`, `api_timeout_secs`, and
+  `review_model`, `custom_model`, `max_concurrent`, `max_admitted`,
+  `launch_concurrency`, `token_budget`, `api_timeout_secs`, and
   `heartbeat_timeout_secs`. The `[subagents] max_concurrent` value overrides
-  top-level `max_subagents` and is also clamped to `1..=20`; `[subagents]
-  api_timeout_secs` controls the per-step API timeout for sub-agent model calls
-  and is clamped to `1..=1800`, with `0` or unset preserving the legacy 120
-  second default. `[subagents] heartbeat_timeout_secs` controls stale running
-  agent cleanup, defaults to `300`, and is clamped to `30..=3600` while staying
-  above the resolved API timeout.
+  top-level `max_subagents` and is also clamped to `1..=20`. `[subagents]
+  max_admitted` (aliases: `max_total`, `admission_limit`) is the bounded total
+  of queued plus running sub-agents; it defaults to `200` so high-fanout turns
+  can queue and drain while runtime launch pressure remains bounded, and is
+  clamped to `max_concurrent..=200`. `[subagents]
+  launch_concurrency` sets how many direct children start at once before the
+  rest queue for a launch slot; it defaults to the resolved `max_subagents` cap
+  and is clamped to `1..=max_subagents` (the deprecated
+  `interactive_max_launch` key is accepted as an alias, with the new key
+  winning when both are set). `[subagents] token_budget` is an optional
+  aggregate token ceiling for each root `agent` run and its descendants; unset
+  or `0` preserves unlimited legacy behavior. `[subagents] api_timeout_secs`
+  controls the per-step API timeout for sub-agent model calls and is clamped to
+  `1..=1800`, with `0` or unset preserving the legacy 120 second default.
+  `[subagents] heartbeat_timeout_secs` controls stale running agent cleanup,
+  defaults to `300`, and is clamped to `30..=3600` while staying above the
+  resolved API timeout. `[subagents.providers.<provider>]` accepts the same
+  fanout, depth, budget, and timeout knobs (`enabled`, `max_concurrent`,
+  `max_admitted`, `launch_concurrency`, `max_depth`, `token_budget`,
+  `api_timeout_secs`, `heartbeat_timeout_secs`) and inherits the global
+  `[subagents]` value for any key you omit. Provider keys accept canonical
+  names such as `deepseek`, `zai`, `openrouter`, `anthropic`, plus convenience
+  aliases such as `glm` for Z.ai and `deepseek_api` for direct DeepSeek:
+
+  ```toml
+  [subagents]
+  max_concurrent = 20
+  launch_concurrency = 20
+  max_admitted = 200
+  max_depth = 6
+
+  [subagents.providers.deepseek]
+  max_concurrent = 20
+  launch_concurrency = 20
+  max_admitted = 200
+
+  [subagents.providers.glm]
+  max_concurrent = 4
+  launch_concurrency = 3
+  max_admitted = 12
+  max_depth = 2
+
+  [subagents.providers.openrouter]
+  max_concurrent = 5
+  launch_concurrency = 3
+  max_admitted = 20
+  ```
+
+  `/config subagents status` prints both global values and the active
+  provider's resolved profile so rate-limit tuning is visible in the TUI.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
-  `explorer`, `general`, `explore`, `plan`, and `review`. Values must normalize
-  to a supported DeepSeek model id before an agent is spawned.
+  `explorer`, `general`, `explore`, `plan`, and `review`. Values are validated
+  against the active provider at spawn time; direct DeepSeek requires DeepSeek
+  IDs, while OpenAI-compatible/custom provider routes pass explicit model IDs
+  through to that provider.
 - `skills_dir` (string, optional): defaults to `~/.deepseek/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global
   agentskills.io-compatible `~/.agents/skills` and the broader Claude-ecosystem
   `~/.claude/skills`. First launch installs versioned bundled skills for common
   workflows including skill creation, delegation, MCP/plugin scaffolding,
-  documents, presentations, spreadsheets, PDFs, and Feishu/Lark.
+  documents, presentations, spreadsheets, PDFs, and Feishu/Lark. See
+  [CLAUDE_PLUGIN_COMPAT.md](CLAUDE_PLUGIN_COMPAT.md) for the supported boundary
+  between portable `SKILL.md` bundles and Claude Code plugin runtimes.
+- `[skills].scan_deepseek_only` (bool, default `false`): when `true`, session
+  skill discovery ignores cross-tool roots such as `.claude/skills`,
+  `.opencode/skills`, `.cursor/skills`, and `~/.agents/skills`. DeepSeek still
+  scans `<workspace>/.deepseek/skills`, `~/.deepseek/skills`, and any explicit
+  `skills_dir` override.
+- `[verifier].enabled` (bool, default `false`): enables automatic
+  claim-of-done verifier preview once that runtime trigger is active. The
+  manual `run_verifiers` tool is still available when this is false.
+- `[verifier].verdict_policy` (string, default `"hunt"`): maps verifier
+  `pass` / `partial` / `fail` into the goal verdict vocabulary
+  `hunted` / `wounded` / `escaped`. `"hunt"` is the only shipped policy today;
+  unknown values are rejected so future policies can be added deliberately.
 - `mcp_config_path` (string, optional): defaults to `~/.deepseek/mcp.json`, with
   legacy `~/.deepseek/mcp.json` fallback when the DeepSeek path is absent.
   It is visible in `/config` and can be changed from the TUI. The new path is
@@ -985,7 +1321,7 @@ If you are upgrading from older releases:
 - `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
 - `tui.stream_chunk_timeout_secs` (int, optional, default `300`): per-SSE-chunk idle timeout for streamed model responses. Slow local or compatible servers can raise this with `/config stream_chunk_timeout_secs <seconds>`; `0` maps to the default and explicit values must be `1..=3600`. The legacy `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var is still honored when this key is omitted.
-- `tui.osc8_links` (bool, optional, default `true`): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. Set `false` for terminals that misrender the sequence; selection/clipboard output always strips the escapes.
+- `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so terminals that support them (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) render them as Cmd+click hyperlinks. Terminals without OSC 8 support render the plain URL and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
 
@@ -1100,21 +1436,35 @@ You can also override features for a single run:
 - `deepseek-tui --disable subagents`
 
 Use `deepseek-tui features list` to inspect known flags and their effective state.
+The native `/config` view also includes a read-only **Experimental** section
+for experimental feature flags. It shows each flag's effective enabled/disabled
+state and whether that state comes from the default or a configured override.
+Change feature flags in `[features]` or with `--enable` / `--disable`; the
+`/config` section is an audit surface, not a stability promise. Goal and
+WhaleFlow preview rows may appear there as reserved entries until those workflows
+graduate behind real gated flags.
 
 ## Web Search Provider
 
 `web_search` uses DuckDuckGo by default and does not require an API key. The
 DuckDuckGo path keeps a Bing fallback when DDG returns a bot challenge or no
 parseable results. Bing remains selectable for users who explicitly want it,
-and Tavily, Bocha, Metaso, Baidu, Volcengine, or Sofya can be selected when an
-API-backed provider is preferred.
+and Tavily, Bocha, Metaso, SearXNG, Baidu, Volcengine, or Sofya can be selected
+when an API-backed provider is preferred.
 
 For a private/internal search service that serves DuckDuckGo-compatible HTML,
 keep `provider = "duckduckgo"` and set `base_url`; DeepSeek appends the `q`
 query parameter to that endpoint and applies network policy to its host.
-Custom endpoints do not fall back to public Bing. `CODEWHALE_SEARCH_BASE_URL`
+Custom endpoints do not fall back to public Bing. `DEEPSEEK_SEARCH_BASE_URL`
 can override this per process; `DEEPSEEK_SEARCH_BASE_URL` remains accepted as
 the legacy alias.
+
+**SearXNG** ([docs](https://docs.searxng.org/dev/search_api.html)) uses the
+configured instance's JSON API. Set `provider = "searxng"` and
+`base_url = "https://your-searxng.example"`; DeepSeek calls
+`/search?q=...&format=json`. DeepSeek does not use a public SearXNG instance
+by default because public instances often disable JSON output or rate-limit API
+traffic.
 
 **Metaso** ([metaso.cn](https://metaso.cn)) has a 100 searches/day free quota;
 set `METASO_API_KEY` or `[search] api_key` for a higher quota.
@@ -1131,9 +1481,9 @@ Sofya model provider.
 
 ```toml
 [search]
-provider = "baidu" # duckduckgo | bing | tavily | bocha | metaso | baidu | volcengine | sofya
-# base_url = "https://search.example/html/" # optional with provider = "duckduckgo"
-# api_key = "YOUR_KEY" # required for tavily, bocha, baidu, volcengine, and sofya; optional for metaso
+provider = "searxng" # duckduckgo | bing | tavily | bocha | metaso | searxng | baidu | volcengine | sofya
+# base_url = "https://search.example/" # optional with provider = "duckduckgo"; required with "searxng"
+# api_key = "YOUR_KEY" # required for tavily, bocha, baidu, volcengine, and sofya; optional for metaso; unused by searxng
 ```
 
 ## Local Media Attachments
@@ -1145,7 +1495,7 @@ Completions API currently accepts text message content, so media attachments are
 sent as explicit local path references instead of native image/video payloads.
 Attachment rows appear above the composer before submit; move to the start of
 the composer, press `↑` to select an attachment row, then press `Backspace` or
-`Delete` to remove it without editing the placeholder text by hand.
+`Delete` to remove it without editing the sample text by hand.
 
 ## Managed Configuration and Requirements
 
@@ -1173,7 +1523,7 @@ See `docs/capacity_controller.md` for formulas, intervention behavior, and telem
 ## Notes On `deepseek-tui doctor`
 
 `deepseek-tui doctor` follows the same config resolution rules as the rest of the
-TUI. That means `--config`, `CODEWHALE_CONFIG_PATH`, and the legacy
+TUI. That means `--config`, `DEEPSEEK_CONFIG_PATH`, and the legacy
 `DEEPSEEK_CONFIG_PATH` are respected, and MCP/skills
 checks use the resolved `mcp_config_path` / `skills_dir` (including env overrides).
 
@@ -1215,14 +1565,14 @@ configure reasoning effort.
   intentionally not auto-loaded; wire individual scripts into the agent via
   MCP, hooks, or skills.
 - `--plugins` — scaffold `~/.deepseek/plugins/` with a `README.md` and an
-  `example/PLUGIN.md` placeholder using the same frontmatter shape as
+  `example/PLUGIN.md` sample using the same frontmatter shape as
   `SKILL.md`. Plugins are not loaded automatically either; reference them
   from a skill, hook, or MCP wrapper when you want them active.
 - `--all` now scaffolds MCP + skills + tools + plugins together.
 - `--clean` — list `~/.deepseek/sessions/checkpoints/latest.json` and
   `offline_queue.json` if they exist. Legacy
   `~/.deepseek/sessions/checkpoints/` files are not scanned automatically; set
-  `CODEWHALE_HOME=~/.deepseek` for a one-off legacy cleanup. Pass `--force` to
+  `DEEPSEEK_HOME=~/.deepseek` for a one-off legacy cleanup. Pass `--force` to
   actually remove matched files. This never touches real session history or the
   task queue.
 

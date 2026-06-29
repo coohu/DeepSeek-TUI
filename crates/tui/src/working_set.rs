@@ -33,6 +33,37 @@ pub struct Workspace {
     cwd: Option<PathBuf>,
     file_index: OnceLock<HashMap<String, Vec<PathBuf>>>,
     completion_walk_depth: Option<usize>,
+    /// Follow symbolic links during file discovery walks. When `true`,
+    /// symlinked directories are traversed, enabling multi-project workspaces
+    /// where project directories are symlinked into a hub directory.
+    follow_links: bool,
+}
+
+struct SearchContext<'a> {
+    needle: &'a str,
+    limit: usize,
+    prefix_hits: &'a mut Vec<String>,
+    substring_hits: &'a mut Vec<String>,
+    seen: &'a mut HashSet<PathBuf>,
+}
+
+impl SearchContext<'_> {
+    fn is_full(&self) -> bool {
+        self.prefix_hits.len() + self.substring_hits.len() >= self.limit
+    }
+
+    fn remember(&mut self, path: PathBuf) -> bool {
+        self.seen.insert(path)
+    }
+
+    fn push_match(&mut self, candidate: String) {
+        let lower = candidate.to_lowercase();
+        if self.needle.is_empty() || lower.starts_with(self.needle) {
+            self.prefix_hits.push(candidate);
+        } else if lower.contains(self.needle) {
+            self.substring_hits.push(candidate);
+        }
+    }
 }
 
 impl Workspace {
@@ -55,11 +86,23 @@ impl Workspace {
     /// Construct with an explicit completion walk depth. A depth of `0`
     /// disables the depth limit for users with deeply nested workspaces.
     pub fn with_cwd_and_depth(root: PathBuf, cwd: Option<PathBuf>, walk_depth: usize) -> Self {
+        Self::with_cwd_depth_and_follow_links(root, cwd, walk_depth, false)
+    }
+
+    /// Construct with an explicit completion walk depth and symlink-following
+    /// preference. See [`Workspace::follow_links`].
+    pub fn with_cwd_depth_and_follow_links(
+        root: PathBuf,
+        cwd: Option<PathBuf>,
+        walk_depth: usize,
+        follow_links: bool,
+    ) -> Self {
         Self {
             root,
             cwd,
             file_index: OnceLock::new(),
             completion_walk_depth: normalize_completion_walk_depth(walk_depth),
+            follow_links,
         }
     }
 
@@ -105,7 +148,8 @@ impl Workspace {
     fn build_file_index(&self) -> HashMap<String, Vec<PathBuf>> {
         let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut total: usize = 0;
-        let builder = discovery_walk_builder(&self.root, self.completion_walk_depth);
+        let builder =
+            discovery_walk_builder(&self.root, self.completion_walk_depth, self.follow_links);
 
         for entry in builder.build().flatten() {
             if total >= FILE_INDEX_MAX_ENTRIES {
@@ -141,7 +185,7 @@ impl Workspace {
             let mut dot_builder = WalkBuilder::new(&dot_dir);
             dot_builder
                 .hidden(true)
-                .follow_links(false)
+                .follow_links(self.follow_links)
                 .git_ignore(false)
                 .ignore(false);
             if let Some(depth) = child_completion_walk_depth(self.completion_walk_depth) {
@@ -177,6 +221,7 @@ impl Workspace {
             &self.root,
             LOCAL_REFERENCE_SCAN_LIMIT,
             self.completion_walk_depth,
+            self.follow_links,
         ) {
             if total >= FILE_INDEX_MAX_ENTRIES {
                 break;
@@ -220,53 +265,51 @@ impl Workspace {
         // Walk the recorded cwd first when it diverges from the workspace
         // root, so cwd-relative entries appear ahead of duplicates surfaced by
         // the workspace walk.
-        let cwd_diverges = self
-            .cwd
-            .as_deref()
-            .map(|c| c != self.root.as_path())
-            .unwrap_or(false);
-        if cwd_diverges && let Some(cwd) = self.cwd.as_deref() {
-            walk_for_completions(
-                cwd,
-                cwd,
-                &needle,
+        {
+            let mut ctx = SearchContext {
+                needle: &needle,
                 limit,
-                &mut prefix_hits,
-                &mut substring_hits,
-                &mut seen,
+                prefix_hits: &mut prefix_hits,
+                substring_hits: &mut substring_hits,
+                seen: &mut seen,
+            };
+
+            let cwd_diverges = self
+                .cwd
+                .as_deref()
+                .map(|c| c != self.root.as_path())
+                .unwrap_or(false);
+            if cwd_diverges && let Some(cwd) = self.cwd.as_deref() {
+                walk_for_completions(
+                    cwd,
+                    cwd,
+                    &mut ctx,
+                    self.completion_walk_depth,
+                    self.follow_links,
+                );
+                add_local_reference_completions(
+                    cwd,
+                    cwd,
+                    &mut ctx,
+                    self.completion_walk_depth,
+                    self.follow_links,
+                );
+            }
+            walk_for_completions(
+                &self.root,
+                &self.root,
+                &mut ctx,
                 self.completion_walk_depth,
+                self.follow_links,
             );
             add_local_reference_completions(
-                cwd,
-                cwd,
-                &needle,
-                limit,
-                &mut prefix_hits,
-                &mut substring_hits,
-                &mut seen,
+                &self.root,
+                &self.root,
+                &mut ctx,
                 self.completion_walk_depth,
+                self.follow_links,
             );
         }
-        walk_for_completions(
-            &self.root,
-            &self.root,
-            &needle,
-            limit,
-            &mut prefix_hits,
-            &mut substring_hits,
-            &mut seen,
-            self.completion_walk_depth,
-        );
-        add_local_reference_completions(
-            &self.root,
-            &self.root,
-            &needle,
-            limit,
-            &mut prefix_hits,
-            &mut substring_hits,
-            &mut seen,
-            self.completion_walk_depth,
-        );
 
         prefix_hits.sort();
         substring_hits.sort();
@@ -313,7 +356,7 @@ impl Workspace {
         let mut builder = WalkBuilder::new(&dir);
         builder
             .hidden(!show_hidden)
-            .follow_links(false)
+            .follow_links(self.follow_links)
             .max_depth(Some(1));
         let _ = builder.add_custom_ignore_filename(".deepseekignore");
 
@@ -385,13 +428,17 @@ fn child_completion_walk_depth(depth: Option<usize>) -> Option<usize> {
 /// above the actual entry count and the cap is a no-op.
 const FILE_INDEX_MAX_ENTRIES: usize = 50_000;
 
-/// Configure a `WalkBuilder` for workspace discovery: hidden files, no
-/// symlink following, depth-limited, custom `.deepseekignore` honored,
-/// and gitignore overrides for AI-tool dot-directories so `@`-completion
-/// finds them even when they're gitignored.
-fn discovery_walk_builder(root: &Path, max_depth: Option<usize>) -> WalkBuilder {
+/// Configure a `WalkBuilder` for workspace discovery: hidden files,
+/// depth-limited, custom `.deepseekignore` honored, and gitignore overrides
+/// for AI-tool dot-directories so `@`-completion finds them even when
+/// they're gitignored. Symlink following is controlled by `follow_links`.
+fn discovery_walk_builder(
+    root: &Path,
+    max_depth: Option<usize>,
+    follow_links: bool,
+) -> WalkBuilder {
     let mut builder = WalkBuilder::new(root);
-    builder.hidden(true).follow_links(false);
+    builder.hidden(true).follow_links(follow_links);
     if let Some(depth) = max_depth {
         builder.max_depth(Some(depth));
     }
@@ -402,16 +449,12 @@ fn discovery_walk_builder(root: &Path, max_depth: Option<usize>) -> WalkBuilder 
 /// Walk the AI-tool dot-directories (`.deepseek/`, `.cursor/`, `.claude/`,
 /// `.agents/`) with gitignore disabled so their contents are discoverable
 /// even when the project's `.gitignore` / `.ignore` excludes them.
-#[allow(clippy::too_many_arguments)]
 fn walk_always_discoverable_dirs(
     walk_root: &Path,
     display_root: &Path,
-    needle: &str,
-    limit: usize,
-    prefix_hits: &mut Vec<String>,
-    substring_hits: &mut Vec<String>,
-    seen: &mut HashSet<PathBuf>,
+    ctx: &mut SearchContext<'_>,
     max_depth: Option<usize>,
+    follow_links: bool,
 ) {
     for dir_name in DISCOVERY_ALWAYS_DIRS {
         let dot_dir = walk_root.join(dir_name);
@@ -421,14 +464,14 @@ fn walk_always_discoverable_dirs(
         let mut builder = WalkBuilder::new(&dot_dir);
         builder
             .hidden(true)
-            .follow_links(false)
+            .follow_links(follow_links)
             .git_ignore(false)
             .ignore(false);
         if let Some(depth) = max_depth {
             builder.max_depth(Some(depth.saturating_sub(1)));
         }
         for entry in builder.build().flatten() {
-            if prefix_hits.len() + substring_hits.len() >= limit {
+            if ctx.is_full() {
                 break;
             }
             let path = entry.path();
@@ -445,7 +488,7 @@ fn walk_always_discoverable_dirs(
                 continue;
             }
             let abs = path.to_path_buf();
-            if !seen.insert(abs) {
+            if !ctx.remember(abs) {
                 continue;
             }
             let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
@@ -454,31 +497,22 @@ fn walk_always_discoverable_dirs(
             } else {
                 rel_str.clone()
             };
-            let lower = candidate.to_lowercase();
-            if needle.is_empty() || lower.starts_with(needle) {
-                prefix_hits.push(candidate);
-            } else if lower.contains(needle) {
-                substring_hits.push(candidate);
-            }
+            ctx.push_match(candidate);
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn walk_for_completions(
     walk_root: &Path,
     display_root: &Path,
-    needle: &str,
-    limit: usize,
-    prefix_hits: &mut Vec<String>,
-    substring_hits: &mut Vec<String>,
-    seen: &mut HashSet<PathBuf>,
+    ctx: &mut SearchContext<'_>,
     max_depth: Option<usize>,
+    follow_links: bool,
 ) {
-    let builder = discovery_walk_builder(walk_root, max_depth);
+    let builder = discovery_walk_builder(walk_root, max_depth, follow_links);
 
     for entry in builder.build().flatten() {
-        if prefix_hits.len() + substring_hits.len() >= limit {
+        if ctx.is_full() {
             break;
         }
         let path = entry.path();
@@ -492,7 +526,7 @@ fn walk_for_completions(
         // Dedup across the (cwd, workspace) double-walk by absolute path; we
         // want the cwd-relative display when both walks see the same file.
         let abs = path.to_path_buf();
-        if !seen.insert(abs) {
+        if !ctx.remember(abs) {
             continue;
         }
         let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
@@ -501,62 +535,39 @@ fn walk_for_completions(
         } else {
             rel_str.clone()
         };
-        let lower = candidate.to_lowercase();
-        if needle.is_empty() || lower.starts_with(needle) {
-            prefix_hits.push(candidate);
-        } else if lower.contains(needle) {
-            substring_hits.push(candidate);
-        }
+        ctx.push_match(candidate);
     }
 
     // Also walk the AI-tool dot-directories with gitignore disabled so
     // `.deepseek/`, `.cursor/`, etc. are always discoverable.
-    walk_always_discoverable_dirs(
-        walk_root,
-        display_root,
-        needle,
-        limit,
-        prefix_hits,
-        substring_hits,
-        seen,
-        max_depth,
-    );
+    walk_always_discoverable_dirs(walk_root, display_root, ctx, max_depth, follow_links);
 }
 
 const LOCAL_REFERENCE_SCAN_LIMIT: usize = 4096;
 
-#[allow(clippy::too_many_arguments)]
 fn add_local_reference_completions(
     root: &Path,
     display_root: &Path,
-    needle: &str,
-    limit: usize,
-    prefix_hits: &mut Vec<String>,
-    substring_hits: &mut Vec<String>,
-    seen: &mut HashSet<PathBuf>,
+    ctx: &mut SearchContext<'_>,
     max_depth: Option<usize>,
+    follow_links: bool,
 ) {
-    if !should_try_local_reference_completion(needle) {
+    if !should_try_local_reference_completion(ctx.needle) {
         return;
     }
 
-    for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT, max_depth) {
-        if prefix_hits.len() + substring_hits.len() >= limit {
+    for path in local_reference_paths(root, LOCAL_REFERENCE_SCAN_LIMIT, max_depth, follow_links) {
+        if ctx.is_full() {
             break;
         }
         let Ok(rel) = path.strip_prefix(display_root) else {
             continue;
         };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if rel_str.is_empty() || !seen.insert(path.clone()) {
+        if rel_str.is_empty() || !ctx.remember(path.clone()) {
             continue;
         }
-        let lower = rel_str.to_lowercase();
-        if needle.is_empty() || lower.starts_with(needle) {
-            prefix_hits.push(rel_str);
-        } else if lower.contains(needle) {
-            substring_hits.push(rel_str);
-        }
+        ctx.push_match(rel_str);
     }
 }
 
@@ -575,12 +586,17 @@ fn should_try_local_reference_completion(needle: &str) -> bool {
     needle.starts_with('.') || needle.contains('/') || needle.contains('\\')
 }
 
-fn local_reference_paths(root: &Path, limit: usize, max_depth: Option<usize>) -> Vec<PathBuf> {
+fn local_reference_paths(
+    root: &Path,
+    limit: usize,
+    max_depth: Option<usize>,
+    follow_links: bool,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut builder = WalkBuilder::new(root);
     builder
         .hidden(false)
-        .follow_links(false)
+        .follow_links(follow_links)
         .git_ignore(false)
         .git_global(false)
         .git_exclude(false);
@@ -620,6 +636,7 @@ impl Clone for Workspace {
             cwd: self.cwd.clone(),
             file_index: OnceLock::new(),
             completion_walk_depth: self.completion_walk_depth,
+            follow_links: self.follow_links,
         }
     }
 }
@@ -638,6 +655,20 @@ fn expand_mention_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Truncate `s` to at most `max_bytes`, snapping down to a UTF-8 char
+/// boundary so the result is always valid. Returns the slice and whether any
+/// truncation happened.
+fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> (&str, bool) {
+    if s.len() <= max_bytes {
+        return (s, false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&s[..end], true)
+}
+
 /// Configuration for working-set tracking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkingSetConfig {
@@ -649,6 +680,29 @@ pub struct WorkingSetConfig {
     pub max_scan_chars: usize,
     /// Maximum entries to show in the system prompt block.
     pub max_prompt_entries: usize,
+    /// Cache-maximal context mode (#528): when enabled, the working-set block
+    /// materializes the full current contents of the top active files into the
+    /// system prompt (deterministic order, size-bounded) instead of only a
+    /// path list. The contents stay byte-stable while the files are unchanged,
+    /// so DeepSeek's KV prefix cache keeps hitting; editing a file cache-misses
+    /// from that file's block onward. Off by default — existing behavior is the
+    /// path list only.
+    #[serde(default)]
+    pub cache_maximal: bool,
+    /// Per-file byte cap for materialized contents in cache-maximal mode.
+    #[serde(default = "default_max_resident_file_bytes")]
+    pub max_resident_file_bytes: usize,
+    /// Total byte cap across all materialized files in cache-maximal mode.
+    #[serde(default = "default_max_total_resident_bytes")]
+    pub max_total_resident_bytes: usize,
+}
+
+fn default_max_resident_file_bytes() -> usize {
+    24_000
+}
+
+fn default_max_total_resident_bytes() -> usize {
+    96_000
 }
 
 impl Default for WorkingSetConfig {
@@ -658,6 +712,9 @@ impl Default for WorkingSetConfig {
             max_pinned_paths: 8,
             max_scan_chars: 2_000,
             max_prompt_entries: 8,
+            cache_maximal: false,
+            max_resident_file_bytes: default_max_resident_file_bytes(),
+            max_total_resident_bytes: default_max_total_resident_bytes(),
         }
     }
 }
@@ -793,7 +850,7 @@ impl WorkingSet {
 
         if !prompt_entries.is_empty() {
             lines.push("Active paths (prioritize these):".to_string());
-            for entry in prompt_entries {
+            for entry in &prompt_entries {
                 let kind = if entry.is_dir { "dir" } else { "file" };
                 lines.push(format!("- {} ({kind})", entry.path));
             }
@@ -804,7 +861,103 @@ impl WorkingSet {
                 .to_string(),
         );
 
+        // Cache-maximal mode (#528): append the full current contents of the
+        // top active files so the model reads live source each turn instead of
+        // re-fetching it with tools. Kept after the path list and bounded by
+        // per-file and total byte caps; order follows `sorted_for_prompt` so
+        // the block is byte-stable while the files are unchanged.
+        if self.cache_maximal_enabled() && !prompt_entries.is_empty() {
+            self.append_resident_file_contents(&mut lines, workspace, &prompt_entries);
+        }
+
         Some(lines.join("\n"))
+    }
+
+    /// Whether cache-maximal context mode is active: explicit config, or the
+    /// `DEEPSEEK_CACHE_MAXIMAL` env toggle (`1`/`true`/`on`/`yes`). The env
+    /// value is constant for the process, so the rendered block stays
+    /// byte-stable turn-over-turn.
+    fn cache_maximal_enabled(&self) -> bool {
+        if self.config.cache_maximal {
+            return true;
+        }
+        match std::env::var("DEEPSEEK_CACHE_MAXIMAL") {
+            Ok(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes"
+            ),
+            Err(_) => false,
+        }
+    }
+
+    /// Render `### Active file contents` blocks for the resident files, honoring
+    /// the per-file and total byte caps. Unreadable or non-UTF-8 files are noted
+    /// rather than skipped silently so the omission is visible to the model.
+    fn append_resident_file_contents(
+        &self,
+        lines: &mut Vec<String>,
+        workspace: &Path,
+        prompt_entries: &[&WorkingSetEntry],
+    ) {
+        let mut header_pushed = false;
+        let mut total_bytes: usize = 0;
+        let mut omitted: usize = 0;
+
+        for entry in prompt_entries {
+            if entry.is_dir || !entry.exists {
+                continue;
+            }
+            if total_bytes >= self.config.max_total_resident_bytes {
+                omitted += 1;
+                continue;
+            }
+
+            let abs = workspace.join(&entry.path);
+            let body = match std::fs::read_to_string(&abs) {
+                Ok(text) => text,
+                Err(_) => {
+                    if !header_pushed {
+                        lines.push("### Active file contents (cache-resident)".to_string());
+                        header_pushed = true;
+                    }
+                    lines.push(format!(
+                        "<!-- file: {} (unreadable, skipped) -->",
+                        entry.path
+                    ));
+                    continue;
+                }
+            };
+
+            if !header_pushed {
+                lines.push("### Active file contents (cache-resident)".to_string());
+                header_pushed = true;
+            }
+
+            let remaining_total = self
+                .config
+                .max_total_resident_bytes
+                .saturating_sub(total_bytes);
+            let cap = self.config.max_resident_file_bytes.min(remaining_total);
+            let (shown, truncated) = truncate_on_char_boundary(&body, cap);
+            total_bytes += shown.len();
+
+            lines.push(format!("<!-- file: {} -->", entry.path));
+            lines.push("```".to_string());
+            lines.push(shown.to_string());
+            if truncated {
+                lines.push(format!(
+                    "<!-- ...{} more bytes truncated for prompt budget -->",
+                    body.len().saturating_sub(shown.len())
+                ));
+            }
+            lines.push("```".to_string());
+        }
+
+        if omitted > 0 {
+            lines.push(format!(
+                "<!-- {omitted} additional active file(s) omitted from the cache-resident budget -->"
+            ));
+        }
     }
 
     /// Return the most relevant paths in score order.
@@ -1440,6 +1593,146 @@ mod tests {
 
         assert_ne!(before, after, "new path must update the rendered summary");
         assert!(after.contains("src/c.rs"));
+    }
+
+    // ── Cache-maximal context mode (#528) ──
+    // Tests drive the flag through `config.cache_maximal` directly so they
+    // don't touch the process-wide `DEEPSEEK_CACHE_MAXIMAL` env var (which
+    // would race with parallel tests).
+
+    fn cache_maximal_ws() -> WorkingSet {
+        let mut ws = WorkingSet::default();
+        ws.config.cache_maximal = true;
+        ws
+    }
+
+    #[test]
+    fn cache_maximal_off_keeps_path_list_only() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("lib.rs"), "pub fn hello() {}").expect("write");
+
+        let mut ws = WorkingSet::default(); // cache_maximal defaults to false
+        ws.observe_user_message("src/lib.rs", tmp.path());
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(block.contains("src/lib.rs"), "path list still present");
+        assert!(
+            !block.contains("Active file contents"),
+            "no materialized contents when the flag is off"
+        );
+        assert!(!block.contains("pub fn hello"));
+    }
+
+    #[test]
+    fn cache_maximal_on_materializes_file_contents() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("lib.rs"), "pub fn hello() {}").expect("write");
+
+        let mut ws = cache_maximal_ws();
+        ws.observe_user_message("src/lib.rs", tmp.path());
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(block.contains("Active file contents (cache-resident)"));
+        assert!(block.contains("<!-- file: src/lib.rs -->"));
+        assert!(block.contains("pub fn hello() {}"));
+    }
+
+    #[test]
+    fn cache_maximal_directories_are_not_materialized() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+
+        let mut ws = cache_maximal_ws();
+        ws.observe_user_message("look in src/", tmp.path());
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        // `src` is a dir; it appears in the path list but has no content block.
+        assert!(!block.contains("<!-- file: src -->"));
+    }
+
+    #[test]
+    fn cache_maximal_respects_per_file_byte_cap() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        let big = "x".repeat(10_000);
+        fs::write(src.join("big.rs"), &big).expect("write");
+
+        let mut ws = cache_maximal_ws();
+        ws.config.max_resident_file_bytes = 100;
+        ws.config.max_total_resident_bytes = 10_000;
+        ws.observe_user_message("src/big.rs", tmp.path());
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(block.contains("truncated for prompt budget"));
+        // The full 10k body must not be inlined.
+        assert!(!block.contains(&big));
+    }
+
+    #[test]
+    fn cache_maximal_total_cap_omits_extra_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("a.rs"), &"a".repeat(200)).expect("write");
+        fs::write(src.join("b.rs"), &"b".repeat(200)).expect("write");
+
+        let mut ws = cache_maximal_ws();
+        ws.config.max_resident_file_bytes = 200;
+        ws.config.max_total_resident_bytes = 200; // only one file fits
+        ws.observe_user_message("Edit src/a.rs and src/b.rs", tmp.path());
+        let block = ws.summary_block(tmp.path()).expect("block");
+
+        assert!(
+            block.contains("omitted from the cache-resident budget"),
+            "second file should be reported as omitted:\n{block}"
+        );
+    }
+
+    #[test]
+    fn cache_maximal_is_byte_stable_when_files_unchanged() {
+        use crate::test_support::assert_byte_identical;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        fs::write(src.join("a.rs"), "fn a() {}").expect("write");
+
+        let mut ws = cache_maximal_ws();
+        ws.observe_user_message("src/a.rs", tmp.path());
+        let before = ws.summary_block(tmp.path()).expect("before");
+        ws.next_turn();
+        let after = ws.summary_block(tmp.path()).expect("after");
+
+        assert_byte_identical(
+            "cache-maximal block must be stable while files are unchanged (KV cache hit)",
+            &before,
+            &after,
+        );
+    }
+
+    #[test]
+    fn cache_maximal_changes_when_file_edited() {
+        let tmp = TempDir::new().expect("tempdir");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("mkdir");
+        let file = src.join("a.rs");
+        fs::write(&file, "fn a() {}").expect("write");
+
+        let mut ws = cache_maximal_ws();
+        ws.observe_user_message("src/a.rs", tmp.path());
+        let before = ws.summary_block(tmp.path()).expect("before");
+
+        fs::write(&file, "fn a() { todo!() }").expect("rewrite");
+        let after = ws.summary_block(tmp.path()).expect("after");
+
+        assert_ne!(before, after, "editing the file must change the block");
+        assert!(after.contains("todo!()"));
     }
 
     #[test]

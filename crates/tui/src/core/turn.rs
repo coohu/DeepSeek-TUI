@@ -34,8 +34,8 @@ pub struct TurnContext {
     /// Maximum steps allowed
     pub max_steps: u32,
 
-    /// Tool calls made in this turn
-    pub tool_calls: Vec<TurnToolCall>,
+    /// Number of tool calls made in this turn.
+    tool_call_count: usize,
 
     /// Whether the turn has been cancelled
     #[allow(dead_code)]
@@ -43,17 +43,6 @@ pub struct TurnContext {
 
     /// Usage for this turn
     pub usage: Usage,
-}
-
-/// Record of a tool call within a turn.
-#[derive(Debug, Clone)]
-pub struct TurnToolCall {
-    pub id: String,
-    pub name: String,
-    pub input: serde_json::Value,
-    pub result: Option<String>,
-    pub error: Option<String>,
-    pub duration: Option<Duration>,
 }
 
 impl TurnContext {
@@ -64,7 +53,7 @@ impl TurnContext {
             started_at: Instant::now(),
             step: 0,
             max_steps,
-            tool_calls: Vec::new(),
+            tool_call_count: 0,
             cancelled: false,
             usage: Usage {
                 input_tokens: 0,
@@ -85,9 +74,14 @@ impl TurnContext {
         self.step >= self.max_steps
     }
 
-    /// Record a tool call
-    pub fn record_tool_call(&mut self, call: TurnToolCall) {
-        self.tool_calls.push(call);
+    /// Record that a tool call occurred.
+    pub fn record_tool_call(&mut self) {
+        self.tool_call_count += 1;
+    }
+
+    /// Whether this turn has executed at least one tool call.
+    pub fn has_tool_calls(&self) -> bool {
+        self.tool_call_count > 0
     }
 
     /// Cancel the turn
@@ -225,31 +219,5 @@ fn snapshot_with_label(workspace: &Path, label: &str, cap_bytes: u64) -> Option<
             tracing::warn!(target: "snapshot", "snapshot repo init failed: {e}");
             None
         }
-    }
-}
-
-impl TurnToolCall {
-    /// Create a new tool call record
-    pub fn new(id: String, name: String, input: serde_json::Value) -> Self {
-        Self {
-            id,
-            name,
-            input,
-            result: None,
-            error: None,
-            duration: None,
-        }
-    }
-
-    /// Set the result
-    pub fn set_result(&mut self, result: String, duration: Duration) {
-        self.result = Some(result);
-        self.duration = Some(duration);
-    }
-
-    /// Set an error
-    pub fn set_error(&mut self, error: String, duration: Duration) {
-        self.error = Some(error);
-        self.duration = Some(duration);
     }
 }

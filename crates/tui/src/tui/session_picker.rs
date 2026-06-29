@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -27,7 +27,7 @@ fn modal_block(title: &str) -> Block<'static> {
         .title(Line::from(vec![Span::styled(
             title.to_string(),
             Style::default()
-                .fg(palette::DEEPSEEK_BLUE)
+                .fg(palette::WHALE_ACCENT_PRIMARY)
                 .add_modifier(Modifier::BOLD),
         )]))
         .borders(Borders::ALL)
@@ -401,6 +401,15 @@ impl ModalView for SessionPickerView {
         self
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> ViewAction {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.move_selection(-1),
+            MouseEventKind::ScrollDown => self.move_selection(1),
+            _ => {}
+        }
+        ViewAction::None
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         if self.search_mode {
             match key.code {
@@ -668,7 +677,7 @@ fn build_list_lines(
         let style = if idx == selected {
             Style::default()
                 .fg(palette::SELECTION_TEXT)
-                .bg(palette::DEEPSEEK_BLUE)
+                .bg(palette::SELECTION_BG)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(palette::TEXT_PRIMARY)
@@ -705,11 +714,11 @@ fn format_session_line(session: &SessionMetadata) -> String {
         .as_deref()
         .unwrap_or("unknown")
         .to_ascii_lowercase();
-    let fork_label = session
-        .parent_session_id
-        .as_deref()
-        .map(|parent| format!(" | fork {}", crate::session_manager::truncate_id(parent)))
-        .unwrap_or_default();
+    let fork_label = if session.parent_session_id.is_some() {
+        " | fork"
+    } else {
+        ""
+    };
     format!(
         "{} | {} | {} msgs{} | {} | {}",
         crate::session_manager::truncate_id(&session.id),
@@ -1013,6 +1022,28 @@ mod tests {
         view
     }
 
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.x.saturating_add(area.width))
+            .map(|x| buf[(x, y)].symbol())
+            .collect()
+    }
+
+    fn row_containing(buf: &Buffer, area: Rect, needle: &str) -> Option<u16> {
+        (area.y..area.y.saturating_add(area.height))
+            .find(|&y| buffer_row_text(buf, area, y).contains(needle))
+    }
+
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        let mut out = String::new();
+        for y in area.y..area.y.saturating_add(area.height) {
+            for x in area.x..area.x.saturating_add(area.width) {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     #[test]
     fn workspace_scope_filters_sessions_to_current_project() {
         // #1395 reproduction: Ctrl+R in project B must not surface sessions
@@ -1086,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn build_list_lines_selected_row_uses_strong_highlight() {
+    fn build_list_lines_selected_row_uses_muted_selection_highlight() {
         let sessions = vec![
             test_session(1, "first session"),
             test_session(2, "second session"),
@@ -1109,8 +1140,121 @@ mod tests {
             .expect("selected row should have a span");
 
         assert_eq!(span.style.fg, Some(palette::SELECTION_TEXT));
-        assert_eq!(span.style.bg, Some(palette::DEEPSEEK_BLUE));
+        assert_eq!(span.style.bg, Some(palette::SELECTION_BG));
+        assert_ne!(span.style.bg, Some(palette::WHALE_ACCENT_PRIMARY));
         assert!(span.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn session_picker_selected_row_renders_readable_selection_contrast() {
+        let mut first = test_session(1, "first contrast fixture");
+        first.id = "alpha-contrast-fixture".to_string();
+        let mut second = test_session(2, "second contrast fixture");
+        second.id = "bravo-contrast-fixture".to_string();
+        let sessions = vec![first, second];
+        let mut view = picker_with(sessions, None);
+        view.selected = 1;
+        view.ensure_selected_visible();
+        view.current_preview = vec!["preview".to_string()];
+        let selected_id = crate::session_manager::truncate_id(&view.filtered[view.selected].id);
+        let area = Rect::new(0, 0, 120, 28);
+        let mut buf = Buffer::empty(area);
+
+        view.render(area, &mut buf);
+
+        let y =
+            row_containing(&buf, area, selected_id).expect("selected session row should render");
+        let rendered_row = buffer_row_text(&buf, area, y);
+        let highlighted_cells = (area.x..area.x.saturating_add(area.width))
+            .filter(|&x| {
+                let cell = &buf[(x, y)];
+                !cell.symbol().trim().is_empty()
+                    && cell.bg == palette::SELECTION_BG
+                    && cell.fg == palette::SELECTION_TEXT
+            })
+            .count();
+
+        assert!(
+            highlighted_cells >= 4,
+            "selected /sessions row should use readable selection text; got {highlighted_cells} highlighted cells on {rendered_row:?}"
+        );
+        assert!(
+            !(area.x..area.x.saturating_add(area.width))
+                .any(|x| buf[(x, y)].bg == palette::WHALE_ACCENT_PRIMARY),
+            "selected /sessions row should not use the bright accent background"
+        );
+    }
+
+    #[test]
+    fn session_picker_visual_matrix_covers_narrow_and_medium_rendering() {
+        let base_time = DateTime::parse_from_rfc3339("2026-06-25T10:30:00Z")
+            .expect("visual matrix timestamp")
+            .with_timezone(&Utc);
+        let sessions = (0..12)
+            .map(|idx| {
+                let title = if idx == 6 {
+                    "selected visual matrix target with 中文内容 and suffix that must truncate"
+                } else {
+                    "A very long terminal visual regression session title with 中文内容 and suffix that must truncate"
+                };
+                let mut session = test_session(idx, title);
+                session.id = format!("visual-matrix-{idx:02}");
+                session.created_at = base_time - chrono::Duration::seconds(idx as i64);
+                session.updated_at = session.created_at;
+                session
+            })
+            .collect::<Vec<_>>();
+        let mut view = picker_with(sessions, None);
+        view.selected = view
+            .filtered
+            .iter()
+            .position(|session| session.id == "visual-matrix-06")
+            .expect("visual matrix target session should be filtered");
+        view.ensure_selected_visible();
+        view.current_preview = vec![
+            "Title: terminal visual matrix".to_string(),
+            "Updated: 2026-06-25 10:30".to_string(),
+            "Messages: 3 | Model: deepseek-v4-pro".to_string(),
+            String::new(),
+            "USER: narrow panes should keep long CJK text readable 中文中文中文".to_string(),
+            "ASSISTANT: overlays should keep borders and truncate rows predictably".to_string(),
+        ];
+
+        for (width, height, label) in [(72, 20, "narrow"), (120, 28, "medium")] {
+            let area = Rect::new(0, 0, width, height);
+            let mut buf = Buffer::empty(area);
+
+            view.render(area, &mut buf);
+
+            let dump = buffer_text(&buf, area);
+            assert!(
+                dump.contains("Sessions"),
+                "{label} sessions pane missing:\n{dump}"
+            );
+            assert!(
+                dump.contains("History"),
+                "{label} history pane missing:\n{dump}"
+            );
+            assert!(dump.contains('┌'), "{label} top border missing:\n{dump}");
+            assert!(dump.contains('┘'), "{label} bottom border missing:\n{dump}");
+            assert!(
+                !dump.contains("suffix that must truncate"),
+                "{label} long title tail leaked instead of truncating:\n{dump}"
+            );
+            assert!(
+                dump.contains("..."),
+                "{label} should show an explicit ellipsis for truncated rows:\n{dump}"
+            );
+            assert!(
+                !dump.contains('\u{fffd}'),
+                "{label} render emitted replacement characters:\n{dump}"
+            );
+
+            assert!(
+                row_containing(&buf, area, "selected visual").is_some(),
+                "{label} selected session row missing:\n{dump}"
+            );
+        }
     }
 
     #[test]
@@ -1172,7 +1316,8 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("fork parent"));
+        assert!(rendered.contains("fork"));
+        assert!(!rendered.contains("parent-session-abcdef"));
     }
 
     #[test]

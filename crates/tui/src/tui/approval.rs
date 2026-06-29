@@ -14,9 +14,10 @@
 //! - **Benign** (`RiskLevel::Benign`) — read-only ops, MCP discovery,
 //!   query-only network. A single `Enter` / `1` / `y` approves once;
 //!   `2` / `a` approves for the session.
-//! - **Destructive** (`RiskLevel::Destructive`) — file writes, shell,
-//!   patches, MCP actions, unclassified tools, and any "fetch arbitrary
-//!   content" surface. The takeover keeps the destructive badge and
+//! - **Destructive** (`RiskLevel::Destructive`) — file writes, shell
+//!   commands that are not proven read-only, patches, MCP actions,
+//!   unclassified tools, and any "fetch arbitrary content" surface.
+//!   The takeover keeps the destructive badge and
 //!   impact summary visible, then lets `Enter` commit the highlighted
 //!   option or `y` / `a` / `d` commit directly.
 //!
@@ -26,11 +27,13 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
+use crate::command_safety::is_parallel_readonly_command;
 use crate::localization::Locale;
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
 use crossterm::event::{KeyCode, KeyEvent};
+use deepseek_config::ToolAskRule;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -38,8 +41,10 @@ use std::time::{Duration, Instant};
 /// Determines when tool executions require user approval
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalMode {
-    /// Auto-approve all tools (YOLO mode / --yolo flag)
+    /// Automatically review risky tool calls before deciding whether to ask.
     Auto,
+    /// Bypass approvals entirely (YOLO mode / --yolo flag).
+    Bypass,
     /// Suggest approval for non-safe tools (non-YOLO modes)
     #[default]
     Suggest,
@@ -51,6 +56,7 @@ impl ApprovalMode {
     pub fn label(self) -> &'static str {
         match self {
             ApprovalMode::Auto => "AUTO",
+            ApprovalMode::Bypass => "BYPASS",
             ApprovalMode::Suggest => "SUGGEST",
             ApprovalMode::Never => "NEVER",
         }
@@ -59,6 +65,8 @@ impl ApprovalMode {
     pub fn from_config_value(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "auto" => Some(ApprovalMode::Auto),
+            "bypass" | "yolo" | "dontask" | "dont_ask" | "bypass-permissions"
+            | "bypasspermissions" => Some(ApprovalMode::Bypass),
             "suggest" | "suggested" | "on-request" | "untrusted" => Some(ApprovalMode::Suggest),
             "never" | "deny" | "denied" => Some(ApprovalMode::Never),
             _ => None,
@@ -138,6 +146,8 @@ pub struct ApprovalRequest {
     /// Displayed in the approval view so users understand *why* the change
     /// is being made before reviewing *what* will change.
     pub intent_summary: Option<String>,
+    /// Ask-only persistent rules that can be saved with the approval.
+    pub persistent_ask_rules: Vec<ToolAskRule>,
 }
 
 /// Key approval details rendered prominently in the approval card.
@@ -150,6 +160,30 @@ pub struct ApprovalDetail {
     pub shell_lines: Option<Vec<String>>,
 }
 
+/// Human-readable preview of ask-only rules the `S` approval shortcut would
+/// append. This is intentionally derived from `persistent_ask_rules` only; the
+/// approval UI must not re-parse tool inputs such as patches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskRuleSavePreview {
+    pub rule_count: usize,
+    pub entries: Vec<String>,
+    pub omitted: usize,
+}
+
+impl AskRuleSavePreview {
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let noun = if self.rule_count == 1 {
+            "rule"
+        } else {
+            "rules"
+        };
+        format!("{} ask {noun}", self.rule_count)
+    }
+}
+
+const ASK_RULE_SAVE_PREVIEW_MAX_ENTRIES: usize = 4;
+
 impl ApprovalRequest {
     #[cfg(test)]
     pub fn new(
@@ -159,7 +193,15 @@ impl ApprovalRequest {
         params: &Value,
         approval_key: &str,
     ) -> Self {
-        Self::new_with_intent(id, tool_name, description, params, approval_key, None)
+        Self::new_with_intent(
+            id,
+            tool_name,
+            description,
+            params,
+            approval_key,
+            None,
+            Path::new("/workspace"),
+        )
     }
 
     pub fn new_with_intent(
@@ -169,6 +211,7 @@ impl ApprovalRequest {
         params: &Value,
         approval_key: &str,
         intent_summary: Option<&str>,
+        workspace: &Path,
     ) -> Self {
         let category = get_tool_category(tool_name);
         let risk = classify_risk(tool_name, category, params);
@@ -193,6 +236,7 @@ impl ApprovalRequest {
                     Some(summary.to_string())
                 }
             }),
+            persistent_ask_rules: build_persistent_ask_rules(tool_name, params, workspace),
         }
     }
 
@@ -205,6 +249,9 @@ impl ApprovalRequest {
     pub fn description_for_locale(&self, locale: Locale) -> String {
         match locale {
             Locale::ZhHans => localized_description_zh_hans(self.category),
+            _ if self.category == ToolCategory::Shell => {
+                "Review the Bash command before it runs.".to_string()
+            }
             _ => self.description.clone(),
         }
     }
@@ -218,24 +265,193 @@ impl ApprovalRequest {
         }
     }
 
+    #[must_use]
+    pub fn can_save_ask_rule(&self) -> bool {
+        !self.persistent_ask_rules.is_empty()
+    }
+
+    #[must_use]
+    pub fn ask_rule_save_preview(&self) -> Option<AskRuleSavePreview> {
+        build_ask_rule_save_preview(
+            &self.persistent_ask_rules,
+            ASK_RULE_SAVE_PREVIEW_MAX_ENTRIES,
+        )
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub fn ask_rule_preview(&self) -> Option<String> {
+        if self.persistent_ask_rules.is_empty() {
+            return None;
+        }
+        let permissions = deepseek_config::PermissionsToml {
+            rules: self.persistent_ask_rules.clone(),
+        };
+        toml::to_string_pretty(&permissions).ok()
+    }
+
     /// Extract the most important params for the approval card.
     #[must_use]
     pub fn prominent_detail_items(&self, locale: Locale) -> Vec<ApprovalDetail> {
-        build_prominent_details(self.category, &self.params)
+        build_prominent_details(&self.tool_name, self.category, &self.params)
             .into_iter()
             .map(|mut detail| {
+                let is_preview = detail.label == "Preview";
                 detail.label = localize_detail_label(&detail.label, locale).to_string();
+                if is_preview {
+                    if let Some(lines) = detail.shell_lines.as_mut() {
+                        for line in lines.iter_mut() {
+                            *line = localize_preview_shell_line(&self.tool_name, line, locale)
+                                .to_string();
+                        }
+                        detail.value = lines.join("\n");
+                    }
+                }
                 detail
             })
             .collect()
     }
 }
 
+#[must_use]
+fn build_ask_rule_save_preview(
+    rules: &[ToolAskRule],
+    max_entries: usize,
+) -> Option<AskRuleSavePreview> {
+    if rules.is_empty() {
+        return None;
+    }
+
+    let entries = rules
+        .iter()
+        .take(max_entries)
+        .map(format_ask_rule_save_entry)
+        .collect();
+    Some(AskRuleSavePreview {
+        rule_count: rules.len(),
+        entries,
+        omitted: rules.len().saturating_sub(max_entries),
+    })
+}
+
+#[must_use]
+fn format_ask_rule_save_entry(rule: &ToolAskRule) -> String {
+    let mut parts = vec![format!(
+        "tool={}",
+        sanitize_ask_rule_preview_value(&rule.tool)
+    )];
+    if let Some(command) = &rule.command {
+        parts.push(format!(
+            "command={}",
+            sanitize_ask_rule_preview_value(command)
+        ));
+    }
+    if let Some(path) = &rule.path {
+        parts.push(format!("path={}", sanitize_ask_rule_preview_value(path)));
+    }
+    parts.join(" ")
+}
+
+#[must_use]
+fn sanitize_ask_rule_preview_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+}
+
+#[must_use]
+fn build_persistent_ask_rules(
+    tool_name: &str,
+    params: &Value,
+    workspace: &Path,
+) -> Vec<ToolAskRule> {
+    match tool_name {
+        "exec_shell" => build_exec_shell_ask_rules(params),
+        // File writes save an exact, workspace-relative path so a later
+        // edit/write of the same file is matched. read_file stays out: this
+        // boundary is about persisting *write* approvals only.
+        "write_file" | "edit_file" => build_file_write_ask_rules(tool_name, params, workspace),
+        "apply_patch" => build_apply_patch_ask_rules(params, workspace),
+        _ => Vec::new(),
+    }
+}
+
+#[must_use]
+fn build_exec_shell_ask_rules(params: &Value) -> Vec<ToolAskRule> {
+    let Some(command) = params
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+    else {
+        return Vec::new();
+    };
+    vec![ToolAskRule::exec_shell(command)]
+}
+
+#[must_use]
+fn build_file_write_ask_rules(
+    tool_name: &str,
+    params: &Value,
+    workspace: &Path,
+) -> Vec<ToolAskRule> {
+    let Some(path) = params
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    else {
+        return Vec::new();
+    };
+    // Reuse the canonical matcher normalization so the saved rule equals what
+    // runtime matching compares against. `None` (and the degenerate
+    // workspace-root case) means the path is empty, traversing, drive-relative,
+    // or outside the workspace, so we save nothing and the `S` shortcut and
+    // preview stay disabled.
+    let workspace = workspace.to_string_lossy();
+    let Some(relative) =
+        deepseek_execpolicy::normalize_workspace_relative_path(path, workspace.as_ref())
+            .filter(|relative| !relative.is_empty())
+    else {
+        return Vec::new();
+    };
+    vec![ToolAskRule::file_path(tool_name, relative)]
+}
+
+#[must_use]
+fn build_apply_patch_ask_rules(params: &Value, workspace: &Path) -> Vec<ToolAskRule> {
+    let Ok(preflight) = crate::tools::apply_patch::preflight_apply_patch(params) else {
+        return Vec::new();
+    };
+    let workspace = workspace.to_string_lossy();
+    let mut rules = Vec::new();
+
+    for path in preflight.touched_files {
+        let Some(relative) =
+            deepseek_execpolicy::normalize_workspace_relative_path(&path, workspace.as_ref())
+                .filter(|relative| !relative.is_empty())
+        else {
+            return Vec::new();
+        };
+        let rule = ToolAskRule::file_path("apply_patch", relative);
+        if !rules.contains(&rule) {
+            rules.push(rule);
+        }
+    }
+
+    rules
+}
+
 /// Get the category for a tool by name
 pub fn get_tool_category(name: &str) -> ToolCategory {
     if matches!(name, "write_file" | "edit_file" | "apply_patch") {
         ToolCategory::FileWrite
-    } else if matches!(name, "web_run" | "web_search" | "fetch_url") {
+    } else if matches!(
+        name,
+        "web_run" | "web_search" | "fetch_url" | "wait_for_dev_server"
+    ) {
         ToolCategory::Network
     } else if matches!(
         name,
@@ -292,15 +508,16 @@ pub fn classify_risk(tool_name: &str, category: ToolCategory, params: &Value) ->
         // Query-only network is benign; opening a URL pulls arbitrary
         // remote content, so it stays destructive.
         ToolCategory::Network => match tool_name {
-            "web_search" | "web_run" => RiskLevel::Benign,
+            "web_search" | "web_run" | "wait_for_dev_server" => RiskLevel::Benign,
             _ => RiskLevel::Destructive,
         },
-        // Shell is always destructive. We probe command_safety for
-        // shape so a future routing tweak (say, pure-readonly `ls`
-        // staying benign) lands here without a second pass.
+        // Shell stays destructive unless the existing command-safety analyzer
+        // can prove the concrete command is read-only.
         ToolCategory::Shell => {
             if let Some(cmd) = params.get("command").and_then(Value::as_str) {
-                let _ = crate::command_safety::analyze_command(cmd);
+                if is_parallel_readonly_command(cmd) {
+                    return RiskLevel::Benign;
+                }
             }
             RiskLevel::Destructive
         }
@@ -371,14 +588,7 @@ fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value)
             impacts
         }
         ToolCategory::Shell => {
-            let mut impacts = vec!["Executes a shell command.".to_string()];
-            if let Some(command) = param_preview(params, &["cmd", "command"], 96) {
-                impacts.push(format!("Command: {command}"));
-            }
-            if let Some(workdir) = param_preview(params, &["workdir", "cwd"], 72) {
-                impacts.push(format!("Working dir: {workdir}"));
-            }
-            impacts
+            vec!["Executes a Bash command in your workspace.".to_string()]
         }
         ToolCategory::Network => {
             let mut impacts = vec!["May reach network services or remote content.".to_string()];
@@ -454,14 +664,7 @@ fn build_impact_summary_zh_hans(
             impacts
         }
         ToolCategory::Shell => {
-            let mut impacts = vec!["执行 shell 命令。".to_string()];
-            if let Some(command) = param_preview(params, &["cmd", "command"], 96) {
-                impacts.push(format!("命令：{command}"));
-            }
-            if let Some(workdir) = param_preview(params, &["workdir", "cwd"], 72) {
-                impacts.push(format!("工作目录：{workdir}"));
-            }
-            impacts
+            vec!["在工作区执行 Bash 命令。".to_string()]
         }
         ToolCategory::Network => {
             let mut impacts = vec!["可能访问网络服务或远程内容。".to_string()];
@@ -500,7 +703,11 @@ fn build_impact_summary_zh_hans(
     }
 }
 
-fn build_prominent_details(category: ToolCategory, params: &Value) -> Vec<ApprovalDetail> {
+fn build_prominent_details(
+    tool_name: &str,
+    category: ToolCategory,
+    params: &Value,
+) -> Vec<ApprovalDetail> {
     let mut details = Vec::new();
     match category {
         ToolCategory::Shell => {
@@ -525,6 +732,13 @@ fn build_prominent_details(category: ToolCategory, params: &Value) -> Vec<Approv
                     label: "File".to_string(),
                     value: path,
                     shell_lines: None,
+                });
+            }
+            if let Some(preview_lines) = file_write_preview_lines(tool_name, params) {
+                details.push(ApprovalDetail {
+                    label: "Preview".to_string(),
+                    value: preview_lines.join("\n"),
+                    shell_lines: Some(preview_lines),
                 });
             }
         }
@@ -565,6 +779,165 @@ fn build_prominent_details(category: ToolCategory, params: &Value) -> Vec<Approv
     details
 }
 
+fn file_write_preview_lines(tool_name: &str, params: &Value) -> Option<Vec<String>> {
+    match tool_name {
+        "write_file" => {
+            let content = param_text(params, &["content"])?;
+            Some(prefixed_preview_lines(
+                "proposed content",
+                "+ ",
+                &content,
+                5,
+            ))
+        }
+        "edit_file" => {
+            let search = param_text(params, &["search"])?;
+            let replace = param_text(params, &["replace"])?;
+            let mut lines = Vec::new();
+            lines.extend(prefixed_preview_lines("replace this", "- ", &search, 3));
+            lines.extend(prefixed_preview_lines("with this", "+ ", &replace, 3));
+            Some(lines)
+        }
+        "apply_patch" => params
+            .get("patch")
+            .and_then(Value::as_str)
+            .and_then(apply_patch_preview_lines)
+            .or_else(|| {
+                params
+                    .get("changes")
+                    .and_then(Value::as_array)
+                    .and_then(|changes| changes_preview_lines(changes))
+            }),
+        _ => None,
+    }
+    .filter(|lines| !lines.is_empty())
+}
+
+fn prefixed_preview_lines(
+    header: &str,
+    prefix: &str,
+    content: &str,
+    max_lines: usize,
+) -> Vec<String> {
+    let mut lines = vec![header.to_string()];
+    if content.is_empty() {
+        lines.push(format!("{prefix}<empty>"));
+        return lines;
+    }
+
+    let total = content.lines().count();
+    for line in content.lines().take(max_lines) {
+        lines.push(format!("{prefix}{line}"));
+    }
+    if total > max_lines {
+        lines.push(format!("... (+{} more lines)", total - max_lines));
+    }
+    lines
+}
+
+fn push_preview_line(lines: &mut Vec<String>, line: impl Into<String>, limit: usize) -> bool {
+    if lines.len() >= limit {
+        return false;
+    }
+    lines.push(line.into());
+    true
+}
+
+fn append_preview_truncation(lines: &mut Vec<String>, line: String, limit: usize) {
+    if push_preview_line(lines, line.clone(), limit) {
+        return;
+    }
+    if let Some(last) = lines.last_mut() {
+        *last = line;
+    }
+}
+
+fn apply_patch_preview_lines(patch: &str) -> Option<Vec<String>> {
+    const PREVIEW_LIMIT: usize = 7;
+
+    let mut lines = Vec::new();
+    let mut omitted = 0usize;
+    for line in patch.lines().filter(|line| !line.trim().is_empty()) {
+        let is_diff_header = line.starts_with("diff --git ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("@@");
+        let is_change_line = (line.starts_with('+') && !line.starts_with("+++"))
+            || (line.starts_with('-') && !line.starts_with("---"));
+        if is_diff_header || is_change_line {
+            if !push_preview_line(&mut lines, line, PREVIEW_LIMIT) {
+                omitted += 1;
+            }
+        } else {
+            omitted += 1;
+        }
+    }
+
+    if lines.is_empty() {
+        omitted = 0;
+        for line in patch.lines().filter(|line| !line.trim().is_empty()) {
+            if !push_preview_line(&mut lines, line, PREVIEW_LIMIT) {
+                omitted += 1;
+            }
+        }
+    }
+
+    if omitted > 0 {
+        if lines.len() >= PREVIEW_LIMIT {
+            omitted += 1;
+        }
+        append_preview_truncation(
+            &mut lines,
+            format!("... (+{omitted} more patch lines)"),
+            PREVIEW_LIMIT,
+        );
+    }
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
+fn changes_preview_lines(changes: &[Value]) -> Option<Vec<String>> {
+    const PREVIEW_LIMIT: usize = 7;
+
+    let mut lines = Vec::new();
+    let mut rendered_changes = 0usize;
+    for (idx, change) in changes.iter().enumerate() {
+        let path = change
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("<file>");
+        let content = change.get("content").and_then(Value::as_str).unwrap_or("");
+        if idx > 0 {
+            if !push_preview_line(&mut lines, String::new(), PREVIEW_LIMIT) {
+                break;
+            }
+        }
+        if !push_preview_line(&mut lines, format!("file: {path}"), PREVIEW_LIMIT) {
+            break;
+        }
+        rendered_changes += 1;
+        for line in prefixed_preview_lines("replacement content", "+ ", content, PREVIEW_LIMIT)
+            .into_iter()
+            .skip(1)
+        {
+            if !push_preview_line(&mut lines, line, PREVIEW_LIMIT) {
+                break;
+            }
+        }
+        if lines.len() >= PREVIEW_LIMIT {
+            break;
+        }
+    }
+    let skipped_changes = changes.len().saturating_sub(rendered_changes);
+    if skipped_changes > 0 {
+        append_preview_truncation(
+            &mut lines,
+            format!("... (+{skipped_changes} more files)"),
+            PREVIEW_LIMIT,
+        );
+    }
+    if lines.is_empty() { None } else { Some(lines) }
+}
+
 fn param_text(params: &Value, keys: &[&str]) -> Option<String> {
     let Value::Object(map) = params else {
         return None;
@@ -591,12 +964,27 @@ fn localize_detail_label(label: &str, locale: Locale) -> &str {
             "Command" => "命令",
             "Dir" => "目录",
             "File" => "文件",
+            "Preview" => "预览",
+            "proposed content" => "拟写入内容",
+            "replace this" => "替换此内容",
+            "with this" => "替换为",
+            "replacement content" => "替换内容",
             "Path" => "路径",
             "Target" => "目标",
             "Input" => "输入",
             _ => label,
         },
         _ => label,
+    }
+}
+
+fn localize_preview_shell_line<'a>(tool_name: &str, line: &'a str, locale: Locale) -> &'a str {
+    match tool_name {
+        "write_file" if line == "proposed content" => localize_detail_label(line, locale),
+        "edit_file" if matches!(line, "replace this" | "with this") => {
+            localize_detail_label(line, locale)
+        }
+        _ => line,
     }
 }
 
@@ -888,6 +1276,15 @@ impl ApprovalView {
     }
 
     fn emit_decision(&self, decision: ReviewDecision, timed_out: bool) -> ViewAction {
+        self.emit_decision_with_rules(decision, timed_out, Vec::new())
+    }
+
+    fn emit_decision_with_rules(
+        &self,
+        decision: ReviewDecision,
+        timed_out: bool,
+        persistent_ask_rules: Vec<ToolAskRule>,
+    ) -> ViewAction {
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
             tool_id: self.request.id.clone(),
             tool_name: self.request.tool_name.clone(),
@@ -895,6 +1292,7 @@ impl ApprovalView {
             timed_out,
             approval_key: self.request.approval_key.clone(),
             approval_grouping_key: self.request.approval_grouping_key.clone(),
+            persistent_ask_rules,
         })
     }
 
@@ -947,6 +1345,12 @@ impl ModalView for ApprovalView {
             KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('2') => {
                 self.commit_option(ApprovalOption::ApproveAlways)
             }
+            KeyCode::Char('s') | KeyCode::Char('S') if self.request.can_save_ask_rule() => self
+                .emit_decision_with_rules(
+                    ReviewDecision::Approved,
+                    false,
+                    self.request.persistent_ask_rules.clone(),
+                ),
             KeyCode::Char('n')
             | KeyCode::Char('N')
             | KeyCode::Char('d')
@@ -1026,6 +1430,7 @@ pub enum ElevationOption {
 
 impl ElevationOption {
     /// Get the display label for this option.
+    #[cfg(test)]
     pub fn label(&self) -> &'static str {
         match self {
             ElevationOption::WithNetwork => "Allow outbound network",
@@ -1036,6 +1441,7 @@ impl ElevationOption {
     }
 
     /// Get a short description.
+    #[cfg(test)]
     pub fn description(&self) -> &'static str {
         match self {
             ElevationOption::WithNetwork => {
@@ -1132,13 +1538,15 @@ impl ElevationRequest {
 pub struct ElevationView {
     request: ElevationRequest,
     selected: usize,
+    locale: Locale,
 }
 
 impl ElevationView {
-    pub fn new(request: ElevationRequest) -> Self {
+    pub fn new(request: ElevationRequest, locale: Locale) -> Self {
         Self {
             request,
             selected: 0,
+            locale,
         }
     }
 
@@ -1213,7 +1621,7 @@ impl ModalView for ElevationView {
     }
 
     fn render(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let elevation_widget = ElevationWidget::new(&self.request, self.selected);
+        let elevation_widget = ElevationWidget::new(&self.request, self.selected, self.locale);
         elevation_widget.render(area, buf);
     }
 }
@@ -1254,6 +1662,16 @@ mod tests {
             "Write a file to disk",
             &json!({"path": "src/main.rs", "content": "test"}),
             "tool:write_file",
+        )
+    }
+
+    fn shell_request() -> ApprovalRequest {
+        ApprovalRequest::new(
+            "test-id",
+            "exec_shell",
+            "Run a shell command",
+            &json!({"command": "cargo test --workspace"}),
+            "tool:exec_shell",
         )
     }
 
@@ -1333,6 +1751,11 @@ mod tests {
             classify_risk("fetch_url", cat, &json!({"url": "https://example.com"})),
             RiskLevel::Destructive
         );
+        // wait_for_dev_server only permits loopback targets.
+        assert_eq!(
+            classify_risk("wait_for_dev_server", cat, &json!({"port": 5173})),
+            RiskLevel::Benign
+        );
     }
 
     #[test]
@@ -1349,6 +1772,22 @@ mod tests {
                 classify_risk(name, cat, &json!({})),
                 RiskLevel::Destructive,
                 "expected {name:?} to be Destructive",
+            );
+        }
+    }
+
+    #[test]
+    fn risk_read_only_shell_commands_route_benign() {
+        let cat = ToolCategory::Shell;
+        for command in [
+            "deepseek --version",
+            "deepseek --help",
+            "git status --porcelain",
+        ] {
+            assert_eq!(
+                classify_risk("exec_shell", cat, &json!({ "command": command })),
+                RiskLevel::Benign,
+                "expected read-only shell command {command:?} to be Benign",
             );
         }
     }
@@ -1436,13 +1875,20 @@ mod tests {
             request
                 .impacts
                 .iter()
-                .any(|line| line.contains("Executes a shell command"))
+                .any(|line| line.contains("Executes a Bash command"))
         );
         assert!(
             request
                 .impacts
                 .iter()
-                .any(|line| line.contains("cargo test"))
+                .all(|line| !line.contains("cargo test")),
+            "command detail should not be duplicated in the impact summary"
+        );
+        let details = request.prominent_detail_items(Locale::En);
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.label == "Command" && detail.value.contains("cargo test"))
         );
     }
 
@@ -1514,6 +1960,245 @@ mod tests {
         assert_eq!(details[0].label, "File");
         assert_eq!(details[0].value, "src/main.rs");
         assert!(details[0].shell_lines.is_none());
+        assert_eq!(details[1].label, "Preview");
+        let preview = details[1].shell_lines.as_ref().expect("preview lines");
+        assert!(preview.iter().any(|line| line == "+ fn main() {}"));
+    }
+
+    #[test]
+    fn prominent_details_edit_file_includes_search_replace_preview() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file on disk",
+            &json!({
+                "path": "src/lib.rs",
+                "search": "old_call();",
+                "replace": "new_call();"
+            }),
+            "tool:edit_file",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("edit preview");
+
+        assert!(preview.iter().any(|line| line == "- old_call();"));
+        assert!(preview.iter().any(|line| line == "+ new_call();"));
+    }
+
+    #[test]
+    fn prominent_details_apply_patch_includes_diff_preview() {
+        let patch = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,2 @@
+-old
++new
+"#;
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": patch}),
+            "tool:apply_patch",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("patch preview");
+
+        assert!(preview.iter().any(|line| line.starts_with("@@")));
+        assert!(preview.iter().any(|line| line == "-old"));
+        assert!(preview.iter().any(|line| line == "+new"));
+    }
+
+    #[test]
+    fn prominent_details_apply_patch_changes_array_preview_stays_bounded() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    {
+                        "path": "src/lib.rs",
+                        "content": "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"
+                    },
+                    {
+                        "path": "src/main.rs",
+                        "content": "main"
+                    },
+                    {
+                        "path": "src/extra.rs",
+                        "content": "extra"
+                    }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("changes preview");
+
+        assert!(
+            preview.len() <= 7,
+            "preview should stay bounded: {preview:?}"
+        );
+        assert!(preview.iter().any(|line| line == "file: src/lib.rs"));
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+2 more files)")
+        );
+    }
+
+    #[test]
+    fn apply_patch_changes_array_preview_reports_second_file_when_first_fills_buffer() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    {
+                        "path": "src/lib.rs",
+                        "content": "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"
+                    },
+                    {
+                        "path": "src/main.rs",
+                        "content": "main"
+                    }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        let details = request.prominent_detail_items(Locale::En);
+        let preview = details
+            .iter()
+            .find(|detail| detail.label == "Preview")
+            .and_then(|detail| detail.shell_lines.as_ref())
+            .expect("changes preview");
+
+        assert!(
+            preview.len() <= 7,
+            "preview should stay bounded: {preview:?}"
+        );
+        assert!(preview.iter().any(|line| line == "file: src/lib.rs"));
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+1 more files)")
+        );
+    }
+
+    #[test]
+    fn apply_patch_preview_counts_omitted_context_lines() {
+        let patch = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,8 +1,8 @@
+ context one
+ context two
+-old
++new
+ context three
+ context four
+ context five
+"#;
+
+        let preview = apply_patch_preview_lines(patch).expect("patch preview");
+
+        assert!(
+            preview.len() <= 7,
+            "preview should stay bounded: {preview:?}"
+        );
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+5 more patch lines)")
+        );
+    }
+
+    #[test]
+    fn apply_patch_preview_counts_replaced_visible_line_as_omitted() {
+        let patch = r#"diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+-old1
++new1
+-old2
++new2
+ context one
+ context two
+"#;
+
+        let preview = apply_patch_preview_lines(patch).expect("patch preview");
+
+        assert_eq!(preview.len(), 7);
+        assert_eq!(
+            preview.last().map(String::as_str),
+            Some("... (+4 more patch lines)")
+        );
+    }
+
+    #[test]
+    fn preview_sublabels_are_localized_for_zh_hans() {
+        let write = ApprovalRequest::new(
+            "test-id",
+            "write_file",
+            "Write a file",
+            &json!({"path": "src/lib.rs", "content": "proposed content\nreplacement content"}),
+            "tool:write_file",
+        );
+        let write_preview = write
+            .prominent_detail_items(Locale::ZhHans)
+            .into_iter()
+            .find(|detail| detail.label == "预览")
+            .and_then(|detail| detail.shell_lines)
+            .expect("localized write preview");
+        assert!(write_preview.iter().any(|line| line == "拟写入内容"));
+        assert!(
+            write_preview
+                .iter()
+                .any(|line| line == "+ proposed content")
+        );
+        assert!(
+            write_preview
+                .iter()
+                .any(|line| line == "+ replacement content")
+        );
+
+        let edit = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file",
+            &json!({
+                "path": "src/lib.rs",
+                "search": "with this",
+                "replace": "replace this"
+            }),
+            "tool:edit_file",
+        );
+        let edit_preview = edit
+            .prominent_detail_items(Locale::ZhHans)
+            .into_iter()
+            .find(|detail| detail.label == "预览")
+            .and_then(|detail| detail.shell_lines)
+            .expect("localized edit preview");
+        assert!(edit_preview.iter().any(|line| line == "替换此内容"));
+        assert!(edit_preview.iter().any(|line| line == "替换为"));
+        assert!(edit_preview.iter().any(|line| line == "- with this"));
+        assert!(edit_preview.iter().any(|line| line == "+ replace this"));
     }
 
     #[test]
@@ -1543,6 +2228,298 @@ mod tests {
         assert_eq!(view.selected, 0);
         assert!(view.timeout.is_none());
         assert_eq!(view.risk(), RiskLevel::Benign);
+    }
+
+    #[test]
+    fn exec_shell_request_builds_ask_rule_preview() {
+        let request = shell_request();
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::exec_shell("cargo test --workspace")]
+        );
+        let preview = request.ask_rule_preview().expect("preview");
+        assert!(preview.contains("[[rules]]"));
+        assert!(preview.contains("tool = \"exec_shell\""));
+        assert!(preview.contains("command = \"cargo test --workspace\""));
+    }
+
+    #[test]
+    fn ask_rule_save_preview_formats_shell_rule() {
+        let request = shell_request();
+
+        let preview = request.ask_rule_save_preview().expect("save preview");
+        assert_eq!(preview.rule_count, 1);
+        assert_eq!(preview.summary(), "1 ask rule");
+        assert_eq!(
+            preview.entries,
+            vec!["tool=exec_shell command=cargo test --workspace"]
+        );
+        assert_eq!(preview.omitted, 0);
+    }
+
+    #[test]
+    fn file_ask_rule_saved_for_write_file_approval() {
+        // A write_file approval offers an exact, workspace-relative file rule
+        // plus a preview so `S` can persist it.
+        let request = destructive_request();
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("write_file", "src/main.rs")]
+        );
+        assert!(request.can_save_ask_rule());
+        let preview = request.ask_rule_preview().expect("preview");
+        assert!(preview.contains("[[rules]]"));
+        assert!(preview.contains("tool = \"write_file\""));
+        assert!(preview.contains("path = \"src/main.rs\""));
+    }
+
+    #[test]
+    fn ask_rule_save_preview_formats_write_and_edit_file_paths() {
+        let write = destructive_request();
+        let edit = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file on disk",
+            &json!({"path": "/workspace/src/lib.rs"}),
+            "tool:edit_file",
+        );
+
+        assert_eq!(
+            write
+                .ask_rule_save_preview()
+                .expect("write save preview")
+                .entries,
+            vec!["tool=write_file path=src/main.rs"]
+        );
+        assert_eq!(
+            edit.ask_rule_save_preview()
+                .expect("edit save preview")
+                .entries,
+            vec!["tool=edit_file path=src/lib.rs"]
+        );
+    }
+
+    #[test]
+    fn file_ask_rule_normalizes_absolute_edit_file_path_to_workspace_relative() {
+        // An absolute in-workspace path is stored in the workspace-relative
+        // form, matching how runtime ask-rule matching normalizes paths.
+        let request = ApprovalRequest::new(
+            "test-id",
+            "edit_file",
+            "Edit a file on disk",
+            &json!({"path": "/workspace/src/lib.rs"}),
+            "tool:edit_file",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("edit_file", "src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn read_file_request_has_no_file_ask_rule() {
+        // The save boundary is write approvals only; read_file never offers a
+        // persistent rule.
+        let request = benign_request();
+
+        assert!(request.persistent_ask_rules.is_empty());
+        assert!(!request.can_save_ask_rule());
+        assert_eq!(request.ask_rule_preview(), None);
+        assert_eq!(request.ask_rule_save_preview(), None);
+    }
+
+    #[test]
+    fn file_ask_rule_skipped_for_unsafe_empty_or_external_paths() {
+        // Traversal, empty, and outside-workspace paths must not become rules,
+        // so the preview and `S` shortcut stay disabled.
+        for path in ["../escape.rs", "/etc/passwd", "   ", ""] {
+            let request = ApprovalRequest::new(
+                "test-id",
+                "write_file",
+                "Write a file to disk",
+                &json!({"path": path}),
+                "tool:write_file",
+            );
+            assert!(
+                request.persistent_ask_rules.is_empty(),
+                "path {path:?} must not produce a rule"
+            );
+            assert!(!request.can_save_ask_rule());
+            assert_eq!(request.ask_rule_preview(), None);
+            assert_eq!(request.ask_rule_save_preview(), None);
+        }
+    }
+
+    #[test]
+    fn apply_patch_ask_rules_saved_for_multi_file_patch() {
+        let patch = r"diff --git a/src/a.rs b/src/a.rs
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,1 +1,1 @@
+-old
++new
+diff --git a/src/b.rs b/src/b.rs
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1,1 +1,1 @@
+-old
++new
+";
+
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": patch}),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![
+                ToolAskRule::file_path("apply_patch", "src/a.rs"),
+                ToolAskRule::file_path("apply_patch", "src/b.rs"),
+            ]
+        );
+        assert!(request.can_save_ask_rule());
+        let preview = request.ask_rule_save_preview().expect("save preview");
+        assert_eq!(preview.summary(), "2 ask rules");
+        assert_eq!(
+            preview.entries,
+            vec![
+                "tool=apply_patch path=src/a.rs",
+                "tool=apply_patch path=src/b.rs"
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rules_dedupe_targets_after_normalization() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    { "path": "src/a.rs", "content": "one" },
+                    { "path": "/workspace/src/a.rs", "content": "two" }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("apply_patch", "src/a.rs")]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_handles_timestamp_headers() {
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n\
+--- a/src/lib.rs\t2026-06-26 10:00:00 +0000\n\
++++ b/src/lib.rs\t2026-06-26 10:01:00 +0000\n\
+@@ -1,1 +1,1 @@\n\
+-old\n\
++new\n";
+
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": patch}),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("apply_patch", "src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_ignores_forged_headers_inside_hunk() {
+        let patch = r"--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ line1
+--- a/forged.rs
++++ b/forged.rs
+ line3
+";
+
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"path": "src/lib.rs", "patch": patch}),
+            "tool:apply_patch",
+        );
+
+        assert_eq!(
+            request.persistent_ask_rules,
+            vec![ToolAskRule::file_path("apply_patch", "src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_skipped_when_any_target_traverses_workspace() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({
+                "changes": [
+                    { "path": "src/a.rs", "content": "safe" },
+                    { "path": "../escape.rs", "content": "unsafe" }
+                ]
+            }),
+            "tool:apply_patch",
+        );
+
+        assert!(request.persistent_ask_rules.is_empty());
+        assert!(!request.can_save_ask_rule());
+        assert_eq!(request.ask_rule_save_preview(), None);
+    }
+
+    #[test]
+    fn apply_patch_ask_rule_skipped_on_preflight_failure() {
+        let request = ApprovalRequest::new(
+            "test-id",
+            "apply_patch",
+            "Apply a patch",
+            &json!({"patch": "@@ -1 +1 @@\n-old\n+new\n"}),
+            "tool:apply_patch",
+        );
+
+        assert!(request.persistent_ask_rules.is_empty());
+        assert_eq!(request.ask_rule_preview(), None);
+        assert_eq!(request.ask_rule_save_preview(), None);
+    }
+
+    #[test]
+    fn ask_rule_save_preview_truncates_rule_list() {
+        let rules = vec![
+            ToolAskRule::file_path("apply_patch", "src/a.rs"),
+            ToolAskRule::file_path("apply_patch", "src/b.rs"),
+            ToolAskRule::file_path("apply_patch", "src/c.rs"),
+            ToolAskRule::file_path("apply_patch", "src/d.rs"),
+        ];
+
+        let preview = build_ask_rule_save_preview(&rules, 2).expect("save preview");
+        assert_eq!(preview.rule_count, 4);
+        assert_eq!(preview.summary(), "4 ask rules");
+        assert_eq!(
+            preview.entries,
+            vec![
+                "tool=apply_patch path=src/a.rs",
+                "tool=apply_patch path=src/b.rs"
+            ]
+        );
+        assert_eq!(preview.omitted, 2);
     }
 
     #[test]
@@ -1603,6 +2580,59 @@ mod tests {
                 "expected Approved for {code:?}"
             );
         }
+    }
+
+    #[test]
+    fn save_ask_rule_shortcut_approves_once_with_rule() {
+        let mut view = ApprovalView::new(shell_request());
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('s')));
+        let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+            decision,
+            persistent_ask_rules,
+            ..
+        }) = action
+        else {
+            panic!("expected approval decision");
+        };
+
+        assert_eq!(decision, ReviewDecision::Approved);
+        assert_eq!(
+            persistent_ask_rules,
+            vec![ToolAskRule::exec_shell("cargo test --workspace")]
+        );
+    }
+
+    #[test]
+    fn save_file_ask_rule_shortcut_emits_file_rule() {
+        // `S` on a write_file approval approves once and carries the exact
+        // workspace-relative file rule for persistence.
+        let mut view = ApprovalView::new(destructive_request());
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('S')));
+        let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+            decision,
+            persistent_ask_rules,
+            ..
+        }) = action
+        else {
+            panic!("expected approval decision");
+        };
+
+        assert_eq!(decision, ReviewDecision::Approved);
+        assert_eq!(
+            persistent_ask_rules,
+            vec![ToolAskRule::file_path("write_file", "src/main.rs")]
+        );
+    }
+
+    #[test]
+    fn save_ask_rule_shortcut_is_ignored_without_rule() {
+        let mut view = ApprovalView::new(benign_request());
+
+        let action = view.handle_key(create_key_event(KeyCode::Char('s')));
+
+        assert!(matches!(action, ViewAction::None));
     }
 
     #[test]
@@ -1899,12 +2929,22 @@ mod tests {
         lines.join("\n").replace(' ', "")
     }
 
+    fn assert_approval_key_badges_visible(joined: &str) {
+        for badge in ["[1 / y]", "[2 / a]", "[3 / d / n]", "[Esc]"] {
+            assert!(
+                joined.contains(badge),
+                "missing key badge {badge}:\n{joined}"
+            );
+        }
+    }
+
     #[test]
     fn render_benign_includes_review_badge_and_selection_hint() {
         let view = ApprovalView::new(benign_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         assert!(joined.contains("REVIEW"), "missing REVIEW badge:\n{joined}");
+        assert_approval_key_badges_visible(&joined);
         assert!(joined.contains("Choose"), "benign hint missing:\n{joined}");
         assert!(
             joined.contains("Enter selected option"),
@@ -1922,9 +2962,18 @@ mod tests {
             joined.contains("DESTRUCTIVE"),
             "missing DESTRUCTIVE badge:\n{joined}"
         );
+        assert_approval_key_badges_visible(&joined);
         assert!(
             joined.contains("Enter selected option"),
             "destructive hint missing:\n{joined}"
+        );
+        assert!(
+            joined.contains("active approval policy"),
+            "missing policy/review-rule semantics:\n{joined}"
+        );
+        assert!(
+            joined.contains("Deny rejects only this tool call"),
+            "missing deny-vs-abort semantics:\n{joined}"
         );
         assert!(joined.contains("write_file"));
     }
@@ -1991,7 +3040,7 @@ mod tests {
     fn test_elevation_view_initial_state() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false);
-        let view = ElevationView::new(request);
+        let view = ElevationView::new(request, Locale::En);
         assert_eq!(view.selected, 0);
     }
 
@@ -1999,7 +3048,7 @@ mod tests {
     fn test_elevation_view_keybindings() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo test", "write blocked", false, true);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
 
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
@@ -2012,7 +3061,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "write blocked", false, true);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('w')));
         assert!(matches!(
             action,
@@ -2024,7 +3073,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('f')));
         assert!(matches!(
             action,
@@ -2036,7 +3085,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -2048,7 +3097,7 @@ mod tests {
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -2062,7 +3111,7 @@ mod tests {
     #[test]
     fn test_elevation_view_navigation() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
 
         assert_eq!(view.selected, 0);
 
@@ -2082,7 +3131,7 @@ mod tests {
     #[test]
     fn test_elevation_view_enter_uses_selected_option() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request);
+        let mut view = ElevationView::new(request, Locale::En);
 
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
@@ -2095,6 +3144,136 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn render_elevation_lines(view: &ElevationView, w: u16, h: u16) -> Vec<String> {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        view.render(Rect::new(0, 0, w, h), &mut buf);
+        (0..h)
+            .map(|row| {
+                (0..w)
+                    .map(|col| buf[(col, row)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn compact_elevation_text(lines: &[String]) -> String {
+        lines.join("\n").replace(' ', "")
+    }
+
+    fn elevation_shell_request() -> ElevationRequest {
+        ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false)
+    }
+
+    #[test]
+    fn test_elevation_render_en_has_expected_strings() {
+        let view = ElevationView::new(elevation_shell_request(), Locale::En);
+        let lines = render_elevation_lines(&view, 70, 22);
+        let joined = compact_elevation_text(&lines);
+        assert!(
+            joined.contains("SandboxDenied"),
+            "missing en title:\n{joined}"
+        );
+        assert!(joined.contains("Tool:"), "missing en tool label:\n{joined}");
+        assert!(joined.contains("Cmd:"), "missing en cmd label:\n{joined}");
+        assert!(
+            joined.contains("Reason:"),
+            "missing en reason label:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn test_elevation_render_zh_hans_localizes_copy() {
+        let view = ElevationView::new(elevation_shell_request(), Locale::ZhHans);
+        let lines = render_elevation_lines(&view, 70, 22);
+        let joined = compact_elevation_text(&lines);
+        assert!(joined.contains("沙箱拒绝"), "missing zh title:\n{joined}");
+        assert!(
+            joined.contains("工具："),
+            "missing zh tool label:\n{joined}"
+        );
+        assert!(joined.contains("命令："), "missing zh cmd label:\n{joined}");
+        assert!(
+            joined.contains("原因："),
+            "missing zh reason label:\n{joined}"
+        );
+        assert!(
+            joined.contains("批准后的影响"),
+            "missing zh impact header:\n{joined}"
+        );
+        let en_artifacts = [
+            "SandboxDenied",
+            "Tool:",
+            "Cmd:",
+            "Reason:",
+            "Impactifapproved",
+            "Choosehowtoproceed",
+            "Allowoutboundnetwork",
+            "Allowextrawriteaccess",
+            "Fullaccess",
+            "Abort",
+        ];
+        for artifact in &en_artifacts {
+            assert!(
+                !joined.contains(artifact),
+                "English leak '{artifact}' in zh rendering:\n{joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_elevation_render_ja_has_translated_copy() {
+        let view = ElevationView::new(elevation_shell_request(), Locale::Ja);
+        let lines = render_elevation_lines(&view, 70, 22);
+        let joined = compact_elevation_text(&lines);
+        assert!(
+            joined.contains("サンドボックス拒否"),
+            "missing ja title:\n{joined}"
+        );
+        assert!(
+            joined.contains("ツール："),
+            "missing ja tool label:\n{joined}"
+        );
+        assert!(
+            joined.contains("コマンド："),
+            "missing ja cmd label:\n{joined}"
+        );
+        assert!(
+            joined.contains("理由："),
+            "missing ja reason label:\n{joined}"
+        );
+        for eng in &["SandboxDenied", "Tool:", "Cmd:", "Reason:"] as &[&str] {
+            assert!(
+                !joined.contains(eng),
+                "English leak '{eng}' in ja:\n{joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_elevation_render_zh_hant_has_translated_copy() {
+        let view = ElevationView::new(elevation_shell_request(), Locale::ZhHant);
+        let lines = render_elevation_lines(&view, 70, 22);
+        let joined = compact_elevation_text(&lines);
+        assert!(
+            joined.contains("沙箱拒絕"),
+            "missing zh-Hant title:\n{joined}"
+        );
+        assert!(
+            joined.contains("工具："),
+            "missing zh-Hant tool label:\n{joined}"
+        );
+        assert!(
+            joined.contains("命令："),
+            "missing zh-Hant cmd label:\n{joined}"
+        );
+        assert!(
+            joined.contains("原因："),
+            "missing zh-Hant reason label:\n{joined}"
+        );
     }
 
     // ========================================================================

@@ -5,7 +5,8 @@ and the `deepseek` npm wrapper.
 
 Current packaging note:
 - `deepseek-tui` is the live runtime crate shipped to users today.
-- `deepseek-tui-core` is a supporting workspace crate for the extraction/parity effort, not a replacement for the shipping runtime.
+- `deepseek-app-server` is a supporting library crate. The shipped entrypoint
+  is `deepseek app-server`; do not add or publish a standalone app-server binary.
 
 ## Canonical Publish Targets
 
@@ -24,7 +25,6 @@ Current packaging note:
   - `deepseek-tools`
   - `deepseek-core`
   - `deepseek-app-server`
-  - `deepseek-tui-core`
   - `deepseek-whaleflow`
 
 ## Version Coordination
@@ -37,6 +37,35 @@ Current packaging note:
   - bump the npm package version
   - leave `codewhaleBinaryVersion` pinned to the previously released Rust binaries
   - rerun `npm pack` smoke checks before `npm publish`
+
+## Release Source Timing
+
+Freeze the source before creating a public `vX.Y.Z` tag. The version bump is
+not the release; it is the last source-prep commit before the tag. Do not keep
+merging same-version feature/fix PRs after `vX.Y.Z` exists and assume the
+release workflow will pick them up. It will not: the tag is the release anchor.
+
+Before tagging, verify the live queue and existing anchors:
+
+```bash
+gh issue list --repo coohu/deepseek-tui --milestone "vX.Y.Z" --state open
+gh pr list --repo coohu/deepseek-tui --state open --limit 100
+git ls-remote origin refs/heads/main refs/tags/vX.Y.Z
+gh release view vX.Y.Z --repo coohu/deepseek-tui
+./scripts/release/check-published.sh X.Y.Z
+```
+
+If a same-version tag already exists but there is no GitHub Release and nothing
+is published, stop and choose deliberately:
+
+- publish exactly the tagged SHA, leaving later commits for the next patch;
+- bump the later work to the next patch version and tag that later SHA; or
+- with explicit maintainer approval only, delete/recreate the unpublished tag
+  after confirming no package, GitHub Release, mirror, or installer consumer has
+  treated it as public.
+
+Do not delete, move, or recreate a release tag implicitly as part of ordinary
+PR merge or milestone cleanup work.
 
 ## Preflight
 
@@ -106,6 +135,34 @@ on npm and every `deepseek-*` crate at `X.Y.Z` on crates.io. For a rare
 npm packaging-only release, run with `--allow-npm-binary-mismatch` and keep the
 release notes explicit that no new Rust binary version shipped.
 
+## Post-Merge Branch Hygiene
+
+After a release or scratch integration branch lands, run the branch hygiene
+helper before pruning anything:
+
+```bash
+./scripts/release/branch-hygiene.sh --release-branch codex/vX.Y.Z
+```
+
+The default mode is a dry run. It reports the current checkout branch, main ref,
+local and remote release tips, safe local or remote branch deletes, branches
+kept for contributor work, and branches that still need a human decision. Review
+that report before running `--prune --yes`, and add `--prune-remote` only when
+you have confirmed the remote branches are safe to delete.
+
+Use `--remote upstream` when you are working from a fork and the canonical
+release refs live on the upstream remote instead of `origin`.
+
+Verify the helper itself after changing it:
+
+```bash
+bash scripts/release/branch-hygiene.test.sh
+bash scripts/release/ensure-release-on-main.test.sh
+```
+
+Those scripts are pinned to LF line endings so the same command works from a
+Windows checkout under Bash.
+
 ## Rust Crates Release
 
 Crate publishing to crates.io is **manual** — there is no automated
@@ -113,19 +170,31 @@ Crate publishing to crates.io is **manual** — there is no automated
 `scripts/release/` from a developer workstation that has `cargo login`
 configured.
 
-1. Update the workspace version in [Cargo.toml](../Cargo.toml).
-2. Run `./scripts/release/check-versions.sh` and
-   `./scripts/release/publish-crates.sh dry-run` locally; both must be clean.
-3. Tag the release as `vX.Y.Z` (typically by pushing the version bump to
-   `main` and letting `auto-tag.yml` create the tag — see the npm wrapper
-   release section below for the `RELEASE_TAG_PAT` requirement).
+Release commits must land on `main` before any `vX.Y.Z` tag is pushed. Do not
+tag a release-only branch. Open the release PR against `main`, let required
+review and CI finish, merge it, then explicitly tag the final source commit
+that is reachable from `main`. This is what lets GitHub process `Closes #N`
+lines automatically and show the release PR as merged. The tag release workflow runs
+`scripts/release/ensure-release-on-main.sh` for tag pushes and manual dispatches,
+and fails branch-only release sources before assets are published.
+
+1. Write the CHANGELOG entry, then run
+   `./scripts/release/prepare-release.sh X.Y.Z` — it bumps every
+   version-bearing file (workspace + crate pins + npm wrapper + README
+   install tags), refreshes the lockfile and generated files, and runs
+   `check-versions.sh`.
+2. Run `./scripts/release/publish-crates.sh dry-run` locally; it must be clean.
+3. Merge the release PR into `main` before tagging. After the same-version
+   queue is frozen and `main` is at the intended source SHA, create `vX.Y.Z`
+   from `main` with the manual **Create release tag** workflow or with a signed
+   local tag push from a developer machine. See the npm wrapper release section
+   below for the `RELEASE_TAG_PAT` / manual release dispatch caveat.
 4. Publish crates in this order with `./scripts/release/publish-crates.sh publish`:
    - `deepseek-mcp`
    - `deepseek-protocol`
    - `deepseek-release`
    - `deepseek-secrets`
    - `deepseek-state`
-   - `deepseek-tui-core`
    - `deepseek-whaleflow`
    - `deepseek-execpolicy`
    - `deepseek-hooks`
@@ -144,17 +213,31 @@ The publish helper is idempotent for reruns: already-published crate versions ar
 
 `.github/workflows/release.yml` builds these binaries:
 
-- `deepseek-linux-x64`
-- `deepseek-macos-x64`
-- `deepseek-macos-arm64`
-- `deepseek-windows-x64.exe`
-- `deepseek-tui-linux-x64`
-- `deepseek-tui-macos-x64`
-- `deepseek-tui-macos-arm64`
-- `deepseek-tui-windows-x64.exe`
+- `deepseek-*` CLI binaries for Linux x64/arm64/riscv64, macOS x64/arm64,
+  and Windows x64
+- `deepseek-tui-*` TUI binaries for the same target matrix
+- `codew-*` shortcut binaries for the same target matrix
+- `deepseek.bat` for the Windows npm launcher
 
 The release job also uploads `deepseek-artifacts-sha256.txt`. The npm installer and
-release verification script both depend on that checksum manifest.
+release verification script both depend on that checksum manifest. The
+authoritative npm-facing asset list lives in
+`npm/deepseek/scripts/artifacts.js`.
+
+Before any Cargo or npm publish, prove that the public GitHub Release assets
+belong to the tag commit you are publishing:
+
+```bash
+./scripts/release/verify-release-assets.sh X.Y.Z
+```
+
+That gate compares the local and remote `vX.Y.Z` tag SHAs, confirms a
+successful `Release` workflow run used that SHA, then runs the npm wrapper's
+release check against the public GitHub asset URLs. The npm check fails if the
+release is missing an npm-facing asset, the checksum manifest omits a required
+binary, or the assets predate the matching release workflow run. If the command
+fails, rerun or repair `release.yml`; do not publish Cargo or npm against stale
+assets.
 
 ## npm Wrapper Release
 
@@ -168,15 +251,50 @@ on a workstation with `npm login` and an authenticator app.
 
 1. Set the npm package version in [npm/deepseek/package.json](../npm/deepseek/package.json) to match the workspace `Cargo.toml`. CI's version-drift guard will catch mismatches before tag.
 2. Set `codewhaleBinaryVersion` to the GitHub release tag that should supply binaries.
-3. Push the version bump to `main`. `auto-tag.yml` creates the matching `vX.Y.Z` tag, and `release.yml` builds the binary matrix and drafts the GitHub Release.
-4. **Wait for the GitHub Release to finalize** with all eight signed binaries plus `deepseek-artifacts-sha256.txt`. The npm `prepublishOnly` hook (`scripts/verify-release-assets.js`) requires every asset to be present.
-5. From a developer machine, publish the npm wrapper manually:
+3. Push the version bump to `main`. After the release source is frozen, create
+   the matching `vX.Y.Z` tag from `main`; `release.yml` then builds the binary
+   matrix and drafts the GitHub Release.
+4. **Wait for the GitHub Release to finalize** with the full npm-facing binary
+   matrix plus `deepseek-artifacts-sha256.txt`. The npm `prepublishOnly` hook
+   (`scripts/verify-release-assets.js`) requires every asset to be present.
+5. Run the public asset freshness gate from the repo root:
 
 ```bash
+./scripts/release/verify-release-assets.sh X.Y.Z
+```
+
+For a rare packaging-only npm release where the npm package version intentionally
+points at older Rust binaries, add `--allow-npm-binary-mismatch` and keep the
+release notes explicit that no new binary version shipped.
+
+6. From a developer machine, confirm npm auth and publish the wrapper manually:
+
+```bash
+npm whoami
 cd npm/deepseek
 npm publish --access public
 # (you will be prompted for the npm OTP from your authenticator)
+npm view deepseek@X.Y.Z version codewhaleBinaryVersion --json
+cd ../..
+./scripts/release/check-published.sh X.Y.Z
 ```
+
+If `npm whoami` or `npm publish` reports `E401`, `ENEEDAUTH`, or an OTP/login
+failure, do not edit package contents. Run:
+
+```bash
+npm login
+npm whoami
+cd npm/deepseek
+npm publish --access public
+```
+
+Rerun the same `npm publish --access public` command after completing the login
+or OTP prompt. The package's `prepublishOnly` hook reruns the release-asset
+gate before each publish attempt, so an auth failure cannot accidentally skip
+asset verification on retry.
+
+Do not publish `npm/deepseek-tui`; it is deprecated compatibility metadata only.
 
 ### Why not automated?
 

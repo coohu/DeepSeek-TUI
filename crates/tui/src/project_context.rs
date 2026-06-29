@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -54,7 +55,8 @@ const SUPPORTED_CONSTITUTION_SCHEMA: u32 = 1;
 
 /// User-level project instructions loaded as a fallback when the workspace and
 /// its parents do not define project context. Any global AGENTS.md takes
-/// priority over any deprecated global WHALE.md; within each file name,
+/// priority over a global instructions.md (#3012), which takes priority over
+/// any deprecated global WHALE.md; within each file name,
 /// `.deepseek/` takes priority over vendor-neutral `.agents/`, which takes
 /// priority over legacy `.deepseek/`.
 const GLOBAL_AGENTS_RELATIVE_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
@@ -63,6 +65,12 @@ const GLOBAL_AGENTS_LEGACY_PATH: &[&str] = &[".deepseek", "AGENTS.md"];
 const GLOBAL_WHALE_RELATIVE_PATH: &[&str] = &[".deepseek", "WHALE.md"];
 const GLOBAL_WHALE_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "WHALE.md"];
 const GLOBAL_WHALE_LEGACY_PATH: &[&str] = &[".deepseek", "WHALE.md"];
+/// Global `instructions.md` (#3012): auto-loaded as a fallback context layer,
+/// ranked between AGENTS.md (higher priority) and the deprecated WHALE.md
+/// (lower), mirroring the project-level precedence.
+const GLOBAL_INSTRUCTIONS_RELATIVE_PATH: &[&str] = &[".deepseek", "instructions.md"];
+const GLOBAL_INSTRUCTIONS_VENDOR_NEUTRAL_PATH: &[&str] = &[".agents", "instructions.md"];
+const GLOBAL_INSTRUCTIONS_LEGACY_PATH: &[&str] = &[".deepseek", "instructions.md"];
 
 /// Maximum size for project context files (to prevent loading huge files)
 const MAX_CONTEXT_SIZE: usize = 100 * 1024; // 100KB
@@ -103,6 +111,10 @@ enum ProjectContextError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("Refusing symlinked context file {path}")]
+    Symlink { path: PathBuf },
+    #[error("Context path {path} is not a regular file")]
+    NotFile { path: PathBuf },
     #[error("Context file {path} is too large ({size} bytes, max {max})")]
     TooLarge {
         path: PathBuf,
@@ -131,6 +143,8 @@ pub struct ProjectContext {
     /// DeepSeek-specific repo authority/prioritization policy — distinct from
     /// the cross-agent prose in `instructions`.
     pub constitution_block: Option<String>,
+    /// Path to the repo constitution file that produced `constitution_block`.
+    pub constitution_source_path: Option<PathBuf>,
     /// Project root directory
     #[allow(dead_code)] // Part of ProjectContext public interface
     pub project_root: PathBuf,
@@ -146,6 +160,7 @@ impl ProjectContext {
             source_path: None,
             warnings: Vec::new(),
             constitution_block: None,
+            constitution_source_path: None,
             project_root,
             is_trusted: false,
         }
@@ -278,12 +293,51 @@ impl RepoConstitution {
             body.trim_end()
         )
     }
+
+    fn policy_warnings(&self, source: &Path) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some(policy) = self.branch_policy.as_deref()
+            && branch_policy_looks_stale(policy)
+        {
+            warnings.push(format!(
+                "{} branch_policy appears stale: hard-coded release branch guidance (`{}`). Use live branch/handoff truth and AGENTS.md instead of versioned integration-lane text.",
+                source.display(),
+                policy.trim()
+            ));
+        }
+        warnings
+    }
+}
+
+fn branch_policy_looks_stale(policy: &str) -> bool {
+    let lower = policy.to_ascii_lowercase();
+    lower.contains("codex/v")
+        || ((lower.contains("integration branch") || lower.contains("not main"))
+            && contains_release_version_token(policy))
+}
+
+fn contains_release_version_token(value: &str) -> bool {
+    value
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.'))
+        .any(|token| {
+            let token = token.trim_start_matches(['v', 'V']);
+            let mut parts = token.split('.');
+            matches!(
+                (parts.next(), parts.next(), parts.next(), parts.next()),
+                (Some(major), Some(minor), Some(patch), None)
+                    if major.chars().all(|ch| ch.is_ascii_digit())
+                        && minor.chars().all(|ch| ch.is_ascii_digit())
+                        && patch.chars().all(|ch| ch.is_ascii_digit())
+            )
+        })
 }
 
 /// Discover and render `.deepseek/constitution.json` from `workspace` or, if
 /// absent, its parent directories up to the git root. Returns the rendered
 /// authority block plus any parse warnings.
-fn load_repo_constitution_block(workspace: &Path) -> (Option<String>, Vec<String>) {
+fn load_repo_constitution_block(
+    workspace: &Path,
+) -> (Option<String>, Option<PathBuf>, Vec<String>) {
     let mut warnings = Vec::new();
     let git_root = crate::project_doc::find_git_root(workspace);
     let mut current = workspace.to_path_buf();
@@ -292,8 +346,8 @@ fn load_repo_constitution_block(workspace: &Path) -> (Option<String>, Vec<String
         for component in REPO_CONSTITUTION_RELATIVE_PATH {
             path.push(component);
         }
-        if path.is_file() {
-            match fs::read_to_string(&path) {
+        if context_candidate_exists(&path) {
+            match load_context_file(&path) {
                 Ok(raw) => match serde_json::from_str::<RepoConstitution>(&raw) {
                     Ok(constitution) if !constitution.is_empty() => {
                         if let Some(version) = constitution.schema_version
@@ -304,23 +358,24 @@ fn load_repo_constitution_block(workspace: &Path) -> (Option<String>, Vec<String
                                 path.display()
                             ));
                         }
-                        return (Some(constitution.render_block(&path)), warnings);
+                        warnings.extend(constitution.policy_warnings(&path));
+                        return (Some(constitution.render_block(&path)), Some(path), warnings);
                     }
                     Ok(_) => {
                         warnings.push(format!(
                             "{} has no authority/verification policy; ignoring.",
                             path.display()
                         ));
-                        return (None, warnings);
+                        return (None, None, warnings);
                     }
                     Err(e) => {
                         warnings.push(format!("Failed to parse {}: {e}", path.display()));
-                        return (None, warnings);
+                        return (None, None, warnings);
                     }
                 },
                 Err(e) => {
                     warnings.push(format!("Failed to read {}: {e}", path.display()));
-                    return (None, warnings);
+                    return (None, None, warnings);
                 }
             }
         }
@@ -334,7 +389,7 @@ fn load_repo_constitution_block(workspace: &Path) -> (Option<String>, Vec<String
             _ => break,
         }
     }
-    (None, warnings)
+    (None, None, warnings)
 }
 
 #[derive(Debug, Serialize)]
@@ -627,7 +682,7 @@ pub fn load_project_context(workspace: &Path) -> ProjectContext {
     for filename in PROJECT_CONTEXT_FILES {
         let file_path = workspace.join(filename);
 
-        if file_path.exists() && file_path.is_file() {
+        if context_candidate_exists(&file_path) {
             match load_context_file(&file_path) {
                 Ok(content) => {
                     tracing::info!(
@@ -740,22 +795,14 @@ fn load_project_context_with_parents_and_home(
         }
     }
 
-    // Auto-generate .deepseek/instructions.md when no context file exists anywhere.
-    // This avoids the per-turn filesystem scan fallback in prompts.rs that
-    // breaks KV prefix cache stability.
+    // Generate a bounded in-memory fallback when no context file exists
+    // anywhere. This keeps prompt shape stable without creating project-local
+    // `.deepseek/` files merely because DeepSeek was opened in a directory.
     if !ctx.has_instructions()
-        && let Some(generated) = auto_generate_context(workspace)
+        && let Some(generated) = generate_ephemeral_context(workspace)
     {
-        let mut warnings = std::mem::take(&mut ctx.warnings);
-        ctx = load_project_context(workspace);
-        warnings.extend(ctx.warnings.iter().cloned());
-        ctx.warnings = warnings;
-        if !ctx.has_instructions() {
-            // Loaded from the file we just wrote — use the generated content
-            // directly as a last resort (shouldn't normally happen).
-            ctx.instructions = Some(generated);
-            ctx.source_path = None;
-        }
+        ctx.instructions = Some(generated);
+        ctx.source_path = None;
     }
 
     // Load the DeepSeek-specific repo authority policy
@@ -764,9 +811,11 @@ fn load_project_context_with_parents_and_home(
     // an AGENTS.md. When present it takes precedence over a legacy WHALE.md.
     // Loaded last so the auto-generate fallback above (which rebuilds `ctx`)
     // cannot clobber it.
-    let (constitution_block, constitution_warnings) = load_repo_constitution_block(workspace);
+    let (constitution_block, constitution_source_path, constitution_warnings) =
+        load_repo_constitution_block(workspace);
     ctx.warnings.extend(constitution_warnings);
     ctx.constitution_block = constitution_block;
+    ctx.constitution_source_path = constitution_source_path;
 
     ctx
 }
@@ -830,11 +879,14 @@ fn repo_constitution_candidate_paths(workspace: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn global_context_relative_paths() -> [&'static [&'static str]; 6] {
+fn global_context_relative_paths() -> [&'static [&'static str]; 9] {
     [
         GLOBAL_AGENTS_RELATIVE_PATH,
         GLOBAL_AGENTS_VENDOR_NEUTRAL_PATH,
         GLOBAL_AGENTS_LEGACY_PATH,
+        GLOBAL_INSTRUCTIONS_RELATIVE_PATH,
+        GLOBAL_INSTRUCTIONS_VENDOR_NEUTRAL_PATH,
+        GLOBAL_INSTRUCTIONS_LEGACY_PATH,
         GLOBAL_WHALE_RELATIVE_PATH,
         GLOBAL_WHALE_VENDOR_NEUTRAL_PATH,
         GLOBAL_WHALE_LEGACY_PATH,
@@ -880,19 +932,23 @@ fn merge_global_and_project_instructions(
 fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Option<ProjectContext> {
     let home = home_dir?;
 
-    // Priority order (AGENTS.md preferred over the now-deprecated WHALE.md):
-    // 1. ~/.deepseek/AGENTS.md     (canonical)
-    // 2. ~/.agents/AGENTS.md        (vendor-neutral fallback)
-    // 3. ~/.deepseek/AGENTS.md      (legacy fallback)
-    // 4. ~/.deepseek/WHALE.md      (deprecated, legacy fallback)
-    // 5. ~/.agents/WHALE.md         (deprecated, vendor-neutral legacy)
-    // 6. ~/.deepseek/WHALE.md       (deprecated, legacy)
+    // Priority order (AGENTS.md preferred; instructions.md next, #3012;
+    // WHALE.md deprecated and last):
+    // 1. ~/.deepseek/AGENTS.md       (canonical)
+    // 2. ~/.agents/AGENTS.md          (vendor-neutral fallback)
+    // 3. ~/.deepseek/AGENTS.md        (legacy fallback)
+    // 4. ~/.deepseek/instructions.md (canonical)
+    // 5. ~/.agents/instructions.md    (vendor-neutral fallback)
+    // 6. ~/.deepseek/instructions.md  (legacy fallback)
+    // 7. ~/.deepseek/WHALE.md        (deprecated, legacy fallback)
+    // 8. ~/.agents/WHALE.md           (deprecated, vendor-neutral legacy)
+    // 9. ~/.deepseek/WHALE.md         (deprecated, legacy)
     let mut warnings = Vec::new();
 
     for candidate in global_context_relative_paths() {
         let path = join_relative_components(home, candidate);
 
-        if path.exists() && path.is_file() {
+        if context_candidate_exists(&path) {
             match load_context_file(&path) {
                 Ok(content) => {
                     if path.file_name().and_then(|n| n.to_str()) == Some(DEPRECATED_WHALE_FILENAME)
@@ -920,54 +976,46 @@ fn load_global_agents_context(workspace: &Path, home_dir: Option<&Path>) -> Opti
     None
 }
 
-/// Generate a context file from project tree + summary and write it to
-/// `.deepseek/instructions.md` (or `.deepseek/instructions.md` as legacy
-/// fallback). Returns the generated content on success.
-fn auto_generate_context(workspace: &Path) -> Option<String> {
-    let deepseek_dir = workspace.join(".deepseek");
-    let instructions_path = deepseek_dir.join("instructions.md");
-    let legacy_instructions_path = workspace.join(".deepseek/instructions.md");
-
-    // Don't overwrite an existing file (check both locations)
-    if instructions_path.exists() || legacy_instructions_path.exists() {
-        return None;
-    }
-
+/// Generate ephemeral context from the project tree. Returns the generated
+/// content on success without writing workspace files.
+fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
     let overview = generate_bounded_project_overview(workspace)?;
 
-    let content = format!(
-        "# Project Context (Auto-generated)\n\n\
-         > This file was automatically generated by DeepSeek.\n\
-         > You can edit or delete it at any time.\n\n\
+    Some(format!(
+        "# Project Context (Auto-generated, ephemeral)\n\n\
+         > This context was generated in memory by DeepSeek.\n\
+         > No .deepseek/instructions.md file was written.\n\n\
          {overview}"
-    );
-
-    // Create .deepseek/ directory
-    if let Err(e) = std::fs::create_dir_all(&deepseek_dir) {
-        tracing::warn!("Failed to create .deepseek/ directory: {e}");
-        return None;
-    }
-
-    match std::fs::write(&instructions_path, &content) {
-        Ok(()) => {
-            tracing::info!("Auto-generated {}", instructions_path.display());
-            Some(content)
-        }
-        Err(e) => {
-            tracing::warn!("Failed to write {}: {e}", instructions_path.display());
-            None
-        }
-    }
+    ))
 }
 
 /// Load a context file with size checking
 fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
-    // Check file size first
-    let metadata = fs::metadata(path).map_err(|source| ProjectContextError::Metadata {
+    let metadata = fs::symlink_metadata(path).map_err(|source| ProjectContextError::Metadata {
         path: path.to_path_buf(),
         source,
     })?;
 
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(ProjectContextError::Symlink {
+            path: path.to_path_buf(),
+        });
+    }
+
+    if !file_type.is_file() {
+        return Err(ProjectContextError::NotFile {
+            path: path.to_path_buf(),
+        });
+    }
+
+    let mut file = open_context_file(path)?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| ProjectContextError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?;
     if metadata.len() > MAX_CONTEXT_SIZE as u64 {
         return Err(ProjectContextError::TooLarge {
             path: path.to_path_buf(),
@@ -976,11 +1024,12 @@ fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
         });
     }
 
-    // Read the file
-    let content = fs::read_to_string(path).map_err(|source| ProjectContextError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|source| ProjectContextError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
 
     // Basic validation
     if content.trim().is_empty() {
@@ -990,6 +1039,35 @@ fn load_context_file(path: &Path) -> Result<String, ProjectContextError> {
     }
 
     Ok(content)
+}
+
+fn context_candidate_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        let file_type = metadata.file_type();
+        file_type.is_file() || file_type.is_symlink()
+    })
+}
+
+#[cfg(unix)]
+fn open_context_file(path: &Path) -> Result<fs::File, ProjectContextError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|source| ProjectContextError::Read {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(not(unix))]
+fn open_context_file(path: &Path) -> Result<fs::File, ProjectContextError> {
+    fs::File::open(path).map_err(|source| ProjectContextError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Check if this project is marked as trusted
@@ -1121,6 +1199,30 @@ mod tests {
                 .contains("Test Instructions")
         );
         assert_eq!(ctx.source_path, Some(agents_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_context_rejects_symlinked_agents_md() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        let outside_agents = outside.path().join("AGENTS.md");
+        fs::write(&outside_agents, "outside instructions").expect("write outside agents");
+        std::os::unix::fs::symlink(&outside_agents, workspace.path().join("AGENTS.md"))
+            .expect("symlink agents");
+
+        let ctx = load_project_context(workspace.path());
+
+        assert!(
+            !ctx.has_instructions(),
+            "symlinked project instructions must not be loaded: {:?}",
+            ctx.instructions
+        );
+        assert!(
+            ctx.warnings.iter().any(|w| w.contains("symlinked")),
+            "expected symlink warning, got {:?}",
+            ctx.warnings
+        );
     }
 
     #[test]
@@ -1329,7 +1431,7 @@ mod tests {
                 "schema_version": 1,
                 "authority": ["current user request", "live code and tests", "AGENTS.md"],
                 "protected_invariants": ["keep the tool-catalog head byte-stable"],
-                "branch_policy": "PRs target codex/v0.8.53, not main",
+                "branch_policy": "Start from live branch truth; open PRs into main",
                 "verification_policy": { "before_claiming_done": ["run focused tests"] },
                 "escalate_when": ["a destructive action was not authorized"]
             }"#,
@@ -1345,14 +1447,50 @@ mod tests {
         assert!(block.contains("current user request"));
         assert!(block.contains("run focused tests"));
         assert!(block.contains("keep the tool-catalog head byte-stable"));
-        assert!(block.contains("PRs target codex/v0.8.53"));
+        assert!(block.contains("Start from live branch truth"));
         assert!(block.contains("a destructive action was not authorized"));
         assert!(block.contains("takes precedence over a legacy WHALE.md"));
+        assert!(
+            ctx.constitution_source_path
+                .as_ref()
+                .is_some_and(|path| path.ends_with(".deepseek/constitution.json")),
+            "constitution source path should be visible: {:?}",
+            ctx.constitution_source_path
+        );
         // It also surfaces through the system block.
         assert!(
             ctx.as_system_block()
                 .expect("system block")
                 .contains("deepseek_repo_constitution")
+        );
+    }
+
+    #[test]
+    fn stale_constitution_branch_policy_warns() {
+        let tmp = tempdir().expect("tempdir");
+        fs::create_dir(tmp.path().join(".git")).expect("mkdir .git");
+        fs::create_dir(tmp.path().join(".deepseek")).expect("mkdir .deepseek");
+        fs::write(
+            tmp.path().join(".deepseek").join("constitution.json"),
+            r#"{
+                "schema_version": 1,
+                "authority": ["current user request"],
+                "branch_policy": "v0.8.53 work targets the codex/v0.8.53 integration branch, not main"
+            }"#,
+        )
+        .expect("write constitution");
+
+        let ctx = load_project_context_with_parents(tmp.path());
+        assert!(
+            ctx.constitution_block.is_some(),
+            "stale policy should warn but still render"
+        );
+        assert!(
+            ctx.warnings
+                .iter()
+                .any(|warning| warning.contains("branch_policy appears stale")),
+            "expected stale branch_policy warning, got {:?}",
+            ctx.warnings
         );
     }
 
@@ -1375,6 +1513,46 @@ mod tests {
         assert!(
             ctx.warnings.iter().any(|w| w.contains("Failed to parse")),
             "expected parse warning, got {:?}",
+            ctx.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn constitution_json_rejects_symlinked_file() {
+        let workspace = tempdir().expect("workspace tempdir");
+        let outside = tempdir().expect("outside tempdir");
+        fs::create_dir(workspace.path().join(".git")).expect("mkdir .git");
+        fs::create_dir(workspace.path().join(".deepseek")).expect("mkdir .deepseek");
+        let outside_constitution = outside.path().join("constitution.json");
+        fs::write(
+            &outside_constitution,
+            r#"{"schema_version":1,"authority":["outside authority"]}"#,
+        )
+        .expect("write outside constitution");
+        std::os::unix::fs::symlink(
+            &outside_constitution,
+            workspace.path().join(".deepseek").join("constitution.json"),
+        )
+        .expect("symlink constitution");
+
+        let ctx =
+            load_project_context_with_parents_and_home(workspace.path(), Some(outside.path()));
+
+        assert!(
+            ctx.constitution_block.is_none(),
+            "symlinked constitution must not be loaded: {:?}",
+            ctx.constitution_block
+        );
+        assert!(
+            !ctx.as_system_block()
+                .unwrap_or_default()
+                .contains("outside authority"),
+            "symlink target content must not reach the system block"
+        );
+        assert!(
+            ctx.warnings.iter().any(|w| w.contains("symlinked")),
+            "expected symlink warning, got {:?}",
             ctx.warnings
         );
     }
@@ -1488,7 +1666,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_generated_context_is_bounded_for_many_file_workspace() {
+    fn generated_context_is_bounded_and_ephemeral_for_many_file_workspace() {
         let workspace = tempdir().expect("workspace tempdir");
         let home = tempdir().expect("home tempdir");
         let noisy = workspace.path().join("aaa-many-files");
@@ -1513,9 +1691,17 @@ mod tests {
         assert!(ctx.has_instructions());
 
         let generated_path = workspace.path().join(".deepseek").join("instructions.md");
-        assert_eq!(ctx.source_path.as_deref(), Some(generated_path.as_path()));
-        let generated = fs::read_to_string(&generated_path).expect("read generated");
-        assert!(generated.contains("Project Context (Auto-generated)"));
+        assert_eq!(ctx.source_path, None);
+        assert!(
+            !generated_path.exists(),
+            "generated project context should stay ephemeral"
+        );
+        assert!(
+            !workspace.path().join(".deepseek").exists(),
+            "loading context should not create a .deepseek directory"
+        );
+        let generated = ctx.instructions.as_ref().expect("generated instructions");
+        assert!(generated.contains("Project Context (Auto-generated, ephemeral)"));
         assert!(generated.contains("Bounded Project Overview"));
         assert!(!generated.contains("<project_context_pack>"));
         assert!(
@@ -1610,7 +1796,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_context_regenerates_after_auto_generated_context_is_deleted() {
+    fn cached_generated_context_stays_ephemeral() {
         crate::project_context_cache::clear();
         let workspace = tempdir().expect("workspace tempdir");
         let home = tempdir().expect("home tempdir");
@@ -1619,17 +1805,17 @@ mod tests {
             load_project_context_with_parents_cached_and_home(workspace.path(), Some(home.path()));
         assert!(first.has_instructions());
         let generated_path = workspace.path().join(".deepseek").join("instructions.md");
-        assert!(generated_path.is_file(), "expected generated instructions");
-
-        fs::remove_file(&generated_path).expect("remove generated instructions");
-        assert!(!generated_path.exists());
+        assert!(
+            !generated_path.exists(),
+            "first load should not write generated instructions"
+        );
 
         let second =
             load_project_context_with_parents_cached_and_home(workspace.path(), Some(home.path()));
         assert!(second.has_instructions());
         assert!(
-            generated_path.is_file(),
-            "cache hit under the missing-file signature would skip regeneration"
+            !generated_path.exists(),
+            "cached generated context should remain in memory-only state"
         );
     }
 
@@ -1844,6 +2030,74 @@ mod tests {
     }
 
     #[test]
+    fn test_global_instructions_md_is_autoloaded_and_outranks_whale() {
+        // #3012: a global ~/.deepseek/instructions.md should be auto-loaded as
+        // a fallback context layer, ahead of the deprecated WHALE.md.
+        let workspace = tempdir().expect("workspace tempdir");
+        let home = tempdir().expect("home tempdir");
+
+        let deepseek_dir = home.path().join(".deepseek");
+        fs::create_dir(&deepseek_dir).expect("mkdir .deepseek");
+        fs::write(deepseek_dir.join("WHALE.md"), "Global WHALE legacy")
+            .expect("write deepseek whale");
+        let global_instructions = deepseek_dir.join("instructions.md");
+        fs::write(&global_instructions, "Global instructions body")
+            .expect("write global instructions");
+
+        let ctx = load_project_context_with_parents_and_home(workspace.path(), Some(home.path()));
+
+        assert!(ctx.has_instructions());
+        let instructions = ctx.instructions.as_ref().unwrap();
+        assert!(
+            instructions.contains("Global instructions body"),
+            "global instructions.md should be auto-loaded:\n{instructions}"
+        );
+        assert!(
+            !instructions.contains("Global WHALE legacy"),
+            "instructions.md should outrank the deprecated WHALE.md:\n{instructions}"
+        );
+        assert!(
+            !ctx.warnings
+                .iter()
+                .any(|warning| warning.contains("WHALE.md is deprecated")),
+            "loading instructions.md should not emit a WHALE deprecation warning: {:?}",
+            ctx.warnings
+        );
+        assert_eq!(ctx.source_path, Some(global_instructions));
+    }
+
+    #[test]
+    fn test_global_agents_outranks_global_instructions() {
+        // #3012 precedence: AGENTS.md > instructions.md.
+        let workspace = tempdir().expect("workspace tempdir");
+        let home = tempdir().expect("home tempdir");
+
+        let deepseek_dir = home.path().join(".deepseek");
+        fs::create_dir(&deepseek_dir).expect("mkdir .deepseek");
+        let global_agents = deepseek_dir.join("AGENTS.md");
+        fs::write(&global_agents, "Global AGENTS canonical").expect("write global agents");
+        fs::write(
+            deepseek_dir.join("instructions.md"),
+            "Global instructions body",
+        )
+        .expect("write global instructions");
+
+        let ctx = load_project_context_with_parents_and_home(workspace.path(), Some(home.path()));
+
+        assert!(ctx.has_instructions());
+        let instructions = ctx.instructions.as_ref().unwrap();
+        assert!(
+            instructions.contains("Global AGENTS canonical"),
+            "global AGENTS.md should outrank instructions.md:\n{instructions}"
+        );
+        assert!(
+            !instructions.contains("Global instructions body"),
+            "instructions.md should be skipped when a global AGENTS.md exists:\n{instructions}"
+        );
+        assert_eq!(ctx.source_path, Some(global_agents));
+    }
+
+    #[test]
     fn test_local_and_global_agents_merge_when_both_exist() {
         // #1157: when both `~/.deepseek/AGENTS.md` and a project AGENTS.md
         // exist, the prompt should carry user-wide preferences AND the
@@ -1934,7 +2188,7 @@ mod tests {
             ctx.instructions
                 .as_ref()
                 .unwrap()
-                .contains("Project Context (Auto-generated)")
+                .contains("Project Context (Auto-generated, ephemeral)")
         );
     }
 }

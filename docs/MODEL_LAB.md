@@ -1,14 +1,13 @@
 # Model Lab Roadmap
 
 Model Lab is the planned open-model workbench for DeepSeek. The north star is
-simple: DeepSeek should become the best terminal coding agent for open-source
-and open-weight models across every provider that offers them. Model Lab is how
+simple: DeepSeek should make open-source and open-weight models practical in
+terminal coding workflows across every provider that offers them. Model Lab is how
 those models become discoverable, evaluable, routable, servable, and exportable
 without weakening the current terminal-agent contract: local workspace control,
 explicit provider auth, approval gates, and clear privacy boundaries.
 
-This document is roadmap language. It does not mean every workset below is
-implemented today.
+This document is roadmap language. Some worksets below are roadmap-only.
 
 ## Implemented Today
 
@@ -19,6 +18,10 @@ implemented today.
   Face Inference Providers, generic OpenAI-compatible endpoints, SGLang, vLLM,
   and Ollama are supported provider paths where their IDs appear in
   `/provider`, `deepseek --provider`, or `deepseek models`.
+- Hugging Face Inference Providers are available through the
+  OpenAI-compatible router at `https://router.huggingface.co/v1`. Select the
+  route with `huggingface`, `hugging-face`, `hugging_face`, or `hf`; configure
+  `HUGGINGFACE_API_KEY` or `HF_TOKEN` for auth.
 - Model auto-routing chooses a concrete DeepSeek model and thinking level per
   turn. It is not a TUI mode.
 - Fin is the fast `deepseek-v4-flash` thinking-off path for routing,
@@ -27,7 +30,7 @@ implemented today.
 - Self-hosted OpenAI-compatible endpoints can be used through SGLang, vLLM,
   Ollama, or the generic `openai` provider configuration.
 
-## Not Implemented Yet
+## Still Planned
 
 - A native Hugging Face Hub browser, model passport picker, or direct Hub search
   workflow. The OpenAI-compatible Hugging Face Inference Providers route is
@@ -36,8 +39,8 @@ implemented today.
   Jobs workflows.
 - Native Unsloth, NeMo, or Arcee integrations.
 - A dedicated Model Lab UI tab.
-- Built-in benchmark suites, eval leaderboards, hosted observability, or
-  training-infrastructure orchestration.
+- Built-in eval leaderboards, hosted observability, or training-infrastructure
+  orchestration.
 
 Until those land, use the provider paths above, MCP servers, or external
 workflows explicitly configured by the user.
@@ -59,6 +62,14 @@ describe a model as available before DeepSeek can actually route to it.
 
 ## Hugging Face Workset
 
+Implemented today:
+
+- Hugging Face Inference Providers as an explicit OpenAI-compatible router
+  provider, selected with `huggingface`, `hugging-face`, `hugging_face`, or
+  `hf`.
+- Model IDs are sent to the router exactly as selected, including
+  org-prefixed Hugging Face model IDs.
+
 Planned scope:
 
 - Hub API auth and model discovery.
@@ -71,6 +82,8 @@ Planned scope:
 
 Non-goal for now: claiming native Hub search, model passports, Spaces/Jobs, or
 Model Lab UI exists before those surfaces are implemented in code.
+The inference-provider API key does not imply Hub browsing/export, upload, or
+Jobs authorization.
 
 ## Unsloth Workset
 
@@ -140,8 +153,9 @@ Planned scope:
 - Local files, prompts, transcripts, traces, model outputs, eval results,
   adapters, datasets, and checkpoints should remain local unless the user
   explicitly chooses a provider or export destination.
-- Provider auth must remain explicit. `DEEPSEEK_*`, OpenRouter, Hugging Face,
-  and self-hosted credentials should not be inferred from unrelated config.
+- Provider auth must remain explicit. `DEEPSEEK_*`, OpenRouter,
+  `HUGGINGFACE_API_KEY` / `HF_TOKEN`, and self-hosted credentials should not be
+  inferred from unrelated config.
 - Exportable artifacts should include provenance: source model, provider,
   route, tool policy, eval inputs, and redaction status.
 - Public sharing, hosted telemetry, sponsorship badges, and external branding

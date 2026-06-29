@@ -36,20 +36,20 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            // ON BY DEFAULT since v0.8.6 (#402 P0 survivability) — but the
-            // engine-level `auto_compact` setting was flipped OFF in v0.8.11
-            // (#665) so this default is mostly a fallback for code paths
-            // that build a `CompactionConfig` without going through
-            // `compaction_threshold_for_model_and_effort`. Real per-model
-            // values are still derived through that helper.
+            // ON BY DEFAULT since v0.8.6 (#402 P0 survivability). v0.8.64
+            // resolves the user-facing default through the active model's
+            // known context window, while explicit `auto_compact = false`
+            // remains the opt-out. This fallback covers code paths that build
+            // a `CompactionConfig` directly; real per-model values are still
+            // derived through the threshold helpers.
             enabled: true,
             // v0.8.11: 50K was a 128K-era leftover that biased every
             // unconfigured caller toward "compact almost immediately on V4."
             // Bumped to 800K (80% of V4's 1M window) so the dead-code
             // default matches the hard automatic compaction guardrail. This
             // is intentionally later than the model-visible 60% "suggest
-            // /compact during sustained work" guidance; automatic replacement
-            // compaction rewrites the cacheable prefix and remains opt-in.
+            // /compact during sustained work" guidance so automatic
+            // replacement compaction stays a late continuity guardrail.
             // Real call sites override this via
             // `compaction_threshold_for_model_and_effort`.
             token_threshold: 800_000,
@@ -60,8 +60,6 @@ impl Default for CompactionConfig {
 }
 
 pub const KEEP_RECENT_MESSAGES: usize = 4;
-#[allow(dead_code)]
-pub const HARD_COMPACT_KEEP_RECENT: usize = 8;
 const RECENT_WORKING_SET_WINDOW: usize = 12;
 const MAX_WORKING_SET_PATHS: usize = 24;
 const MIN_SUMMARIZE_MESSAGES: usize = 6;
@@ -121,29 +119,6 @@ fn summary_input_limits_for_model(model: &str) -> SummaryInputLimits {
 pub struct CompactionPlan {
     pub pinned_indices: BTreeSet<usize>,
     pub summarize_indices: Vec<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct HardCompactionConfig {
-    pub enabled: bool,
-    pub keep_recent: usize,
-}
-
-impl Default for HardCompactionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            keep_recent: HARD_COMPACT_KEEP_RECENT,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
-pub struct HardCompactionPlan {
-    pub summarize_indices: Vec<usize>,
-    pub preserved_indices: Vec<usize>,
 }
 
 fn path_regex() -> &'static Regex {
@@ -476,31 +451,6 @@ pub fn plan_compaction(
 }
 
 #[allow(dead_code)]
-pub fn plan_hard_compaction(
-    messages: &[Message],
-    workspace: Option<&Path>,
-    keep_recent: usize,
-) -> Option<HardCompactionPlan> {
-    if keep_recent == 0 || messages.len() < keep_recent.saturating_add(MIN_SUMMARIZE_MESSAGES) {
-        return None;
-    }
-
-    let soft_plan = plan_compaction(messages, workspace, keep_recent, None, None);
-    if soft_plan.summarize_indices.len() < MIN_SUMMARIZE_MESSAGES {
-        return None;
-    }
-
-    let summarized: BTreeSet<_> = soft_plan.summarize_indices.iter().copied().collect();
-    let preserved_indices = (0..messages.len())
-        .filter(|idx| !summarized.contains(idx))
-        .collect();
-
-    Some(HardCompactionPlan {
-        summarize_indices: soft_plan.summarize_indices,
-        preserved_indices,
-    })
-}
-
 fn enforce_tool_call_pairs(messages: &[Message], pinned_indices: &mut BTreeSet<usize>) {
     if pinned_indices.is_empty() {
         return;
@@ -607,7 +557,7 @@ fn estimate_tokens_for_message(message: &Message, include_thinking: bool) -> usi
             ContentBlock::Text { text, .. } => text.len() / 4,
             // Historical reasoning blocks are UI/session metadata for DeepSeek.
             // Only current-turn tool-call reasoning is sent back to the API.
-            ContentBlock::Thinking { thinking } if include_thinking => thinking.len() / 4,
+            ContentBlock::Thinking { thinking, .. } if include_thinking => thinking.len() / 4,
             ContentBlock::Thinking { .. } => 0,
             ContentBlock::ToolUse { input, .. } => serde_json::to_string(input)
                 .map(|s| s.len() / 4)
@@ -638,7 +588,7 @@ fn message_has_tool_use(message: &Message) -> bool {
         .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
 }
 
-fn estimate_text_tokens_conservative(text: &str) -> usize {
+pub fn estimate_text_tokens_conservative(text: &str) -> usize {
     text.chars().count().div_ceil(3)
 }
 
@@ -899,6 +849,7 @@ pub struct CompactionResult {
     /// Summary system prompt
     pub summary_prompt: Option<SystemPrompt>,
     /// Messages that were removed from the active window
+    // TODO(v0.8.71): kept for replay compatibility; dead in production, see #3490
     #[allow(dead_code)]
     pub removed_messages: Vec<Message>,
     /// Number of retries used before success
@@ -1958,6 +1909,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: vec![
                     ContentBlock::Thinking {
+                        signature: None,
                         thinking: thinking.clone(),
                     },
                     ContentBlock::ToolUse {
@@ -2149,80 +2101,6 @@ mod tests {
         let plan = plan_compaction(&messages, None, 1, None, None);
         assert!(plan.pinned_indices.contains(&2));
         assert!(plan.pinned_indices.contains(&1));
-    }
-
-    #[test]
-    fn plan_hard_compaction_returns_none_when_too_few_messages() {
-        let messages = vec![
-            msg("user", "hello"),
-            msg("assistant", "hi"),
-            msg("user", "how are you"),
-            msg("assistant", "good"),
-        ];
-
-        assert!(plan_hard_compaction(&messages, None, HARD_COMPACT_KEEP_RECENT).is_none());
-    }
-
-    #[test]
-    fn plan_hard_compaction_preserves_recent_tail() {
-        let messages: Vec<Message> = (0..20)
-            .map(|i| {
-                msg(
-                    if i % 2 == 0 { "user" } else { "assistant" },
-                    &format!("message {i}"),
-                )
-            })
-            .collect();
-
-        let plan =
-            plan_hard_compaction(&messages, None, HARD_COMPACT_KEEP_RECENT).expect("hard plan");
-
-        let expected_recent: Vec<usize> = (20 - HARD_COMPACT_KEEP_RECENT..20).collect();
-        for idx in expected_recent {
-            assert!(plan.preserved_indices.contains(&idx));
-            assert!(!plan.summarize_indices.contains(&idx));
-        }
-        assert_eq!(plan.summarize_indices, (0..12).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn plan_hard_compaction_keeps_tool_pairs_across_tail_boundary() {
-        let mut messages: Vec<Message> = (0..8)
-            .map(|i| msg("user", &format!("summarizable noise {i}")))
-            .collect();
-        messages.push(Message {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::ToolUse {
-                id: "tail-call".to_string(),
-                name: "read_file".to_string(),
-                input: json!({"path": "crates/tui/src/compaction.rs"}),
-                caller: None,
-            }],
-        });
-        messages.push(Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id: "tail-call".to_string(),
-                content: "file contents".to_string(),
-                is_error: None,
-                content_blocks: None,
-            }],
-        });
-
-        let plan = plan_hard_compaction(&messages, None, 1).expect("hard plan");
-
-        assert!(plan.preserved_indices.contains(&8));
-        assert!(plan.preserved_indices.contains(&9));
-        assert!(!plan.summarize_indices.contains(&8));
-        assert!(!plan.summarize_indices.contains(&9));
-    }
-
-    #[test]
-    fn hard_compaction_config_defaults_to_disabled() {
-        let config = HardCompactionConfig::default();
-
-        assert!(!config.enabled);
-        assert_eq!(config.keep_recent, HARD_COMPACT_KEEP_RECENT);
     }
 
     #[test]

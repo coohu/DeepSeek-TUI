@@ -27,9 +27,11 @@
 //! # Configuration
 //!
 //! The `[lsp]` table in `~/.deepseek/config.toml` controls behavior:
-//! `enabled`, `poll_after_edit_ms`, `max_diagnostics_per_file`,
-//! `include_warnings`, and an optional `servers` override. See
-//! [`LspConfig`] for defaults and `config.example.toml` for documentation.
+//! `enabled`, `poll_after_edit_ms`, `max_diagnostics_per_file`, `include_warnings`,
+//! an optional `servers` override, and a `custom` table for registering LSP
+//! servers for file extensions not covered by the built-in registry (e.g. Ruby,
+//! PHP, C#). See [`LspConfig`] for defaults and `config.example.toml` for
+//! documentation.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -47,6 +49,21 @@ pub mod registry;
 pub use client::{LspTransport, StdioLspTransport};
 pub use diagnostics::{Diagnostic, DiagnosticBlock, Severity, render_blocks};
 pub use registry::Language;
+
+/// User-defined LSP server for one file extension.
+///
+/// Registered via `[lsp.custom.<ext>]` in the config. The extension key is the
+/// file suffix (without the leading dot), e.g. `"php"`, `"rb"`, `"cs"`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CustomLspDef {
+    /// LSP `languageId` value used in `textDocument/didOpen`.
+    pub language_id: String,
+    /// Executable to spawn.
+    pub command: String,
+    /// Arguments passed to the executable.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
 
 /// `[lsp]` config schema. Mirrors the TOML keys documented in
 /// `config.example.toml`. Unknown keys are ignored.
@@ -68,6 +85,10 @@ pub struct LspConfig {
     /// Optional override for the `Language -> (cmd, args)` table. Keys use
     /// [`Language::as_key`] (e.g. `"rust"`).
     pub servers: HashMap<String, Vec<String>>,
+    /// User-defined LSP servers for file extensions not in the built-in
+    /// registry. Keyed by extension (e.g. `"php"`, `"rb"`).
+    #[serde(default)]
+    pub custom: HashMap<String, CustomLspDef>,
 }
 
 impl Default for LspConfig {
@@ -78,6 +99,7 @@ impl Default for LspConfig {
             max_diagnostics_per_file: 20,
             include_warnings: false,
             servers: HashMap::new(),
+            custom: HashMap::new(),
         }
     }
 }
@@ -114,6 +136,10 @@ pub struct LspManager {
     /// Test seam: when set, `diagnostics_for` uses these instead of spawning
     /// real LSP processes. Keyed by language.
     test_transports: AsyncMutex<HashMap<Language, Arc<dyn LspTransport>>>,
+    /// Per-extension transports for user-defined custom language servers.
+    custom_transports: AsyncMutex<HashMap<String, Arc<dyn LspTransport>>>,
+    /// Per-extension "we already warned" guard for custom servers.
+    custom_missing_warned: AsyncMutex<HashSet<String>>,
 }
 
 impl LspManager {
@@ -126,6 +152,8 @@ impl LspManager {
             transports: AsyncMutex::new(HashMap::new()),
             missing_warned: AsyncMutex::new(HashSet::new()),
             test_transports: AsyncMutex::new(HashMap::new()),
+            custom_transports: AsyncMutex::new(HashMap::new()),
+            custom_missing_warned: AsyncMutex::new(HashSet::new()),
         }
     }
 
@@ -155,8 +183,14 @@ impl LspManager {
         if !self.config.enabled {
             return None;
         }
+
         let lang = registry::detect_language(file);
         if lang == Language::Other {
+            // Custom extension fallback: check user-defined LSP servers
+            // for file extensions not covered by the built-in registry.
+            if let Some(custom) = self.config.custom_for_extension(file) {
+                return self.diagnostics_for_custom(file, custom).await;
+            }
             return None;
         }
 
@@ -173,9 +207,20 @@ impl LspManager {
             None => return None,
         };
 
+        self.poll_diagnostics(file, &text, transport).await
+    }
+
+    /// Shared diagnostics polling: send didOpen/didChange, wait, filter,
+    /// sort, and truncate.
+    async fn poll_diagnostics(
+        &self,
+        file: &Path,
+        text: &str,
+        transport: Arc<dyn LspTransport>,
+    ) -> Option<DiagnosticBlock> {
         let wait = Duration::from_millis(self.config.poll_after_edit_ms);
         let inner_wait = wait;
-        let raw = match timeout(wait, transport.diagnostics_for(file, &text, inner_wait)).await {
+        let raw = match timeout(wait, transport.diagnostics_for(file, text, inner_wait)).await {
             Ok(Ok(items)) => items,
             Ok(Err(err)) => {
                 tracing::debug!(?err, file = %file.display(), "lsp: diagnostics call failed");
@@ -215,6 +260,68 @@ impl LspManager {
         }
     }
 
+    /// Diagnostics path for a user-defined custom language server.
+    async fn diagnostics_for_custom(
+        &self,
+        file: &Path,
+        custom: &CustomLspDef,
+    ) -> Option<DiagnosticBlock> {
+        let ext = file.extension()?.to_str()?.to_ascii_lowercase();
+        let text = match tokio::fs::read_to_string(file).await {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::debug!(?err, file = %file.display(), "lsp: read file failed");
+                return None;
+            }
+        };
+        let transport = match self.transport_for_custom(&ext, custom).await {
+            Some(t) => t,
+            None => return None,
+        };
+        self.poll_diagnostics(file, &text, transport).await
+    }
+
+    /// Lazy-spawn a custom LSP server for an extension.
+    async fn transport_for_custom(
+        &self,
+        ext: &str,
+        def: &CustomLspDef,
+    ) -> Option<Arc<dyn LspTransport>> {
+        if let Some(t) = self.custom_transports.lock().await.get(ext) {
+            return Some(t.clone());
+        }
+        match StdioLspTransport::spawn(
+            &def.command,
+            &def.args,
+            &def.language_id,
+            self.workspace.clone(),
+        )
+        .await
+        {
+            Ok(t) => {
+                let arc: Arc<dyn LspTransport> = Arc::new(t);
+                self.custom_transports
+                    .lock()
+                    .await
+                    .insert(ext.to_string(), arc.clone());
+                Some(arc)
+            }
+            Err(err) => {
+                let key = ext.to_string();
+                let mut warned = self.custom_missing_warned.lock().await;
+                if warned.insert(key) {
+                    tracing::warn!(
+                        extension = %ext,
+                        command = %def.command,
+                        error = %err,
+                        "lsp: custom server unavailable; diagnostics disabled for this extension"
+                    );
+                }
+                None
+            }
+        }
+    }
+
     /// Resolve (and lazily spawn) the transport for `lang`. Tests can
     /// short-circuit this via `install_test_transport` (cfg-test only).
     async fn transport_for(&self, lang: Language) -> Option<Arc<dyn LspTransport>> {
@@ -227,7 +334,9 @@ impl LspManager {
         }
 
         let (cmd, args) = self.config.resolve_command(lang)?;
-        match StdioLspTransport::spawn(&cmd, &args, lang, self.workspace.clone()).await {
+        match StdioLspTransport::spawn(&cmd, &args, lang.language_id(), self.workspace.clone())
+            .await
+        {
             Ok(transport) => {
                 let arc: Arc<dyn LspTransport> = Arc::new(transport);
                 self.transports.lock().await.insert(lang, arc.clone());
@@ -258,9 +367,29 @@ impl LspManager {
     pub async fn shutdown_all(&self) {
         let transports: Vec<Arc<dyn LspTransport>> =
             self.transports.lock().await.values().cloned().collect();
+        let custom: Vec<Arc<dyn LspTransport>> = self
+            .custom_transports
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
         for transport in transports {
             transport.shutdown().await;
         }
+        for transport in custom {
+            transport.shutdown().await;
+        }
+    }
+}
+
+impl LspConfig {
+    /// Look up a [`CustomLspDef`] for `file` when the built-in registry
+    /// would return `Language::Other`. Returns `None` when the extension is
+    /// unknown or no custom server is registered for it.
+    fn custom_for_extension(&self, file: &Path) -> Option<&CustomLspDef> {
+        let ext = file.extension()?.to_str()?;
+        self.custom.get(&ext.to_ascii_lowercase())
     }
 }
 
@@ -531,5 +660,131 @@ pub(crate) mod tests {
         let cfg = LspConfig::default();
         let (cmd, _) = cfg.resolve_command(Language::Rust).unwrap();
         assert_eq!(cmd, "rust-analyzer");
+    }
+
+    // ── custom server extension tests ─────────────────────────────────────
+
+    #[test]
+    fn custom_for_extension_none_for_empty_config() {
+        let cfg = LspConfig::default();
+        assert!(cfg.custom_for_extension(&PathBuf::from("foo.rb")).is_none());
+    }
+
+    #[test]
+    fn custom_for_extension_finds_registered_extension() {
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "rb".to_string(),
+            CustomLspDef {
+                language_id: "ruby".to_string(),
+                command: "ruby-lsp".to_string(),
+                args: vec!["--stdio".to_string()],
+            },
+        );
+        let def = cfg
+            .custom_for_extension(&PathBuf::from("lib/hello.rb"))
+            .expect("should find rb");
+        assert_eq!(def.language_id, "ruby");
+        assert_eq!(def.command, "ruby-lsp");
+    }
+
+    #[test]
+    fn custom_for_extension_case_insensitive() {
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "cs".to_string(),
+            CustomLspDef {
+                language_id: "csharp".to_string(),
+                command: "csharp-ls".to_string(),
+                args: vec![],
+            },
+        );
+        assert!(cfg.custom_for_extension(&PathBuf::from("App.CS")).is_some());
+        assert!(cfg.custom_for_extension(&PathBuf::from("App.Cs")).is_some());
+    }
+
+    #[tokio::test]
+    async fn custom_fallback_only_for_other_language() {
+        // Even if [lsp.custom.go] is configured, .go files must still use
+        // the built-in gopls path — custom is a fallback, not an override.
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "go".to_string(),
+            CustomLspDef {
+                language_id: "go".to_string(),
+                command: "custom-gopls".to_string(),
+                args: vec![],
+            },
+        );
+        let mgr = LspManager::new(cfg, dir.path().to_path_buf());
+        let path = dir.path().join("main.go");
+        tokio::fs::write(&path, b"package main\n").await.unwrap();
+
+        // Inject a fake transport for the built-in Go path; we do NOT
+        // inject one for the custom path — so if it accidentally takes
+        // the custom route it will return None.
+        let fake = Arc::new(FakeTransport::new(vec![Diagnostic {
+            line: 1,
+            column: 1,
+            severity: Severity::Error,
+            message: "builtin-go-diag".to_string(),
+        }]));
+        mgr.install_test_transport(Language::Go, fake).await;
+
+        // No custom transport injected — if it hits custom, it returns None.
+        // If it hits built-in, it returns the fake diagnostic.
+        let block = mgr.diagnostics_for(&path, 1).await.expect("has block");
+        let rendered = block.render();
+        assert!(
+            rendered.contains("builtin-go-diag"),
+            "should use built-in Go transport, not custom override: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_for_custom_returns_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = LspConfig::default();
+        cfg.custom.insert(
+            "rb".to_string(),
+            CustomLspDef {
+                language_id: "ruby".to_string(),
+                command: "ruby-lsp".to_string(),
+                args: vec![],
+            },
+        );
+        let mgr = LspManager::new(cfg, dir.path().to_path_buf());
+        let path = dir.path().join("app.rb");
+        tokio::fs::write(&path, b"def foo; end\n").await.unwrap();
+
+        // Inject fake transport into the custom-transport map.
+        let fake = Arc::new(FakeTransport::new(vec![Diagnostic {
+            line: 1,
+            column: 5,
+            severity: Severity::Error,
+            message: "ruby type error".to_string(),
+        }]));
+        mgr.custom_transports
+            .lock()
+            .await
+            .insert("rb".to_string(), fake.clone());
+
+        let block = mgr.diagnostics_for(&path, 1).await.expect("has block");
+        let rendered = block.render();
+        assert!(rendered.contains("ruby type error"));
+        assert_eq!(fake.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn custom_unregistered_extension_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = LspConfig::default();
+        let mgr = LspManager::new(cfg, dir.path().to_path_buf());
+        let path = dir.path().join("script.lua");
+        tokio::fs::write(&path, b"print('hi')\n").await.unwrap();
+
+        // No custom config for .lua and Lua is not built-in → should be None.
+        assert!(mgr.diagnostics_for(&path, 1).await.is_none());
     }
 }

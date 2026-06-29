@@ -23,7 +23,7 @@ const tracksEn = [
     color: "jade",
     items: [
       { title: "Typed tool surface", note: "read, write, edit, patch, grep, shell, git, web search — plus sub-agents, RLM, and MCP" },
-      { title: "Sub-agent parallel execution", note: "agent_open / agent_eval / agent_close; up to 10 concurrent sessions with bounded result handles" },
+      { title: "Sub-agent parallel execution", note: "agent; up to 10 concurrent sessions with bounded result handles" },
       { title: "RLM batched processing", note: "Persistent sandboxed Python REPL with 1–16 cheap parallel children for long-input analysis" },
       { title: "Three operating modes", note: "Plan (read-only), Agent (default), YOLO (auto-approved); orthogonal suggest / auto / never approval" },
       { title: "Per-platform sandbox", note: "seatbelt (macOS), landlock (Linux); Windows containment via restricted tokens (limited)" },
@@ -31,6 +31,7 @@ const tracksEn = [
       { title: "Bidirectional MCP", note: "Consume tools from external servers; expose as server via `deepseek mcp`; ~/.deepseek/mcp.json" },
       { title: "Skills + unified slash palette", note: "~/.deepseek/skills/ auto-loading; /help, /mode, /status, /config, /trust, /feedback" },
       { title: "OpenRouter provider", note: "First-class OpenRouter integration with 300+ models across dozens of providers" },
+      { title: "OpenAI-compatible & local runtimes", note: "Generic `openai` route for any OpenAI-compatible gateway, plus vLLM, SGLang, and Ollama against your own localhost endpoints — no key required" },
       { title: "Multi-provider support", note: "Hot-swap between providers (DeepSeek, OpenAI, Anthropic, OpenRouter) per session" },
     ],
   },
@@ -39,12 +40,11 @@ const tracksEn = [
     cn: "进行中",
     color: "ochre",
     items: [
-      { title: "VS Code extension", note: "Scaffold, local runtime detection, chat webview — first external editor surface (#461–#463)" },
+      { title: "VS Code extension", note: "Phase 0 shipped — terminal launch, runtime health, read-only Agent View; deeper editor integration next (#461–#463)" },
       { title: "Memory typed store", note: "SQLite + FTS5 backend with graph-structured agent memory and multi-signal recall (#534–#536)" },
-      { title: "Feishu / Lark bot", note: "Chat-platform frontend over the existing runtime API (#757)" },
+      { title: "Feishu / Lark bot", note: "First long-connection bridge over the runtime API shipped; richer chat features underway (#757)" },
       { title: "Chinese-market & i18n", note: "Locale-aware UI, platform refinements, region-specific search backends (#755)" },
       { title: "Hugging Face model discovery + Model Lab", note: "Browse, download, and manage models from Hugging Face Hub directly in the TUI" },
-      { title: "ZenMux / OpenAI-compatible providers", note: "Bring any OpenAI-compatible endpoint (vLLM, LiteLLM, Ollama, local) as a first-class provider" },
     ],
   },
   {
@@ -89,7 +89,7 @@ const tracksZh = [
     color: "jade",
     items: [
       { title: "类型化工具集", note: "文件读写、编辑、补丁、搜索、Shell、Git、子 Agent、RLM、MCP——覆盖日常开发全流程" },
-      { title: "子 Agent 并行执行", note: "agent_open / agent_eval / agent_close；最多 10 个并发会话，通过 var_handle 有界读取结果" },
+      { title: "子 Agent 并行执行", note: "agent；最多 10 个并发会话，通过 var_handle 有界读取结果" },
       { title: "RLM 批量处理", note: "持久沙箱 Python REPL，支持 1–16 路廉价并行子调用，处理长文本分析" },
       { title: "三种运行模式", note: "Plan（只读）、Agent（默认）、YOLO（自动批准）；审批模式正交（建议/自动/拒绝）" },
       { title: "跨平台沙箱", note: "seatbelt（macOS）、landlock（Linux）；Windows 通过受限令牌实现基础隔离（功能有限）" },
@@ -97,6 +97,7 @@ const tracksZh = [
       { title: "双向 MCP 协议", note: "消费外部服务器工具；通过 `deepseek mcp` 暴露为服务器；~/.deepseek/mcp.json" },
       { title: "技能 + 统一命令面板", note: "~/.deepseek/skills/ 自动加载；/help、/mode、/status、/config、/trust、/feedback" },
       { title: "OpenRouter 提供商", note: "原生集成 OpenRouter，支持 300+ 模型，覆盖数十个提供商" },
+      { title: "OpenAI 兼容与本地运行时", note: "通用 `openai` 路由可接入任意 OpenAI 兼容网关；vLLM、SGLang、Ollama 直连本地端点，无需密钥" },
       { title: "多提供商支持", note: "按会话动态切换提供商（DeepSeek、OpenAI、Anthropic、OpenRouter）" },
     ],
   },
@@ -105,12 +106,11 @@ const tracksZh = [
     cn: "Underway",
     color: "ochre",
     items: [
-      { title: "VS Code 扩展", note: "脚手架、本地运行时检测、聊天 Webview——首个外部编辑器集成（#461–#463）" },
+      { title: "VS Code 扩展", note: "Phase 0 已发布——终端启动、运行时健康检查、只读 Agent 视图；更深入的编辑器集成在路上（#461–#463）" },
       { title: "记忆类型化存储", note: "SQLite + FTS5 后端，图结构 Agent 记忆，多信号召回（#534–#536）" },
-      { title: "飞书 / Lark 机器人", note: "基于现有 runtime API 的聊天平台前端（#757）" },
+      { title: "飞书 / Lark 机器人", note: "基于 runtime API 的长连接桥接已发布首版；更丰富的对话能力进行中（#757）" },
       { title: "中国市场与国际化改进", note: "本地化 UI、平台优化、区域搜索引擎（#755）" },
       { title: "Hugging Face 模型发现 + 模型实验室", note: "在 TUI 中直接浏览、下载和管理 Hugging Face Hub 上的模型" },
-      { title: "ZenMux / OpenAI 兼容提供商", note: "将任意 OpenAI 兼容端点（vLLM、LiteLLM、Ollama、本地模型）作为一级提供商接入" },
     ],
   },
   {

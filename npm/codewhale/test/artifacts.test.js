@@ -71,6 +71,8 @@ test("allAssetNames includes every matrix entry", () => {
   const assetNames = allAssetNames();
   assert.ok(assetNames.includes("deepseek-windows-x64.exe"));
   assert.ok(assetNames.includes("deepseek-tui-windows-x64.exe"));
+  assert.ok(assetNames.includes("codew-windows-x64.exe"));
   assert.ok(assetNames.includes("deepseek.bat"));
+  assert.ok(allReleaseAssetNames().includes("codew-windows-x64.exe"));
   assert.ok(allReleaseAssetNames().includes("deepseek.bat"));
 });

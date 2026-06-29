@@ -31,8 +31,7 @@
 //! UI-side rendering of the inline `full output: <path>` annotation
 //! is owned by `tui/history.rs::render_spillover_annotation`. The
 //! tool-details pager opens the spillover file when the user
-//! presses `Alt+V` (or plain `v` with empty composer) on a spilled
-//! tool cell.
+//! presses the tool-details shortcut on a spilled tool cell.
 
 use std::fs;
 use std::io;

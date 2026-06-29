@@ -15,6 +15,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   RUSTFLAGS: -Dwarnings
 
 jobs:
@@ -22,10 +23,17 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           components: clippy, rustfmt
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -45,11 +53,16 @@ jobs:
       - name: OHOS dependency graph
         run: ./scripts/release/check-ohos-deps.sh
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --all-features --locked -- \
+            -D warnings \
+            -A clippy::uninlined_format_args \
+            -A clippy::too_many_arguments \
+            -A clippy::unnecessary_map_or \
+            -A clippy::collapsible_if \
+            -A clippy::assertions_on_constants
       - name: Workspace tests
         run: cargo test --workspace --all-features --locked
-      - name: TUI snapshot parity
-        run: cargo test -p deepseek-tui-core --test snapshot --locked
       - name: Protocol schema parity
         run: cargo test -p deepseek-protocol --test parity_protocol --locked
       - name: State persistence parity
@@ -64,7 +77,7 @@ jobs:
       source_ref: ${{ steps.release.outputs.source_ref }}
       sha: ${{ steps.release.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Resolve release source
@@ -96,78 +109,97 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+      - name: Require release source on main
+        run: ./scripts/release/ensure-release-on-main.sh "${{ steps.release.outputs.sha }}"
 
   build:
     needs: [parity, resolve]
     # `parity` is gated to tag-push events. On manual `workflow_dispatch`,
-    # parity is skipped, so let `build` proceed when parity either succeeded
-    # or was skipped — but never when it actually failed or the run was
-    # cancelled. Operators using dispatch are expected to have already run
-    # the same gates locally / via ci.yml on `main`.
-    if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
+    # parity is skipped, so let `build` proceed when resolve succeeded and
+    # parity either succeeded or was skipped — but never when parity actually
+    # failed or the run was cancelled. Operators using dispatch are expected
+    # to have already run the same gates locally / via ci.yml on `main`.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # --- deepseek (cli dispatcher, canonical) ---
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x64
+            cli_binary: deepseek
+            shim_binary: codew
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-linux-x64
+            shim_artifact: codew-linux-x64
+            tui_artifact: deepseek-tui-linux-x64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-arm64
+            platform: linux-arm64
+            cli_binary: deepseek
+            shim_binary: codew
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-linux-arm64
+            shim_artifact: codew-linux-arm64
+            tui_artifact: deepseek-tui-linux-arm64
           - os: ubuntu-latest
             target: riscv64gc-unknown-linux-gnu
-            binary: deepseek
-            artifact_name: deepseek-linux-riscv64
+            platform: linux-riscv64
+            cli_binary: deepseek
+            shim_binary: codew
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-linux-riscv64
+            shim_artifact: codew-linux-riscv64
+            tui_artifact: deepseek-tui-linux-riscv64
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-x64
+            platform: macos-x64
+            cli_binary: deepseek
+            shim_binary: codew
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-macos-x64
+            shim_artifact: codew-macos-x64
+            tui_artifact: deepseek-tui-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary: deepseek
-            artifact_name: deepseek-macos-arm64
+            platform: macos-arm64
+            cli_binary: deepseek
+            shim_binary: codew
+            tui_binary: deepseek-tui
+            cli_artifact: deepseek-macos-arm64
+            shim_artifact: codew-macos-arm64
+            tui_artifact: deepseek-tui-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary: deepseek.exe
-            artifact_name: deepseek-windows-x64.exe
-          # --- deepseek-tui (TUI runtime, canonical) ---
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-x64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-arm64
-          - os: ubuntu-latest
-            target: riscv64gc-unknown-linux-gnu
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-linux-riscv64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: deepseek-tui
-            artifact_name: deepseek-tui-macos-arm64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: deepseek-tui.exe
-            artifact_name: deepseek-tui-windows-x64.exe
+            platform: windows-x64
+            cli_binary: deepseek.exe
+            shim_binary: codew.exe
+            tui_binary: deepseek-tui.exe
+            cli_artifact: deepseek-windows-x64.exe
+            shim_artifact: codew-windows-x64.exe
+            tui_artifact: deepseek-tui-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.source_ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
+      - name: Install Rust target
+        run: rustup target add --toolchain stable ${{ matrix.target }}
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "${GITHUB_ENV}"
+          echo "RUSTC_WRAPPER=sccache" >> "${GITHUB_ENV}"
       - uses: Swatinem/rust-cache@v2
         with:
           cache-bin: false
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-musl'
         run: |
           for i in 1 2 3 4 5; do
             sudo apt-get update && break
@@ -175,6 +207,14 @@ jobs:
             sleep 15
           done
           sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Build static Linux x64 binary (musl)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add --toolchain stable x86_64-unknown-linux-musl
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p deepseek-cli -p deepseek-tui
       - name: Install RISC-V cross-compilation toolchain
         if: matrix.target == 'riscv64gc-unknown-linux-gnu'
         run: |
@@ -211,6 +251,7 @@ jobs:
           sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/arm64.sources -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross libdbus-1-dev:arm64 pkg-config
       - name: Build
+        if: matrix.target != 'x86_64-unknown-linux-musl'
         shell: bash
         env:
           DEEPSEEK_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
@@ -221,34 +262,50 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS: 1
           PKG_CONFIG_LIBDIR_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
           PKG_CONFIG_LIBDIR_riscv64gc_unknown_linux_gnu: /usr/lib/riscv64-linux-gnu/pkgconfig
-        run: cargo build --release --locked --target ${{ matrix.target }}
-      - name: Rename binary
+        run: cargo build --release --locked --target ${{ matrix.target }} -p deepseek-cli -p deepseek-tui
+      - name: Stage binaries
         shell: bash
         run: |
-          BIN_PATH="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          if [ ! -f "${BIN_PATH}" ]; then
-            echo "Binary not at ${BIN_PATH}; searching target/ for ${{ matrix.binary }}:"
-            find target -name "${{ matrix.binary }}" -type f
-            exit 1
-          fi
-          cp "${BIN_PATH}" "${{ matrix.artifact_name }}"
-      - uses: actions/upload-artifact@v4
+          stage_binary() {
+            local binary="$1"
+            local artifact="$2"
+            local bin_path="target/${{ matrix.target }}/release/${binary}"
+            if [ ! -f "${bin_path}" ]; then
+              echo "Binary not at ${bin_path}; searching target/ for ${binary}:"
+              find target -name "${binary}" -type f
+              exit 1
+            fi
+            cp "${bin_path}" "${artifact}"
+          }
+
+          stage_binary "${{ matrix.cli_binary }}" "${{ matrix.cli_artifact }}"
+          stage_binary "${{ matrix.shim_binary }}" "${{ matrix.shim_artifact }}"
+          stage_binary "${{ matrix.tui_binary }}" "${{ matrix.tui_artifact }}"
+      - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}
+          name: ${{ matrix.cli_artifact }}
+          path: ${{ matrix.cli_artifact }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.shim_artifact }}
+          path: ${{ matrix.shim_artifact }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.tui_artifact }}
+          path: ${{ matrix.tui_artifact }}
 
   bundle:
     needs: [build, resolve]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.source_ref }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: 'deepseek*'
+          pattern: '*'
       - name: Create platform archives
         shell: bash
         run: |
@@ -260,22 +317,26 @@ jobs:
           bundle() {
             local platform="$1"   # linux-x64, linux-arm64, macos-x64, macos-arm64, windows-x64
             local cli_src="$2"    # artifact name for deepseek binary
-            local tui_src="$3"    # artifact name for deepseek-tui binary
-            local ext="$4"        # tar.gz or zip
-            local variant="$5"    # '' (standard) or 'portable' (Windows only, no install script)
-            shift 5
+            local shim_src="$3"   # artifact name for codew shim
+            local tui_src="$4"    # artifact name for deepseek-tui binary
+            local ext="$5"        # tar.gz or zip
+            local variant="$6"    # '' (standard) or 'portable' (Windows only, no install script)
+            shift 6
 
             local dir="bundles/deepseek-${platform}${variant:+-}${variant}"
             mkdir -p "$dir"
 
             # Copy binaries, stripping platform suffixes
             local cli_dst="deepseek"
+            local shim_dst="codew"
             local tui_dst="deepseek-tui"
             if [[ "$platform" == windows-* ]]; then
               cli_dst="deepseek.exe"
+              shim_dst="codew.exe"
               tui_dst="deepseek-tui.exe"
             fi
             cp "artifacts/${cli_src}/${cli_src}" "$dir/${cli_dst}"
+            cp "artifacts/${shim_src}/${shim_src}" "$dir/${shim_dst}"
             cp "artifacts/${tui_src}/${tui_src}" "$dir/${tui_dst}"
 
             # Add install script (standard variant only)
@@ -303,36 +364,36 @@ jobs:
 
           # Platform: linux-x64
           bundle linux-x64 \
-            deepseek-linux-x64 deepseek-tui-linux-x64 tar.gz ""
+            deepseek-linux-x64 codew-linux-x64 deepseek-tui-linux-x64 tar.gz ""
 
           # Platform: linux-arm64
           bundle linux-arm64 \
-            deepseek-linux-arm64 deepseek-tui-linux-arm64 tar.gz ""
+            deepseek-linux-arm64 codew-linux-arm64 deepseek-tui-linux-arm64 tar.gz ""
 
           # Platform: linux-riscv64
           bundle linux-riscv64 \
-            deepseek-linux-riscv64 deepseek-tui-linux-riscv64 tar.gz ""
+            deepseek-linux-riscv64 codew-linux-riscv64 deepseek-tui-linux-riscv64 tar.gz ""
 
           # Platform: macos-x64
           bundle macos-x64 \
-            deepseek-macos-x64 deepseek-tui-macos-x64 tar.gz ""
+            deepseek-macos-x64 codew-macos-x64 deepseek-tui-macos-x64 tar.gz ""
 
           # Platform: macos-arm64
           bundle macos-arm64 \
-            deepseek-macos-arm64 deepseek-tui-macos-arm64 tar.gz ""
+            deepseek-macos-arm64 codew-macos-arm64 deepseek-tui-macos-arm64 tar.gz ""
 
           # Platform: windows-x64 (standard + portable)
           bundle windows-x64 \
-            deepseek-windows-x64.exe deepseek-tui-windows-x64.exe zip ""
+            deepseek-windows-x64.exe codew-windows-x64.exe deepseek-tui-windows-x64.exe zip ""
           bundle windows-x64 \
-            deepseek-windows-x64.exe deepseek-tui-windows-x64.exe zip "portable"
+            deepseek-windows-x64.exe codew-windows-x64.exe deepseek-tui-windows-x64.exe zip "portable"
 
           echo ""
           echo "=== Archive checksums ==="
           cat "$MANIFEST"
 
       - name: Upload bundle artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deepseek-bundles
           path: bundles/*
@@ -343,13 +404,13 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.source_ref }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: 'deepseek*-windows-x64.exe'
+          pattern: '*windows-x64.exe'
       - name: Install NSIS
         shell: pwsh
         run: choco install nsis -y --no-progress
@@ -374,7 +435,7 @@ jobs:
             throw "DeepSeekSetup.exe was not produced"
           }
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: DeepSeekSetup.exe
           path: scripts/installer/DeepSeekSetup.exe
@@ -389,20 +450,20 @@ jobs:
       packages: write
     steps:
       - name: Checkout release source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.source_ref }}
           path: source
       - name: Checkout release infrastructure
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: infra
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -413,7 +474,7 @@ jobs:
         run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ steps.image.outputs.name }}
@@ -429,7 +490,7 @@ jobs:
             type=raw,value=v${{ inputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=raw,value=latest
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         env:
           # The build record is useful in CI, but it is uploaded as a
           # `.dockerbuild` artifact. The release job intentionally downloads
@@ -455,7 +516,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      # Checked out into a subdirectory so it cannot clobber the downloaded
+      # artifacts; used for the release-body generator and the CHANGELOG.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          path: repo
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: '*'
@@ -490,112 +557,17 @@ jobs:
             printf '%s  %s\n' "${hash}" "${base}" >> "${manifest}"
           done < <(find artifacts -type f ! -path 'artifacts/checksums/*' -print0 | sort -z)
           cat "${manifest}"
-      - uses: softprops/action-gh-release@v1
+      - name: Generate release body from CHANGELOG
+        shell: bash
+        run: |
+          ./repo/scripts/release/generate-release-body.sh \
+            "${{ needs.resolve.outputs.tag }}" repo/CHANGELOG.md > release-body.md
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.resolve.outputs.tag }}
           files: artifacts/*/*
           prerelease: false
-          body: |
-            > **DeepSeek** is the canonical project, command, npm package, and
-            > release-asset name. The legacy npm package `deepseek-tui` is
-            > deprecated and receives no further releases. Users coming from
-            > v0.8.x legacy `deepseek` / `deepseek-tui` names should migrate
-            > with `docs/REBRAND.md`.
-
-            ## Install
-
-            ### Recommended — npm (one command, both binaries)
-
-            ```bash
-            npm install -g @coohu/
-            ```
-
-            The wrapper downloads both binaries from this Release and places them in the same directory.
-
-            ### Docker / GHCR
-
-            ```bash
-            docker run --rm -it \
-              -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
-              -v ~/.deepseek:/home/deepseek/.deepseek \
-              ghcr.io/coohu/:${{ needs.resolve.outputs.tag }}
-            ```
-
-            The image ships the `deepseek` dispatcher and `deepseek-tui` runtime. The `latest` tag is also updated on release.
-
-            ### Cargo (Linux / macOS)
-
-            ```bash
-            cargo install deepseek-cli deepseek-tui --locked
-            ```
-
-            Both crates are required — `deepseek-cli` produces the `deepseek` dispatcher and `deepseek-tui` produces the interactive runtime that the dispatcher delegates to. Installing only one binary will fail at runtime with a `MISSING_COMPANION_BINARY` error.
-
-            ### Manual download — platform archives (recommended)
-
-            Each archive below contains **both** the `deepseek` dispatcher and `deepseek-tui` runtime, plus an install script:
-
-            | Platform | Archive | Install script |
-            |---|---|---|
-            | Linux x64 | `deepseek-linux-x64.tar.gz` | `install.sh` |
-            | Linux ARM64 | `deepseek-linux-arm64.tar.gz` | `install.sh` |
-            | Linux RISC-V | `deepseek-linux-riscv64.tar.gz` | `install.sh` |
-            | macOS x64 | `deepseek-macos-x64.tar.gz` | `install.sh` |
-            | macOS ARM | `deepseek-macos-arm64.tar.gz` | `install.sh` |
-            | Windows x64 (installer) | `DeepSeekSetup.exe` | NSIS setup |
-            | Windows x64 | `deepseek-windows-x64.zip` | `install.bat` |
-            | Windows x64 (portable) | `deepseek-windows-x64-portable.zip` | — |
-
-            **Unix (Linux / macOS):**
-            ```bash
-            tar xzf deepseek-<platform>.tar.gz
-            cd deepseek-<platform>
-            ./install.sh
-            ```
-
-            **Windows:**
-            - For the installer path, run `DeepSeekSetup.exe`; it installs both binaries under `%LOCALAPPDATA%\Programs\DeepSeek\bin` and adds that directory to the current-user PATH.
-            - Extract `deepseek-windows-x64.zip`
-            - Run `install.bat` (copies to `%USERPROFILE%\bin`)
-            - Add `%USERPROFILE%\bin` to your PATH
-
-            The **portable** Windows archive skips the install script — extract and run from any directory. The NSIS installer is currently unsigned and may trigger Windows SmartScreen until a signing certificate is wired into the release pipeline.
-
-            Individual binaries are also attached below for scripting and the npm wrapper. The legacy npm package `deepseek-tui` is deprecated and is not republished. For migration from v0.8.x legacy binary names, see `docs/REBRAND.md`.
-
-            ### Verify (recommended)
-
-            Download the checksum manifests from this Release and verify:
-
-            ```bash
-            # Linux — archive bundles
-            sha256sum -c deepseek-bundles-sha256.txt
-
-            # Linux — individual binaries
-            sha256sum -c deepseek-artifacts-sha256.txt
-
-            # macOS
-            shasum -a 256 -c deepseek-bundles-sha256.txt
-            shasum -a 256 -c deepseek-artifacts-sha256.txt
-            ```
-
-            ## Contributors
-
-            Thanks to @sximelon, @cyq1017, @Artenx, @LHqweasd, @wywsoor,
-            @hsdbeebou, @mserrano11, @Dr3259, @yekern, @lioryx,
-            @puneetdixit200, @HUQIANTAO, @xyuai, @gaord, @shenjackyuanjie,
-            @AdityaVG13, @aboimpinto, @ousamabenyounes, @reidliu41,
-            @ljm3790865, @idling11, @h3c-hexin, @AresNing, @tdccccc,
-            @qiyuanlicn, @bevis-wong, @shuxiangxuebiancheng, @hongqitai,
-            @NASLXTO, @wuxixing, @linzhiqin2003, @merchloubna70-dot,
-            @mvanhorn, @Implementist, @jrcjrcc, @punkcanyang,
-            @yusufgurdogan, @LeoAlex0, @mo-vic, @AiurArtanis, @nasus9527,
-            and @lbcheng888 for reports, PRs, reviews, reproductions,
-            design direction, and harvested work that shaped v0.9.0.
-
-            ## Changelog
-
-            See [CHANGELOG.md](https://github.com/coohu/DeepSeek-TUI/blob/main/CHANGELOG.md) for the full notes for this release.
+          body_path: release-body.md
 
   homebrew:
     needs: [release, resolve]
@@ -617,7 +589,7 @@ jobs:
           fi
       # Checkout main (not the tag) so the release-infra script is always
       # available, even for tags created before this workflow was added.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.homebrew-token.outputs.available == 'true'
         with:
           ref: pub

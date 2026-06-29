@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CODEWHALE_USER="${CODEWHALE_USER:-${DEEPSEEK_USER:-deepseek}}"
-CODEWHALE_ROOT="${CODEWHALE_ROOT:-${DEEPSEEK_ROOT:-/opt/deepseek}}"
+DEEPSEEK_USER="${DEEPSEEK_USER:-${DEEPSEEK_USER:-deepseek}}"
+DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-${DEEPSEEK_ROOT:-/opt/deepseek}}"
 WHALEBRO_ROOT="${WHALEBRO_ROOT:-/opt/whalebro}"
 if [[ -z "${RUNTIME_ENV:-}" ]]; then
   if [[ -f /etc/deepseek/runtime.env || ! -f /etc/deepseek/runtime.env ]]; then
@@ -12,7 +12,7 @@ if [[ -z "${RUNTIME_ENV:-}" ]]; then
   fi
 fi
 REPO_ROOT="${REPO_ROOT:-${WHALEBRO_ROOT}/deepseek}"
-BRIDGE_KIND="${CODEWHALE_BRIDGE:-${DEEPSEEK_BRIDGE:-feishu}}"
+BRIDGE_KIND="${DEEPSEEK_BRIDGE:-${DEEPSEEK_BRIDGE:-feishu}}"
 
 case "${BRIDGE_KIND}" in
   feishu|lark)
@@ -23,7 +23,7 @@ case "${BRIDGE_KIND}" in
         BRIDGE_ENV="/etc/deepseek/feishu-bridge.env"
       fi
     fi
-    BRIDGE_DIR="${BRIDGE_DIR:-${CODEWHALE_ROOT}/bridge}"
+    BRIDGE_DIR="${BRIDGE_DIR:-${DEEPSEEK_ROOT}/bridge}"
     BRIDGE_UNIT="${BRIDGE_UNIT:-deepseek-feishu-bridge}"
     BRIDGE_PACKAGE="${BRIDGE_PACKAGE:-integrations/feishu-bridge}"
     ;;
@@ -35,12 +35,12 @@ case "${BRIDGE_KIND}" in
         BRIDGE_ENV="/etc/deepseek/telegram-bridge.env"
       fi
     fi
-    BRIDGE_DIR="${BRIDGE_DIR:-${CODEWHALE_ROOT}/telegram-bridge}"
+    BRIDGE_DIR="${BRIDGE_DIR:-${DEEPSEEK_ROOT}/telegram-bridge}"
     BRIDGE_UNIT="${BRIDGE_UNIT:-deepseek-telegram-bridge}"
     BRIDGE_PACKAGE="${BRIDGE_PACKAGE:-integrations/telegram-bridge}"
     ;;
   *)
-    echo "Unknown bridge '${BRIDGE_KIND}'. Use CODEWHALE_BRIDGE=feishu or CODEWHALE_BRIDGE=telegram." >&2
+    echo "Unknown bridge '${BRIDGE_KIND}'. Use DEEPSEEK_BRIDGE=feishu or DEEPSEEK_BRIDGE=telegram." >&2
     exit 1
     ;;
 esac
@@ -156,7 +156,7 @@ check_binaries() {
     pass "${deepseek} is executable"
     "${deepseek}" --version 2>/dev/null | sed 's/^/[info] deepseek version: /' || warn "deepseek --version failed"
 =======
-  local cargo_bin="/home/${CODEWHALE_USER}/.cargo/bin"
+  local cargo_bin="/home/${DEEPSEEK_USER}/.cargo/bin"
   local deepseek="${cargo_bin}/deepseek"
   local tui="${cargo_bin}/deepseek-tui"
   if [[ -x "${deepseek}" ]]; then
@@ -198,18 +198,18 @@ check_env() {
   check_env_file "${BRIDGE_ENV}" "bridge"
 
   local runtime_token bridge_token workspace domain allow_groups allow_unlisted provider
-  runtime_token="$(env_value_any "${RUNTIME_ENV}" CODEWHALE_RUNTIME_TOKEN DEEPSEEK_RUNTIME_TOKEN)"
-  bridge_token="$(env_value_any "${BRIDGE_ENV}" CODEWHALE_RUNTIME_TOKEN DEEPSEEK_RUNTIME_TOKEN)"
-  workspace="$(env_value_any "${BRIDGE_ENV}" CODEWHALE_WORKSPACE DEEPSEEK_WORKSPACE)"
-  provider="$(env_value_any "${RUNTIME_ENV}" CODEWHALE_PROVIDER DEEPSEEK_PROVIDER)"
+  runtime_token="$(env_value_any "${RUNTIME_ENV}" DEEPSEEK_RUNTIME_TOKEN DEEPSEEK_RUNTIME_TOKEN)"
+  bridge_token="$(env_value_any "${BRIDGE_ENV}" DEEPSEEK_RUNTIME_TOKEN DEEPSEEK_RUNTIME_TOKEN)"
+  workspace="$(env_value_any "${BRIDGE_ENV}" DEEPSEEK_WORKSPACE DEEPSEEK_WORKSPACE)"
+  provider="$(env_value_any "${RUNTIME_ENV}" DEEPSEEK_PROVIDER DEEPSEEK_PROVIDER)"
 
   if [[ "${BRIDGE_KIND}" == "telegram" ]]; then
     allow_groups="$(env_value "${BRIDGE_ENV}" TELEGRAM_ALLOW_GROUPS)"
-    allow_unlisted="$(env_value_any "${BRIDGE_ENV}" TELEGRAM_ALLOW_UNLISTED CODEWHALE_ALLOW_UNLISTED DEEPSEEK_ALLOW_UNLISTED)"
+    allow_unlisted="$(env_value_any "${BRIDGE_ENV}" TELEGRAM_ALLOW_UNLISTED DEEPSEEK_ALLOW_UNLISTED DEEPSEEK_ALLOW_UNLISTED)"
   else
     domain="$(env_value "${BRIDGE_ENV}" FEISHU_DOMAIN)"
     allow_groups="$(env_value "${BRIDGE_ENV}" FEISHU_ALLOW_GROUPS)"
-    allow_unlisted="$(env_value_any "${BRIDGE_ENV}" CODEWHALE_ALLOW_UNLISTED DEEPSEEK_ALLOW_UNLISTED)"
+    allow_unlisted="$(env_value_any "${BRIDGE_ENV}" DEEPSEEK_ALLOW_UNLISTED DEEPSEEK_ALLOW_UNLISTED)"
   fi
 
   if is_placeholder "${runtime_token}"; then
@@ -256,8 +256,8 @@ check_validator() {
     return
   fi
   local runner=(node)
-  if [[ "${EUID}" -eq 0 ]] && id -u "${CODEWHALE_USER}" >/dev/null 2>&1 && have_command sudo; then
-    runner=(sudo -u "${CODEWHALE_USER}" node)
+  if [[ "${EUID}" -eq 0 ]] && id -u "${DEEPSEEK_USER}" >/dev/null 2>&1 && have_command sudo; then
+    runner=(sudo -u "${DEEPSEEK_USER}" node)
   fi
   if "${runner[@]}" "${validator}" --env "${BRIDGE_ENV}" --runtime-env "${RUNTIME_ENV}" --workspace-root "${WHALEBRO_ROOT}" --check-filesystem; then
     pass "bridge config validator passed"
@@ -305,9 +305,9 @@ check_bridge_install() {
 check_localhost_health() {
   section "Localhost health"
   local port token
-  port="$(env_value_any "${RUNTIME_ENV}" CODEWHALE_RUNTIME_PORT DEEPSEEK_RUNTIME_PORT)"
+  port="$(env_value_any "${RUNTIME_ENV}" DEEPSEEK_RUNTIME_PORT DEEPSEEK_RUNTIME_PORT)"
   port="${port:-7878}"
-  token="$(env_value_any "${BRIDGE_ENV}" CODEWHALE_RUNTIME_TOKEN DEEPSEEK_RUNTIME_TOKEN)"
+  token="$(env_value_any "${BRIDGE_ENV}" DEEPSEEK_RUNTIME_TOKEN DEEPSEEK_RUNTIME_TOKEN)"
 
   if have_command ss; then
     local listeners

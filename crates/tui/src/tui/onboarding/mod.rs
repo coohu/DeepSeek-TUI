@@ -19,6 +19,8 @@ use ratatui::{
 use crate::palette;
 use crate::tui::app::{App, OnboardingState};
 
+const ONBOARDED_MARKER_FILE: &str = ".onboarded";
+
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().style(Style::default().bg(palette::DEEPSEEK_INK));
     f.render_widget(block, area);
@@ -46,7 +48,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .title(Line::from(Span::styled(
                 " DeepSeek ",
                 Style::default()
-                    .fg(palette::DEEPSEEK_BLUE)
+                    .fg(palette::WHALE_ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
             )))
             .borders(Borders::ALL)
@@ -137,13 +139,15 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
 }
 
 pub fn default_marker_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| {
-        let primary = home.join(".deepseek").join(".onboarded");
-        if primary.exists() {
-            return primary;
-        }
-        home.join(".deepseek").join(".onboarded")
-    })
+    crate::config::effective_home_dir().map(|home| marker_path_with_home(&home))
+}
+
+fn marker_path_with_home(home: &Path) -> PathBuf {
+    let primary = home.join(".deepseek").join(ONBOARDED_MARKER_FILE);
+    if primary.exists() {
+        return primary;
+    }
+    primary
 }
 
 pub fn is_onboarded() -> bool {
@@ -151,9 +155,14 @@ pub fn is_onboarded() -> bool {
 }
 
 pub fn mark_onboarded() -> std::io::Result<PathBuf> {
-    let path = default_marker_path().ok_or_else(|| {
+    let home = crate::config::effective_home_dir().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found")
     })?;
+    mark_onboarded_at_home(&home)
+}
+
+fn mark_onboarded_at_home(home: &Path) -> std::io::Result<PathBuf> {
+    let path = marker_path_with_home(home);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -257,6 +266,33 @@ pub fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_legacy_marker_is_preserved() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let legacy = tmp.path().join(".deepseek").join(ONBOARDED_MARKER_FILE);
+        std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("mkdir legacy");
+        std::fs::write(&legacy, "").expect("seed legacy marker");
+
+        assert_eq!(marker_path_with_home(tmp.path()), legacy);
+        assert_eq!(
+            mark_onboarded_at_home(tmp.path()).expect("mark onboarded"),
+            legacy
+        );
+    }
+
+    #[test]
+    fn deepseek_marker_wins_over_legacy_marker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let primary = tmp.path().join(".deepseek").join(ONBOARDED_MARKER_FILE);
+        let legacy = tmp.path().join(".deepseek").join(ONBOARDED_MARKER_FILE);
+        for marker in [&primary, &legacy] {
+            std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("mkdir");
+            std::fs::write(marker, "").expect("seed marker");
+        }
+
+        assert_eq!(marker_path_with_home(tmp.path()), primary);
+    }
 
     #[test]
     fn validate_rejects_empty_or_whitespace() {

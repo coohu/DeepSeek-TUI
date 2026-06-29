@@ -482,8 +482,8 @@ fn completion_sound_state_for_tests() -> (crate::config::CompletionSound, Option
 /// The notification includes:
 /// - **Title**: "DeepSeek"
 /// - **Subtitle**: First line of `msg` (when the message contains a newline,
-///   e.g. the response preview from a completed turn)
-/// - **Body**: Remaining lines of `msg`, or the full `msg` if single-line
+///   e.g. the localized completion status from a completed turn)
+/// - **Body**: Remaining lines of `msg`, if any
 /// - **Sound**: Default macOS notification sound
 ///
 /// The message body is capped at 200 **characters** (not bytes) to keep the
@@ -503,7 +503,7 @@ fn completion_sound_state_for_tests() -> (crate::config::CompletionSound, Option
 /// swallowed.
 #[cfg(target_os = "macos")]
 fn macos_display_notification(msg: &str) {
-    let body = msg.to_string();
+    let message = msg.to_string();
 
     // Spawn on a background thread so we don't block the caller.
     // osascript itself is fast (~50 ms), but spawning a subprocess
@@ -511,53 +511,28 @@ fn macos_display_notification(msg: &str) {
     let _ = std::thread::Builder::new()
         .name("osascript-notif".into())
         .spawn(move || {
-            // Char-bounded truncation (not byte-bounded) so we don't slice
-            // through a multi-byte sequence and emit invalid UTF-8.
-            let body_str: String = body.chars().take(200).collect();
-
             // Build AppleScript that receives the message via ARGV
             // instead of inline string interpolation. AppleScript does
             // not treat backslash as an escape inside double-quoted
             // string literals, so `\"` would terminate the string at
             // the `"` and leave a dangling `\`. Passing the message as
             // a command-line argument avoids any injection risk.
-            //
-            // When the message has multiple lines, the first line
-            // becomes the subtitle and the rest becomes the body —
-            // this lets turn notifications show the response preview
-            // in the subtitle and the duration/cost summary in the body.
-            let mut args: Vec<String> = Vec::new();
-
-            if let Some(idx) = body_str.find('\n') {
-                let subtitle = body_str[..idx].trim();
-                let body_text = body_str[idx + 1..].trim();
-                args.extend_from_slice(&[
-                    "-e".into(),
-                    "on run argv".into(),
-                    "-e".into(),
-                    "set theBody to item 1 of argv".into(),
-                    "-e".into(),
-                    "set theSubtitle to item 2 of argv".into(),
-                    "-e".into(),
-                    "display notification theBody with title \"DeepSeek\" subtitle theSubtitle sound name \"default\"".into(),
-                    "-e".into(),
-                    "end run".into(),
-                    "--".into(),
-                    body_text.into(),
-                    subtitle.into(),
-                ]);
-            } else {
-                args.extend_from_slice(&[
-                    "-e".into(),
-                    "on run argv".into(),
-                    "-e".into(),
-                    "display notification (item 1 of argv) with title \"DeepSeek\" sound name \"default\"".into(),
-                    "-e".into(),
-                    "end run".into(),
-                    "--".into(),
-                    body_str,
-                ]);
-            }
+            let (subtitle, body) = macos_notification_parts(&message);
+            let args = [
+                "-e".to_string(),
+                "on run argv".to_string(),
+                "-e".to_string(),
+                "set theBody to item 1 of argv".to_string(),
+                "-e".to_string(),
+                "set theSubtitle to item 2 of argv".to_string(),
+                "-e".to_string(),
+                "display notification theBody with title \"DeepSeek\" subtitle theSubtitle sound name \"default\"".to_string(),
+                "-e".to_string(),
+                "end run".to_string(),
+                "--".to_string(),
+                body,
+                subtitle,
+            ];
 
             match std::process::Command::new("osascript")
                 .args(&args)
@@ -573,6 +548,38 @@ fn macos_display_notification(msg: &str) {
                 _ => {}
             }
         });
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification_parts(msg: &str) -> (String, String) {
+    const SUBTITLE_MAX_CHARS: usize = 80;
+    const BODY_MAX_CHARS: usize = 200;
+
+    let sanitized = super::ui::sanitize_stream_chunk(msg);
+    let lines: Vec<&str> = sanitized
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    if lines.is_empty() {
+        return ("DeepSeek".to_string(), String::new());
+    }
+
+    let subtitle = truncate_notification_text(lines[0], SUBTITLE_MAX_CHARS);
+    let body = truncate_notification_text(&lines[1..].join("\n"), BODY_MAX_CHARS);
+    (subtitle, body)
+}
+
+#[cfg(target_os = "macos")]
+fn truncate_notification_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let take = max_chars.saturating_sub(3);
+    let mut out = text.chars().take(take).collect::<String>();
+    out.push_str("...");
+    out
 }
 
 /// Return a human-readable duration string, capped at two units so
@@ -644,6 +651,7 @@ pub fn humanize_duration(d: Duration) -> String {
 // *what message* to put in the body. The low-level dispatcher is
 // `notify_done`; everything in this block sits in front of it.
 
+use crate::localization::Locale;
 use crate::models::{ContentBlock, Message};
 use crate::tui::app::App;
 
@@ -700,25 +708,18 @@ pub fn completed_turn_message(
     turn_elapsed: Duration,
     turn_cost: Option<crate::pricing::CostEstimate>,
 ) -> String {
-    let mut msg = text_summary(current_streaming_text)
-        .or_else(|| latest_assistant_text(&app.api_messages))
-        .unwrap_or_else(|| "deepseek: turn complete".to_string());
+    let mut msg = completion_status(
+        notification_turn_complete(app.ui_locale),
+        include_summary,
+        turn_elapsed,
+        turn_cost.map(|cost| crate::pricing::format_cost_estimate(cost, app.cost_currency)),
+    );
 
-    if include_summary {
-        let human = humanize_duration(turn_elapsed);
-        let summary = match turn_cost {
-            Some(c) => {
-                let cost = crate::pricing::format_cost_estimate(c, app.cost_currency);
-                format!("deepseek: turn complete ({human}, {cost})")
-            }
-            None => format!("deepseek: turn complete ({human})"),
-        };
-        if msg == "deepseek: turn complete" {
-            msg = summary;
-        } else {
-            msg.push('\n');
-            msg.push_str(&summary);
-        }
+    if let Some(preview) =
+        text_summary(current_streaming_text).or_else(|| latest_assistant_text(&app.api_messages))
+    {
+        msg.push('\n');
+        msg.push_str(&preview);
     }
 
     msg
@@ -728,6 +729,7 @@ pub fn completed_turn_message(
 /// to a generic "sub-agent X complete" if no human-readable line can
 /// be teased out of the child's transcript.
 pub fn subagent_completion_message(
+    locale: Locale,
     id: &str,
     result: &str,
     include_summary: bool,
@@ -737,18 +739,62 @@ pub fn subagent_completion_message(
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with("<deepseek:subagent.done>"));
-    let mut msg = result_line
+    let mut msg = completion_status(
+        notification_subagent_complete(locale),
+        include_summary,
+        elapsed,
+        None,
+    );
+    let detail = result_line
         .and_then(text_summary)
-        .map(|summary| format!("sub-agent {id}: {summary}"))
-        .unwrap_or_else(|| format!("deepseek: sub-agent {id} complete"));
+        .map(|summary| format!("{id}: {summary}"))
+        .unwrap_or_else(|| id.to_string());
 
-    if include_summary {
-        let human = humanize_duration(elapsed);
-        msg.push('\n');
-        msg.push_str(&format!("deepseek: sub-agent complete ({human})"));
-    }
+    msg.push('\n');
+    msg.push_str(&detail);
 
     msg
+}
+
+fn completion_status(
+    label: &str,
+    include_summary: bool,
+    elapsed: Duration,
+    cost: Option<String>,
+) -> String {
+    if !include_summary {
+        return label.to_string();
+    }
+
+    let human = humanize_duration(elapsed);
+    match cost {
+        Some(cost) => format!("{label} ({human}, {cost})"),
+        None => format!("{label} ({human})"),
+    }
+}
+
+fn notification_turn_complete(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Turn complete",
+        Locale::Ja => "ターン完了",
+        Locale::ZhHans => "本轮已完成",
+        Locale::ZhHant => "本輪已完成",
+        Locale::PtBr => "Turno concluído",
+        Locale::Es419 => "Turno completado",
+        Locale::Vi => "Lượt hoàn tất",
+    }
+}
+
+fn notification_subagent_complete(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => "Sub-agent complete",
+        Locale::Ja => "サブエージェント完了",
+        Locale::ZhHans => "子代理已完成",
+        Locale::ZhHant => "子代理已完成",
+        Locale::PtBr => "Subagente concluído",
+        Locale::Es419 => "Subagente completado",
+        Locale::Vi => "Sub-agent hoàn tất",
+    }
 }
 
 /// Find the latest assistant message in `messages` and return a
@@ -814,8 +860,8 @@ mod tests {
 
     use super::*;
 
-    /// Serialise all tests that mutate `TERM_PROGRAM` to prevent data races
-    /// when the test harness runs them in parallel threads.
+    /// Serialise tests that mutate process-global environment or notification
+    /// sound state while the test harness runs them in parallel threads.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -905,6 +951,28 @@ mod tests {
     fn at_threshold_emits() {
         let out = capture(Method::Osc9, false, "msg", 30, 30);
         assert!(!out.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_notification_keeps_localized_status_as_subtitle() {
+        let (subtitle, body) = macos_notification_parts("ターン完了 (1m 5s)\n完了しました。");
+
+        assert_eq!(subtitle, "ターン完了 (1m 5s)");
+        assert_eq!(body, "完了しました。");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_notification_truncates_body_after_status_line() {
+        let msg = format!("Turn complete\n{}", "assistant preview ".repeat(40));
+
+        let (subtitle, body) = macos_notification_parts(&msg);
+
+        assert_eq!(subtitle, "Turn complete");
+        assert!(body.starts_with("assistant preview"));
+        assert!(body.ends_with("..."));
+        assert_eq!(body.chars().count(), 200);
     }
 
     #[test]
@@ -1263,6 +1331,7 @@ mod tests {
 
     #[test]
     fn settings_installs_custom_completion_sound_file() {
+        let _lock = env_lock();
         let config: crate::config::Config = toml::from_str(
             r#"
             [notifications]

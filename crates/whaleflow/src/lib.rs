@@ -4,6 +4,7 @@
 //! exposure, worktree application, replay, and model execution are layered on
 //! top only after their cancellation and evidence semantics are proven.
 
+mod js_authoring;
 mod model_policy;
 mod replay;
 #[cfg(not(target_env = "ohos"))]
@@ -15,12 +16,19 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use js_authoring::{
+    JavascriptWorkflowError, JavascriptWorkflowResult, compile_javascript_workflow,
+    compile_typescript_workflow,
+};
 pub use model_policy::*;
 pub use replay::*;
 #[cfg(not(target_env = "ohos"))]
 pub use starlark_authoring::{
     compile_starlark_workflow, compile_starlark_workflow_with_repair, repair_starlark_workflow_once,
 };
+
+pub const DEFAULT_FLEET_WORKFLOW_MAX_AGENTS: usize = 100;
+pub const DEFAULT_FLEET_WORKFLOW_MAX_DEPTH: usize = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowConfig {
@@ -60,6 +68,34 @@ pub struct WorkflowSpec {
     pub promotion_policy: PromotionPolicy,
     #[serde(default)]
     pub nodes: Vec<WorkflowNode>,
+}
+
+impl WorkflowSpec {
+    pub fn validate_for_fleet(&self) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+        self.validate_for_fleet_with_limits(WorkflowFleetLimits::default())
+    }
+
+    pub fn validate_for_fleet_with_limits(
+        &self,
+        limits: WorkflowFleetLimits,
+    ) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+        validate_workflow_nodes(&self.nodes)
+            .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
+        let shape = estimate_fleet_shape(&self.nodes)?;
+        if shape.total_agents > limits.max_total_agents {
+            return Err(WorkflowFleetLimitError::TooManyAgents {
+                total_agents: shape.total_agents,
+                max_total_agents: limits.max_total_agents,
+            });
+        }
+        if shape.max_depth > limits.max_depth {
+            return Err(WorkflowFleetLimitError::RecursionTooDeep {
+                depth: shape.max_depth,
+                max_depth: limits.max_depth,
+            });
+        }
+        Ok(shape)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +214,8 @@ pub struct BudgetSpec {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub max_parallel: Option<u8>,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -420,7 +458,6 @@ pub enum AgentType {
     Review,
     Implementer,
     Verifier,
-    ToolAgent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -665,6 +702,8 @@ pub struct MockWorkflowExecutor {
     cancelled: bool,
     max_leaf_steps: Option<u32>,
     leaf_steps_executed: u32,
+    max_leaf_tokens: Option<u64>,
+    leaf_tokens_used: u64,
 }
 
 impl MockWorkflowExecutor {
@@ -706,6 +745,11 @@ impl MockWorkflowExecutor {
 
     pub fn with_max_leaf_steps(mut self, max_leaf_steps: u32) -> Self {
         self.max_leaf_steps = Some(max_leaf_steps);
+        self
+    }
+
+    pub fn with_max_leaf_tokens(mut self, max_leaf_tokens: u64) -> Self {
+        self.max_leaf_tokens = Some(max_leaf_tokens);
         self
     }
 
@@ -942,14 +986,44 @@ impl MockWorkflowExecutor {
                 status: WorkflowRunStatus::BudgetExceeded,
                 usage: WorkflowUsage::default(),
                 memo_usage: WorkflowMemoUsage::default(),
-                output: Some("mock workflow leaf budget exhausted".to_string()),
+                output: Some("mock workflow leaf step budget exhausted".to_string()),
+                artifacts: Vec::new(),
+            };
+        }
+        if self
+            .max_leaf_tokens
+            .is_some_and(|max| self.leaf_tokens_used >= max)
+            || spec.budget.max_tokens == Some(0)
+        {
+            return MockLeafOutcome {
+                status: WorkflowRunStatus::BudgetExceeded,
+                usage: WorkflowUsage::default(),
+                memo_usage: WorkflowMemoUsage::default(),
+                output: Some("mock workflow leaf token budget exhausted".to_string()),
                 artifacts: Vec::new(),
             };
         }
         self.leaf_steps_executed = self.leaf_steps_executed.saturating_add(1);
-        self.leaf_outcomes
+        let outcome = self
+            .leaf_outcomes
             .remove(&spec.id)
-            .unwrap_or_else(|| MockLeafOutcome::succeeded(format!("mock leaf {}", spec.id)))
+            .unwrap_or_else(|| MockLeafOutcome::succeeded(format!("mock leaf {}", spec.id)));
+        let tokens = outcome.usage.total_tokens();
+        if let Some(per_leaf_token_cap) = spec.budget.max_tokens
+            && tokens > per_leaf_token_cap
+        {
+            return MockLeafOutcome {
+                status: WorkflowRunStatus::BudgetExceeded,
+                usage: outcome.usage,
+                memo_usage: outcome.memo_usage,
+                output: Some(format!(
+                    "mock workflow leaf token budget exhausted ({tokens} > {per_leaf_token_cap})"
+                )),
+                artifacts: outcome.artifacts,
+            };
+        }
+        self.leaf_tokens_used = self.leaf_tokens_used.saturating_add(tokens);
+        outcome
     }
 
     fn next_predicate_result(&mut self, node_id: &str) -> bool {
@@ -1436,6 +1510,127 @@ pub enum WorkflowExecutionError {
         field: &'static str,
         reference: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkflowFleetLimits {
+    pub max_total_agents: usize,
+    pub max_depth: usize,
+}
+
+impl Default for WorkflowFleetLimits {
+    fn default() -> Self {
+        Self {
+            max_total_agents: DEFAULT_FLEET_WORKFLOW_MAX_AGENTS,
+            max_depth: DEFAULT_FLEET_WORKFLOW_MAX_DEPTH,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WorkflowFleetShape {
+    pub total_agents: usize,
+    pub max_depth: usize,
+}
+
+impl WorkflowFleetShape {
+    fn add(self, other: Self) -> Self {
+        Self {
+            total_agents: self.total_agents.saturating_add(other.total_agents),
+            max_depth: self.max_depth.max(other.max_depth),
+        }
+    }
+
+    fn repeat(self, times: usize) -> Self {
+        Self {
+            total_agents: self.total_agents.saturating_mul(times),
+            max_depth: self.max_depth,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum WorkflowFleetLimitError {
+    #[error("workflow IR is invalid for Fleet: {source}")]
+    InvalidWorkflow {
+        #[from]
+        source: WorkflowExecutionError,
+    },
+    #[error(
+        "workflow would launch {total_agents} agents; Fleet WhaleFlow limit is {max_total_agents}"
+    )]
+    TooManyAgents {
+        total_agents: usize,
+        max_total_agents: usize,
+    },
+    #[error("workflow reaches recursion depth {depth}; Fleet WhaleFlow limit is {max_depth}")]
+    RecursionTooDeep { depth: usize, max_depth: usize },
+    #[error("expand node `{node}` must declare max_children before Fleet launch")]
+    UnboundedExpand { node: String },
+    #[error("expand node `{node}` must include a template before Fleet launch")]
+    MissingExpandTemplate { node: String },
+    #[error("loop_until node `{node}` must declare max_iterations before Fleet launch")]
+    UnboundedLoop { node: String },
+}
+
+fn estimate_fleet_shape(
+    nodes: &[WorkflowNode],
+) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+    estimate_fleet_shape_at_depth(nodes, 1)
+}
+
+fn estimate_fleet_shape_at_depth(
+    nodes: &[WorkflowNode],
+    depth: usize,
+) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+    nodes
+        .iter()
+        .try_fold(WorkflowFleetShape::default(), |shape, node| {
+            Ok(shape.add(estimate_node_fleet_shape(node, depth)?))
+        })
+}
+
+fn estimate_node_fleet_shape(
+    node: &WorkflowNode,
+    depth: usize,
+) -> Result<WorkflowFleetShape, WorkflowFleetLimitError> {
+    match node {
+        WorkflowNode::Leaf(_) => Ok(WorkflowFleetShape {
+            total_agents: 1,
+            max_depth: depth,
+        }),
+        WorkflowNode::BranchSet(spec) => estimate_fleet_shape_at_depth(&spec.children, depth + 1),
+        WorkflowNode::Sequence(spec) => estimate_fleet_shape_at_depth(&spec.children, depth),
+        WorkflowNode::Reduce(_) | WorkflowNode::TeacherReview(_) => Ok(WorkflowFleetShape {
+            total_agents: 0,
+            max_depth: 0,
+        }),
+        WorkflowNode::LoopUntil(spec) => {
+            let iterations =
+                spec.max_iterations
+                    .ok_or_else(|| WorkflowFleetLimitError::UnboundedLoop {
+                        node: spec.id.clone(),
+                    })? as usize;
+            Ok(estimate_fleet_shape_at_depth(&spec.children, depth)?.repeat(iterations.max(1)))
+        }
+        WorkflowNode::Cond(spec) => Ok(estimate_fleet_shape_at_depth(&spec.then_nodes, depth)?
+            .add(estimate_fleet_shape_at_depth(&spec.else_nodes, depth)?)),
+        WorkflowNode::Expand(spec) => {
+            let max_children =
+                spec.max_children
+                    .ok_or_else(|| WorkflowFleetLimitError::UnboundedExpand {
+                        node: spec.id.clone(),
+                    })?;
+            let template = spec.template.as_deref().ok_or_else(|| {
+                WorkflowFleetLimitError::MissingExpandTemplate {
+                    node: spec.id.clone(),
+                }
+            })?;
+            validate_workflow_node_shapes(std::slice::from_ref(template))
+                .map_err(|source| WorkflowFleetLimitError::InvalidWorkflow { source })?;
+            Ok(estimate_node_fleet_shape(template, depth)?.repeat(max_children))
+        }
+    }
 }
 
 fn default_frontier_limit() -> usize {
@@ -2144,6 +2339,7 @@ mod tests {
                 max_steps: Some(8),
                 timeout_secs: Some(300),
                 max_parallel: None,
+                max_tokens: None,
             },
             permissions: PermissionSpec::default(),
             model_policy: ModelPolicy {
@@ -2160,6 +2356,7 @@ mod tests {
                 max_steps: Some(30),
                 timeout_secs: Some(1_800),
                 max_parallel: Some(2),
+                max_tokens: None,
             },
             permissions: PermissionSpec {
                 allow_write: false,
@@ -2187,6 +2384,7 @@ mod tests {
                         max_steps: Some(12),
                         timeout_secs: Some(600),
                         max_parallel: Some(2),
+                        max_tokens: None,
                     },
                     permissions: PermissionSpec::default(),
                     model_policy: ModelPolicy::default(),
@@ -2260,6 +2458,149 @@ mod tests {
         assert_eq!(minimal.budget, BudgetSpec::default());
         assert_eq!(minimal.permissions, PermissionSpec::default());
         assert_eq!(minimal.model_policy, ModelPolicy::default());
+    }
+
+    #[test]
+    fn fleet_validation_accepts_one_hundred_agents_and_variable_models() {
+        let nodes = (0..DEFAULT_FLEET_WORKFLOW_MAX_AGENTS)
+            .map(|index| {
+                let mut leaf = match leaf_node(&format!("agent-{index}")) {
+                    WorkflowNode::Leaf(leaf) => leaf,
+                    _ => unreachable!("leaf helper returns a leaf"),
+                };
+                leaf.model_policy = if index == 0 {
+                    ModelPolicy {
+                        provider: Some("deepseek".to_string()),
+                        model: Some("deepseek-v4-pro".to_string()),
+                        fallback_models: Vec::new(),
+                    }
+                } else {
+                    ModelPolicy {
+                        provider: Some("deepseek".to_string()),
+                        model: Some("deepseek-v4-flash".to_string()),
+                        fallback_models: Vec::new(),
+                    }
+                };
+                WorkflowNode::Leaf(leaf)
+            })
+            .collect();
+        let workflow = workflow_spec(nodes);
+
+        let shape = workflow
+            .validate_for_fleet()
+            .expect("one hundred agents should fit the Fleet WhaleFlow limit");
+
+        assert_eq!(shape.total_agents, DEFAULT_FLEET_WORKFLOW_MAX_AGENTS);
+        assert_eq!(shape.max_depth, 1);
+    }
+
+    #[test]
+    fn fleet_validation_rejects_more_than_one_hundred_agents() {
+        let nodes = (0..=DEFAULT_FLEET_WORKFLOW_MAX_AGENTS)
+            .map(|index| leaf_node(&format!("agent-{index}")))
+            .collect();
+        let workflow = workflow_spec(nodes);
+
+        let err = workflow
+            .validate_for_fleet()
+            .expect_err("agent population should be bounded before Fleet launch");
+
+        assert_eq!(
+            err,
+            WorkflowFleetLimitError::TooManyAgents {
+                total_agents: DEFAULT_FLEET_WORKFLOW_MAX_AGENTS + 1,
+                max_total_agents: DEFAULT_FLEET_WORKFLOW_MAX_AGENTS,
+            }
+        );
+    }
+
+    #[test]
+    fn fleet_validation_rejects_depth_beyond_five() {
+        let mut node = leaf_node("deep-leaf");
+        for depth in (0..DEFAULT_FLEET_WORKFLOW_MAX_DEPTH).rev() {
+            node = WorkflowNode::BranchSet(BranchSpec {
+                id: format!("ring-{depth}"),
+                description: None,
+                parallel: true,
+                budget: BudgetSpec::default(),
+                permissions: PermissionSpec::default(),
+                model_policy: ModelPolicy::default(),
+                children: vec![node],
+            });
+        }
+        let workflow = workflow_spec(vec![node]);
+
+        let err = workflow
+            .validate_for_fleet()
+            .expect_err("sixth agent ring should be rejected");
+
+        assert_eq!(
+            err,
+            WorkflowFleetLimitError::RecursionTooDeep {
+                depth: DEFAULT_FLEET_WORKFLOW_MAX_DEPTH + 1,
+                max_depth: DEFAULT_FLEET_WORKFLOW_MAX_DEPTH,
+            }
+        );
+    }
+
+    #[test]
+    fn fleet_validation_counts_loop_and_expand_fanout_conservatively() {
+        let workflow = workflow_spec(vec![
+            WorkflowNode::LoopUntil(LoopUntilSpec {
+                id: "retry-ring".to_string(),
+                condition: "verifier passes".to_string(),
+                max_iterations: Some(3),
+                children: vec![leaf_node("retry-worker")],
+            }),
+            WorkflowNode::Expand(ExpandSpec {
+                id: "split".to_string(),
+                source: "retry-ring".to_string(),
+                max_children: Some(4),
+                template: Some(Box::new(leaf_node("split-template"))),
+            }),
+        ]);
+
+        let shape = workflow
+            .validate_for_fleet()
+            .expect("bounded loop and expand should validate");
+
+        assert_eq!(shape.total_agents, 7);
+        assert_eq!(shape.max_depth, 1);
+    }
+
+    #[test]
+    fn fleet_validation_rejects_unbounded_loop_or_expand_before_launch() {
+        let workflow = workflow_spec(vec![
+            WorkflowNode::LoopUntil(LoopUntilSpec {
+                id: "retry-ring".to_string(),
+                condition: "verifier passes".to_string(),
+                max_iterations: None,
+                children: vec![leaf_node("retry-worker")],
+            }),
+            WorkflowNode::Expand(ExpandSpec {
+                id: "split".to_string(),
+                source: "retry-ring".to_string(),
+                max_children: Some(4),
+                template: Some(Box::new(leaf_node("split-template"))),
+            }),
+        ]);
+
+        assert!(matches!(
+            workflow.validate_for_fleet(),
+            Err(WorkflowFleetLimitError::UnboundedLoop { node }) if node == "retry-ring"
+        ));
+
+        let workflow = workflow_spec(vec![WorkflowNode::Expand(ExpandSpec {
+            id: "split".to_string(),
+            source: "retry-ring".to_string(),
+            max_children: None,
+            template: Some(Box::new(leaf_node("split-template"))),
+        })]);
+
+        assert!(matches!(
+            workflow.validate_for_fleet(),
+            Err(WorkflowFleetLimitError::UnboundedExpand { node }) if node == "split"
+        ));
     }
 
     #[test]
@@ -2589,6 +2930,7 @@ mod tests {
                         max_steps: Some(0),
                         timeout_secs: None,
                         max_parallel: None,
+                        max_tokens: None,
                     },
                 ),
                 leaf_node("summarize"),
@@ -2611,6 +2953,180 @@ mod tests {
                 .unwrap_or_default()
                 .contains("budget exhausted")
         );
+    }
+
+    #[test]
+    fn mock_executor_stops_when_global_token_budget_is_exhausted() {
+        let workflow = workflow_spec(vec![WorkflowNode::BranchSet(BranchSpec {
+            id: "discover".to_string(),
+            description: None,
+            parallel: true,
+            budget: BudgetSpec::default(),
+            permissions: PermissionSpec::default(),
+            model_policy: ModelPolicy::default(),
+            children: vec![
+                leaf_node("scan-readme"),
+                leaf_node("scan-config"),
+                leaf_node("scan-tests"),
+            ],
+        })]);
+
+        // First leaf uses 600 tokens (300 in + 300 out); after the second leaf
+        // (500 tokens) the running total is 1100, exceeding the 1000-token
+        // global cap, so the third leaf hits the exhausted budget and halts the
+        // run.
+        let mut executor = MockWorkflowExecutor::new()
+            .with_max_leaf_tokens(1000)
+            .with_leaf_outcome(
+                "scan-readme",
+                MockLeafOutcome::succeeded("readme done").with_usage(WorkflowUsage {
+                    input_tokens: 300,
+                    output_tokens: 300,
+                    cost_microusd: 0,
+                }),
+            )
+            .with_leaf_outcome(
+                "scan-config",
+                MockLeafOutcome::succeeded("config done").with_usage(WorkflowUsage {
+                    input_tokens: 250,
+                    output_tokens: 250,
+                    cost_microusd: 0,
+                }),
+            );
+        let execution = executor.run(&workflow).expect("mock workflow should run");
+
+        assert_eq!(execution.status, WorkflowRunStatus::BudgetExceeded);
+        // Leaves 1+2 consume 1100 tokens, exhausting the 1000-token global cap.
+        // The third leaf is attempted, sees the budget already exceeded, and is
+        // recorded as BudgetExceeded — the same boundary-leaf behaviour used by
+        // step budgets (max_leaf_steps). The budget outcome carries no tokens,
+        // so total usage stays at 1100.
+        assert_eq!(execution.leaf_results.len(), 3);
+        assert_eq!(
+            execution.leaf_results[0].status,
+            WorkflowRunStatus::Succeeded
+        );
+        assert_eq!(
+            execution.leaf_results[1].status,
+            WorkflowRunStatus::Succeeded
+        );
+        assert_eq!(
+            execution.leaf_results[2].status,
+            WorkflowRunStatus::BudgetExceeded
+        );
+        assert_eq!(execution.usage.total_tokens(), 1100);
+    }
+
+    #[test]
+    fn mock_executor_honors_zero_token_leaf_budget() {
+        let workflow = workflow_spec(vec![WorkflowNode::BranchSet(BranchSpec {
+            id: "verify".to_string(),
+            description: None,
+            parallel: false,
+            budget: BudgetSpec::default(),
+            permissions: PermissionSpec::default(),
+            model_policy: ModelPolicy::default(),
+            children: vec![
+                leaf_node_with_budget(
+                    "run-tests",
+                    BudgetSpec {
+                        max_steps: None,
+                        timeout_secs: None,
+                        max_parallel: None,
+                        max_tokens: Some(0),
+                    },
+                ),
+                leaf_node("summarize"),
+            ],
+        })]);
+
+        let mut executor = MockWorkflowExecutor::new();
+        let execution = executor.run(&workflow).expect("mock workflow should run");
+
+        assert_eq!(execution.status, WorkflowRunStatus::BudgetExceeded);
+        assert_eq!(execution.leaf_results.len(), 1);
+        assert_eq!(
+            execution.leaf_results[0].status,
+            WorkflowRunStatus::BudgetExceeded
+        );
+        assert!(
+            execution.leaf_results[0]
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("token budget exhausted")
+        );
+    }
+
+    #[test]
+    fn mock_executor_honors_per_leaf_token_cap() {
+        let workflow = workflow_spec(vec![WorkflowNode::BranchSet(BranchSpec {
+            id: "review".to_string(),
+            description: None,
+            parallel: false,
+            budget: BudgetSpec::default(),
+            permissions: PermissionSpec::default(),
+            model_policy: ModelPolicy::default(),
+            children: vec![
+                leaf_node_with_budget(
+                    "expensive-scan",
+                    BudgetSpec {
+                        max_steps: None,
+                        timeout_secs: None,
+                        max_parallel: None,
+                        max_tokens: Some(500),
+                    },
+                ),
+                leaf_node("summarize"),
+            ],
+        })]);
+
+        // The leaf outcome uses 800 tokens which exceeds the per-leaf cap of 500.
+        let mut executor = MockWorkflowExecutor::new().with_leaf_outcome(
+            "expensive-scan",
+            MockLeafOutcome::succeeded("scan done").with_usage(WorkflowUsage {
+                input_tokens: 500,
+                output_tokens: 300,
+                cost_microusd: 0,
+            }),
+        );
+        let execution = executor.run(&workflow).expect("mock workflow should run");
+
+        assert_eq!(execution.status, WorkflowRunStatus::BudgetExceeded);
+        assert_eq!(execution.leaf_results.len(), 1);
+        assert_eq!(
+            execution.leaf_results[0].status,
+            WorkflowRunStatus::BudgetExceeded
+        );
+        assert!(
+            execution.leaf_results[0]
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("token budget exhausted")
+        );
+    }
+
+    #[test]
+    fn budget_spec_serializes_max_tokens() {
+        let budget = BudgetSpec {
+            max_steps: Some(10),
+            timeout_secs: Some(600),
+            max_parallel: Some(4),
+            max_tokens: Some(50_000),
+        };
+        let json = serde_json::to_string(&budget).expect("serialize budget");
+        let parsed: BudgetSpec = serde_json::from_str(&json).expect("parse budget");
+        assert_eq!(parsed, budget);
+        assert!(json.contains("\"max_tokens\":50000"));
+
+        // Default (all None) round-trips without the field present.
+        let default_json =
+            serde_json::to_string(&BudgetSpec::default()).expect("serialize default");
+        let parsed_default: BudgetSpec =
+            serde_json::from_str(&default_json).expect("parse default budget");
+        assert_eq!(parsed_default, BudgetSpec::default());
+        assert!(parsed_default.max_tokens.is_none());
     }
 
     #[test]

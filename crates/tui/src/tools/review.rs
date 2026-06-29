@@ -1,9 +1,10 @@
 //! Tool for structured code reviews of files, diffs, or pull requests.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,6 +23,7 @@ const DEFAULT_MAX_CHARS: usize = 200_000;
 const MAX_MAX_CHARS: usize = 1_000_000;
 const REVIEW_MAX_TOKENS: u32 = 2048;
 const FALLBACK_MAX_CHARS: usize = 4000;
+const REVIEW_RECEIPT_SCHEMA_VERSION: u32 = 1;
 
 const REVIEW_SYSTEM_PROMPT: &str = "You are a senior code reviewer. Return ONLY valid JSON with \
 the following schema:\n\
@@ -129,6 +131,238 @@ impl ReviewOutput {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewReceipt {
+    pub schema_version: u32,
+    pub mode: String,
+    pub generated_at: String,
+    pub target: String,
+    pub diff_fingerprint: String,
+    pub diff_bytes: usize,
+    pub diff_lines: usize,
+    pub provider: String,
+    pub model: String,
+    pub checks_run: Vec<ReviewReceiptCheck>,
+    pub findings: ReviewReceiptFindings,
+    pub unresolved_risk: ReviewReceiptRisk,
+    pub review_content_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewReceiptCheck {
+    pub name: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewReceiptFindings {
+    pub summary: String,
+    pub issue_count: usize,
+    pub suggestion_count: usize,
+    pub highest_severity: String,
+    pub issues: Vec<ReviewReceiptIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewReceiptIssue {
+    pub severity: String,
+    pub title: String,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewReceiptRisk {
+    pub unresolved: bool,
+    pub level: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewReceiptValidation {
+    pub passed: bool,
+    pub reason: String,
+    pub diff_fingerprint: String,
+    pub receipt_fingerprint: Option<String>,
+    pub receipt_path: Option<PathBuf>,
+    pub unresolved_risk: Option<ReviewReceiptRisk>,
+}
+
+#[must_use]
+pub fn build_review_receipt(
+    target: impl Into<String>,
+    diff: &str,
+    provider: impl Into<String>,
+    model: impl Into<String>,
+    output: &ReviewOutput,
+    review_content: &str,
+    checks_run: Vec<ReviewReceiptCheck>,
+) -> ReviewReceipt {
+    let highest_severity = highest_review_severity(output);
+    let unresolved = !output.issues.is_empty();
+    let risk_level = if unresolved {
+        highest_severity.clone()
+    } else {
+        "none".to_string()
+    };
+    let risk_summary = if unresolved {
+        format!(
+            "{} unresolved review issue(s); highest severity: {highest_severity}",
+            output.issues.len()
+        )
+    } else {
+        "No structured unresolved issues reported by review output.".to_string()
+    };
+
+    ReviewReceipt {
+        schema_version: REVIEW_RECEIPT_SCHEMA_VERSION,
+        mode: "pre_push_review".to_string(),
+        generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        target: target.into(),
+        diff_fingerprint: diff_fingerprint(diff),
+        diff_bytes: diff.len(),
+        diff_lines: diff.lines().count(),
+        provider: provider.into(),
+        model: model.into(),
+        checks_run,
+        findings: ReviewReceiptFindings {
+            summary: output.summary.clone(),
+            issue_count: output.issues.len(),
+            suggestion_count: output.suggestions.len(),
+            highest_severity: highest_severity.clone(),
+            issues: output
+                .issues
+                .iter()
+                .map(|issue| ReviewReceiptIssue {
+                    severity: issue.severity.clone(),
+                    title: issue.title.clone(),
+                    path: issue.path.clone(),
+                    line: issue.line,
+                })
+                .collect(),
+        },
+        unresolved_risk: ReviewReceiptRisk {
+            unresolved,
+            level: risk_level,
+            summary: risk_summary,
+        },
+        review_content_sha256: sha256_hex(review_content.as_bytes()),
+    }
+}
+
+pub fn write_review_receipt(
+    receipt: &ReviewReceipt,
+    path_override: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    let path = if let Some(path) = path_override {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        path.to_path_buf()
+    } else {
+        let dir = deepseek_config::ensure_state_dir("review-receipts")?;
+        let digest = receipt
+            .diff_fingerprint
+            .strip_prefix("sha256:")
+            .unwrap_or(receipt.diff_fingerprint.as_str());
+        let short = digest.chars().take(12).collect::<String>();
+        let stamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+        dir.join(format!("{stamp}-{short}.json"))
+    };
+    let encoded = serde_json::to_string_pretty(receipt)?;
+    fs::write(&path, encoded)?;
+    Ok(path)
+}
+
+pub fn read_review_receipt(path: &Path) -> anyhow::Result<ReviewReceipt> {
+    let raw = fs::read_to_string(path)?;
+    Ok(serde_json::from_str(&raw)?)
+}
+
+pub fn latest_review_receipt_for_diff(
+    diff: &str,
+) -> anyhow::Result<Option<(PathBuf, ReviewReceipt)>> {
+    let dir = deepseek_config::resolve_state_dir("review-receipts")?;
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+
+    let expected = diff_fingerprint(diff);
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(receipt) = read_review_receipt(&path) else {
+            continue;
+        };
+        if receipt.diff_fingerprint != expected {
+            continue;
+        }
+        let modified = entry.metadata().and_then(|meta| meta.modified()).ok();
+        matches.push((modified, path, receipt));
+    }
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(matches.pop().map(|(_, path, receipt)| (path, receipt)))
+}
+
+#[must_use]
+pub fn validate_review_receipt_for_diff(
+    diff: &str,
+    receipt: &ReviewReceipt,
+    receipt_path: Option<PathBuf>,
+) -> ReviewReceiptValidation {
+    let expected = diff_fingerprint(diff);
+    let mut validation = ReviewReceiptValidation {
+        passed: false,
+        reason: String::new(),
+        diff_fingerprint: expected.clone(),
+        receipt_fingerprint: Some(receipt.diff_fingerprint.clone()),
+        receipt_path,
+        unresolved_risk: Some(receipt.unresolved_risk.clone()),
+    };
+
+    if receipt.schema_version != REVIEW_RECEIPT_SCHEMA_VERSION {
+        validation.reason = format!(
+            "unsupported review receipt schema version {}",
+            receipt.schema_version
+        );
+        return validation;
+    }
+    if receipt.diff_fingerprint != expected {
+        validation.reason = "current diff fingerprint does not match receipt".to_string();
+        return validation;
+    }
+    if receipt.unresolved_risk.unresolved {
+        validation.reason = receipt.unresolved_risk.summary.clone();
+        return validation;
+    }
+    if let Some(check) = receipt
+        .checks_run
+        .iter()
+        .find(|check| !review_receipt_check_status_passes(&check.status))
+    {
+        validation.reason = format!(
+            "review receipt check '{}' did not pass: {}",
+            check.name, check.status
+        );
+        return validation;
+    }
+
+    validation.passed = true;
+    validation.reason = "receipt matches current diff and has no unresolved risk".to_string();
+    validation
+}
+
+#[must_use]
+pub fn diff_fingerprint(diff: &str) -> String {
+    format!("sha256:{}", sha256_hex(diff.as_bytes()))
+}
+
 fn parse_review_output_json(raw: &str) -> Option<ReviewOutput> {
     if let Ok(parsed) = serde_json::from_str::<ReviewOutput>(raw) {
         return Some(parsed);
@@ -141,6 +375,38 @@ fn parse_review_output_json(raw: &str) -> Option<ReviewOutput> {
         return None;
     }
     parse_review_output_json(&inner)
+}
+
+fn highest_review_severity(output: &ReviewOutput) -> String {
+    let mut highest = "none";
+    for issue in &output.issues {
+        let severity = issue.severity.as_str();
+        if severity_rank(severity) > severity_rank(highest) {
+            highest = severity;
+        }
+    }
+    highest.to_string()
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "error" => 4,
+        "warning" => 3,
+        "info" => 2,
+        "none" => 1,
+        _ => 0,
+    }
+}
+
+fn review_receipt_check_status_passes(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "passed" | "pass" | "success" | "ok"
+    )
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    crate::hashing::sha256_hex(bytes)
 }
 
 pub struct ReviewTool {
@@ -654,5 +920,217 @@ mod tests {
         assert_eq!(metadata["child_prompt_cache_hit_tokens"], 100);
         assert_eq!(metadata["child_prompt_cache_miss_tokens"], 23);
         assert_eq!(metadata["child_reasoning_tokens"], 7);
+    }
+
+    #[test]
+    fn pre_push_diff_review_receipt_includes_fingerprint_and_risk() {
+        let diff = "diff --git a/src/lib.rs b/src/lib.rs\n+let risky = true;\n";
+        let output = ReviewOutput {
+            summary: "Found one issue".to_string(),
+            issues: vec![ReviewIssue {
+                severity: "warning".to_string(),
+                title: "Missing test".to_string(),
+                description: "Add coverage".to_string(),
+                path: Some("src/lib.rs".to_string()),
+                line: Some(12),
+            }],
+            suggestions: vec![ReviewSuggestion {
+                path: Some("src/lib.rs".to_string()),
+                line: Some(12),
+                suggestion: "Add a regression test".to_string(),
+            }],
+            overall_assessment: "Needs a test".to_string(),
+        };
+
+        let receipt = build_review_receipt(
+            "working-tree",
+            diff,
+            "deepseek",
+            "deepseek-v4-pro",
+            &output,
+            "review body",
+            vec![ReviewReceiptCheck {
+                name: "cargo test -p deepseek-tui".to_string(),
+                status: "passed".to_string(),
+            }],
+        );
+
+        assert_eq!(receipt.schema_version, REVIEW_RECEIPT_SCHEMA_VERSION);
+        assert_eq!(receipt.mode, "pre_push_review");
+        assert_eq!(receipt.target, "working-tree");
+        assert_eq!(receipt.diff_fingerprint, diff_fingerprint(diff));
+        assert_eq!(receipt.diff_lines, 2);
+        assert_eq!(receipt.provider, "deepseek");
+        assert_eq!(receipt.model, "deepseek-v4-pro");
+        assert_eq!(receipt.checks_run.len(), 1);
+        assert_eq!(receipt.findings.issue_count, 1);
+        assert_eq!(receipt.findings.suggestion_count, 1);
+        assert_eq!(receipt.findings.highest_severity, "warning");
+        assert!(receipt.unresolved_risk.unresolved);
+        assert_eq!(receipt.unresolved_risk.level, "warning");
+        assert_eq!(
+            receipt.review_content_sha256,
+            sha256_hex("review body".as_bytes())
+        );
+    }
+
+    #[test]
+    fn write_review_receipt_accepts_override_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("receipt.json");
+        let output = ReviewOutput::from_str("Looks good");
+        let receipt = build_review_receipt(
+            "staged",
+            "diff --git a/a b/a\n",
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Looks good",
+            Vec::new(),
+        );
+
+        let written = write_review_receipt(&receipt, Some(&path)).expect("write receipt");
+
+        assert_eq!(written, path);
+        let raw = fs::read_to_string(&written).expect("read receipt");
+        let decoded: ReviewReceipt = serde_json::from_str(&raw).expect("decode receipt");
+        assert_eq!(decoded.diff_fingerprint, receipt.diff_fingerprint);
+        assert_eq!(decoded.unresolved_risk.level, "none");
+    }
+
+    #[test]
+    fn review_receipt_validation_passes_matching_clean_receipt() {
+        let diff = "diff --git a/a b/a\n+ok\n";
+        let output = ReviewOutput::from_str("Looks good");
+        let receipt = build_review_receipt(
+            "working-tree",
+            diff,
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Looks good",
+            vec![ReviewReceiptCheck {
+                name: "cargo test".to_string(),
+                status: "passed".to_string(),
+            }],
+        );
+
+        let validation = validate_review_receipt_for_diff(diff, &receipt, None);
+
+        assert!(validation.passed);
+        assert_eq!(validation.diff_fingerprint, diff_fingerprint(diff));
+        assert_eq!(
+            validation.reason,
+            "receipt matches current diff and has no unresolved risk"
+        );
+    }
+
+    #[test]
+    fn review_receipt_validation_rejects_changed_diff() {
+        let output = ReviewOutput::from_str("Looks good");
+        let receipt = build_review_receipt(
+            "working-tree",
+            "diff --git a/a b/a\n+old\n",
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Looks good",
+            Vec::new(),
+        );
+
+        let validation =
+            validate_review_receipt_for_diff("diff --git a/a b/a\n+new\n", &receipt, None);
+
+        assert!(!validation.passed);
+        assert_eq!(
+            validation.reason,
+            "current diff fingerprint does not match receipt"
+        );
+    }
+
+    #[test]
+    fn review_receipt_validation_rejects_unresolved_risk() {
+        let diff = "diff --git a/a b/a\n+risk\n";
+        let output = ReviewOutput {
+            summary: "Risk found".to_string(),
+            issues: vec![ReviewIssue {
+                severity: "error".to_string(),
+                title: "Unsafe change".to_string(),
+                description: "Needs work".to_string(),
+                path: Some("a".to_string()),
+                line: Some(1),
+            }],
+            suggestions: Vec::new(),
+            overall_assessment: String::new(),
+        };
+        let receipt = build_review_receipt(
+            "working-tree",
+            diff,
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Risk found",
+            Vec::new(),
+        );
+
+        let validation = validate_review_receipt_for_diff(diff, &receipt, None);
+
+        assert!(!validation.passed);
+        assert_eq!(validation.unresolved_risk.as_ref().unwrap().level, "error");
+        assert!(validation.reason.contains("unresolved review issue"));
+    }
+
+    #[test]
+    fn review_receipt_validation_rejects_failed_check() {
+        let diff = "diff --git a/a b/a\n+ok\n";
+        let output = ReviewOutput::from_str("Looks good");
+        let receipt = build_review_receipt(
+            "working-tree",
+            diff,
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Looks good",
+            vec![ReviewReceiptCheck {
+                name: "cargo test".to_string(),
+                status: "failed".to_string(),
+            }],
+        );
+
+        let validation = validate_review_receipt_for_diff(diff, &receipt, None);
+
+        assert!(!validation.passed);
+        assert!(
+            validation
+                .reason
+                .contains("review receipt check 'cargo test' did not pass")
+        );
+    }
+
+    #[test]
+    fn review_receipt_validation_rejects_attached_not_run_check() {
+        let diff = "diff --git a/a b/a\n+ok\n";
+        let output = ReviewOutput::from_str("Looks good");
+        let receipt = build_review_receipt(
+            "working-tree",
+            diff,
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Looks good",
+            vec![ReviewReceiptCheck {
+                name: "cargo test".to_string(),
+                status: "not_run".to_string(),
+            }],
+        );
+
+        let validation = validate_review_receipt_for_diff(diff, &receipt, None);
+
+        assert!(!validation.passed);
+        assert!(
+            validation
+                .reason
+                .contains("review receipt check 'cargo test' did not pass: not_run")
+        );
     }
 }

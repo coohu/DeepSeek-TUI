@@ -188,8 +188,8 @@ impl ModalView for ContextMenuView {
                 let text = trim_to_width(&format!("{label}{description}"), inner_width);
                 let style = if idx == self.selected {
                     Style::default()
-                        .fg(palette::TEXT_PRIMARY)
-                        .bg(palette::DEEPSEEK_BLUE)
+                        .fg(palette::SELECTION_TEXT)
+                        .bg(palette::SELECTION_BG)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()

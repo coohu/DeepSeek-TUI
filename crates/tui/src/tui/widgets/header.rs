@@ -179,6 +179,7 @@ impl<'a> HeaderWidget<'a> {
     fn mode_color(mode: AppMode) -> Color {
         match mode {
             AppMode::Agent => palette::MODE_AGENT,
+            AppMode::Auto => palette::MODE_AGENT,
             AppMode::Yolo => palette::MODE_YOLO,
             AppMode::Plan => palette::MODE_PLAN,
         }
@@ -187,6 +188,7 @@ impl<'a> HeaderWidget<'a> {
     fn mode_name(mode: AppMode) -> &'static str {
         match mode {
             AppMode::Agent => "Agent",
+            AppMode::Auto => "Auto",
             AppMode::Yolo => "Yolo",
             AppMode::Plan => "Plan",
         }

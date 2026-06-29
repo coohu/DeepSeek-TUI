@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 type MobileLink = { href: string; label: string; cn?: string };
@@ -15,6 +16,7 @@ export function MobileMenu({
   installLabel: string;
 }) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
     if (!open) return;
@@ -60,21 +62,25 @@ export function MobileMenu({
         >
           <nav className="px-6 py-4">
             <ul className="divide-y divide-[rgba(14,14,16,0.18)]">
-              {links.map((l) => (
-                <li key={l.href}>
-                  <Link
-                    href={l.href}
-                    onClick={() => setOpen(false)}
-                    className="flex items-baseline gap-3 py-4 hover:text-indigo transition-colors"
-                  >
-                    <span className="font-display text-lg">{l.label}</span>
-                    {l.cn && (
-                      <span className="font-cjk text-sm text-ink-mute">{l.cn}</span>
-                    )}
-                    <span className="ml-auto font-mono text-xs text-ink-mute">→</span>
-                  </Link>
-                </li>
-              ))}
+              {links.map((l) => {
+                const isActive = pathname === l.href || pathname.startsWith(`${l.href}/`);
+                return (
+                  <li key={l.href}>
+                    <Link
+                      href={l.href}
+                      onClick={() => setOpen(false)}
+                      className={`flex items-baseline gap-3 py-4 hover:text-indigo transition-colors ${isActive ? "text-indigo" : ""}`}
+                      aria-current={isActive ? "page" : undefined}
+                    >
+                      <span className="font-display text-lg">{l.label}</span>
+                      {l.cn && (
+                        <span className="font-cjk text-sm text-ink-mute">{l.cn}</span>
+                      )}
+                      <span className="ml-auto font-mono text-xs text-ink-mute">→</span>
+                    </Link>
+                  </li>
+                );
+              })}
             </ul>
 
             <Link

@@ -11,7 +11,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use crate::tools::spec::{
@@ -763,9 +762,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
 
 #[allow(dead_code)] // Used when producer tools register handle payloads.
 fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    crate::hashing::sha256_hex(bytes)
 }
 
 fn json_type(value: &Value) -> &'static str {

@@ -1,6 +1,6 @@
 # MCP (External Tool Servers)
 
-deepseek can load additional tools via MCP (Model Context Protocol). MCP servers are local processes that the TUI starts and communicates with over stdio.
+deepseek can load additional tools via MCP (Model Context Protocol). MCP servers can be local stdio processes that the TUI starts, or remote URL-based servers that speak Streamable HTTP with legacy SSE fallback.
 
 Browsing note:
 - `web.run` is the canonical built-in browsing tool.
@@ -29,6 +29,9 @@ deepseek-tui mcp list
 deepseek-tui mcp tools [server]
 deepseek-tui mcp add <name> --command "<cmd>" --arg "<arg>"
 deepseek-tui mcp add <name> --url "http://localhost:3000/mcp"
+deepseek-tui mcp add <name> --url "https://example.com/mcp" --bearer-token-env-var MCP_TOKEN
+deepseek-tui mcp login <name>
+deepseek-tui mcp logout <name>
 deepseek-tui mcp enable <name>
 deepseek-tui mcp disable <name>
 deepseek-tui mcp remove <name>
@@ -49,6 +52,8 @@ Supported in-TUI actions:
 /mcp init --force
 /mcp add stdio <name> <command> [args...]
 /mcp add http <name> <url>
+/mcp login <name> [--scope scope]
+/mcp logout <name>
 /mcp enable <name>
 /mcp disable <name>
 /mcp remove <name>
@@ -60,6 +65,68 @@ Supported in-TUI actions:
 manager snapshot. Config edits made from the TUI are written immediately, but
 the model-visible MCP tool pool is not hot-reloaded; the manager marks this as
 restart-required until the TUI is restarted.
+
+## Remote HTTP Auth
+
+URL-based MCP servers can use static headers, env-derived headers, bearer-token
+env vars, or OAuth. Authorization precedence is conservative:
+
+1. `headers` and `env_headers` are applied first.
+2. `bearer_token_env_var` adds `Authorization: Bearer <env value>` when no
+   Authorization header was already set.
+3. Stored OAuth credentials are used only when no Authorization header exists.
+
+For bearer-token auth, prefer env-backed config:
+
+```json
+{
+  "servers": {
+    "remote": {
+      "url": "https://example.com/mcp",
+      "bearer_token_env_var": "EXAMPLE_MCP_TOKEN"
+    }
+  }
+}
+```
+
+For generic remote MCP OAuth, add the URL server and run login:
+
+```bash
+deepseek-tui mcp add remote --url "https://example.com/mcp"
+deepseek-tui mcp login remote
+```
+
+DeepSeek discovers the server OAuth metadata, opens the authorization URL in
+your browser, listens on a local callback, exchanges the code, and stores the
+token response through the DeepSeek secrets backend. Stored OAuth tokens are
+looked up by server name plus URL and refreshed when possible before requests.
+
+Optional OAuth fields:
+
+```json
+{
+  "servers": {
+    "remote": {
+      "url": "https://example.com/mcp",
+      "scopes": ["tools/read"],
+      "oauth": {
+        "client_id": "public-client-id"
+      },
+      "oauth_resource": "https://example.com"
+    }
+  }
+}
+```
+
+User-level config can set callback behavior when the provider requires a fixed
+redirect:
+
+```toml
+mcp_oauth_callback_port = 1455
+mcp_oauth_callback_url = "http://127.0.0.1:1455/callback"
+```
+
+These callback fields are ignored from project-scope config overlays.
 
 ## Hugging Face MCP
 
@@ -261,12 +328,22 @@ Per-server settings:
 - `required` (bool, optional): startup/connect validation fails if this server cannot initialize.
 - `enabled_tools` (array, optional): allowlist of tool names for this server.
 - `disabled_tools` (array, optional): denylist applied after `enabled_tools`.
+- `url` (string, optional): Streamable HTTP endpoint for a remote MCP server.
+- `transport` (string, optional): set to `"sse"` for legacy SSE endpoints.
+- `headers` (object, optional): literal HTTP headers for URL-based servers.
+- `env_headers` or `env_http_headers` (object, optional): header names mapped to environment variable names.
+- `bearer_token_env_var` (string, optional): environment variable containing a bearer token.
+- `scopes` (array, optional): default OAuth scopes for `mcp login`.
+- `oauth.client_id` (string, optional): pre-registered OAuth client ID.
+- `oauth_resource` (string, optional): resource parameter appended to the authorization URL.
 
 ## Safety Notes
 
 MCP tools now flow through the same tool-approval framework as built-in tools. Read-only MCP helpers (resource/prompt listing and reads) can run without prompts in suggestive approval modes, while side-effectful MCP tools require approval.
 
 You should still only configure MCP servers you trust, and treat MCP server configuration as equivalent to running code on your machine.
+Avoid committing literal `Authorization` headers. Prefer `env_headers`,
+`bearer_token_env_var`, or OAuth login so secrets stay outside the MCP file.
 
 ## Troubleshooting
 

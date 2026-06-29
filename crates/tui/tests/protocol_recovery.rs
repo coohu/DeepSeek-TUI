@@ -38,7 +38,6 @@ const ENGINE_SOURCES: &[&str] = &[
     include_str!("../src/core/engine/tool_catalog.rs"),
     include_str!("../src/core/engine/context.rs"),
     include_str!("../src/core/engine/approval.rs"),
-    include_str!("../src/core/engine/capacity_flow.rs"),
     include_str!("../src/core/engine/lsp_hooks.rs"),
 ];
 

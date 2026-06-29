@@ -5,18 +5,18 @@ use std::cell::Cell;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
 use crate::tools::plan::{PlanSnapshot, StepStatus};
-use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
+use crate::tools::todo::{TodoListSnapshot, TodoStatus};
+use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
 
 struct PlanOption {
     label: &'static str,
     description: &'static str,
     shortcut: char,
-    short_label: &'static str,
 }
 
 const PLAN_OPTIONS: [PlanOption; 4] = [
@@ -24,25 +24,21 @@ const PLAN_OPTIONS: [PlanOption; 4] = [
         label: "Accept plan (Agent)",
         description: "Start implementation in Agent mode with approvals",
         shortcut: 'a',
-        short_label: "Accept",
     },
     PlanOption {
         label: "Accept plan (YOLO)",
         description: "Start implementation in YOLO mode (auto-approve)",
         shortcut: 'y',
-        short_label: "YOLO",
     },
     PlanOption {
         label: "Revise plan",
         description: "Ask follow-ups or request plan changes",
         shortcut: 'r',
-        short_label: "Revise",
     },
     PlanOption {
         label: "Exit Plan mode",
         description: "Return to Agent mode without implementation",
         shortcut: 'q',
-        short_label: "Exit",
     },
 ];
 
@@ -50,42 +46,23 @@ fn modal_block() -> Block<'static> {
     Block::default()
         .title(Line::from(vec![Span::styled(
             " Plan Confirmation ",
-            Style::default().fg(palette::DEEPSEEK_BLUE).bold(),
+            Style::default().fg(palette::WHALE_ACCENT_PRIMARY).bold(),
         )]))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(palette::BORDER_COLOR))
+        .style(Style::default().bg(palette::DEEPSEEK_INK))
         .padding(Padding::uniform(1))
 }
 
 fn render_modal_chrome(area: Rect, popup_area: Rect, buf: &mut Buffer) {
-    let shadow_x = popup_area.x.saturating_add(1);
-    let shadow_y = popup_area.y.saturating_add(1);
-    let shadow_right = area.x.saturating_add(area.width);
-    let shadow_bottom = area.y.saturating_add(area.height);
-    let shadow_width = popup_area.width.min(shadow_right.saturating_sub(shadow_x));
-    let shadow_height = popup_area
-        .height
-        .min(shadow_bottom.saturating_sub(shadow_y));
-
-    if shadow_width > 0 && shadow_height > 0 {
-        Block::default().render(
-            Rect {
-                x: shadow_x,
-                y: shadow_y,
-                width: shadow_width,
-                height: shadow_height,
-            },
-            buf,
-        );
-    }
-
-    Clear.render(popup_area, buf);
+    render_modal_surface(area, popup_area, buf);
 }
 
 fn push_option_lines(
     lines: &mut Vec<Line<'static>>,
     selected: bool,
     number: usize,
+    shortcut: char,
     label: &str,
     description: &str,
 ) {
@@ -105,7 +82,7 @@ fn push_option_lines(
     let prefix = if selected { ">" } else { " " };
 
     lines.push(Line::from(Span::styled(
-        format!("{prefix} {number}) {label}"),
+        format!("{prefix} [{number}/{shortcut}] {label}"),
         row_style,
     )));
     lines.push(Line::from(Span::styled(
@@ -130,6 +107,10 @@ pub struct PlanPromptView {
     confirming_exit: bool,
     /// The plan snapshot to display (if update_plan was called).
     plan: Option<PlanSnapshot>,
+    /// The checklist/todo snapshot to display (if `checklist_write` was used).
+    /// Kept separate from the plan so the most actionable view of progress is
+    /// visible inside the plan confirmation modal.
+    todos: Option<TodoListSnapshot>,
 }
 
 impl PlanPromptView {
@@ -141,7 +122,17 @@ impl PlanPromptView {
             last_max_scroll: Cell::new(0),
             confirming_exit: false,
             plan,
+            todos: None,
         }
+    }
+
+    /// Attach the current checklist/todo snapshot so it renders inside the plan
+    /// confirmation modal alongside the plan steps. Existing callers default to
+    /// `None`, so this is opt-in at the production construction site only.
+    #[must_use]
+    pub fn with_todos(mut self, todos: Option<TodoListSnapshot>) -> Self {
+        self.todos = todos;
+        self
     }
 
     fn max_index(&self) -> usize {
@@ -374,12 +365,19 @@ impl ModalView for PlanPromptView {
             push_plan_snapshot_lines(&mut lines, plan, content_width);
         }
 
+        // v0.8.62: render the active checklist so the most actionable view of
+        // progress is visible inside the plan confirmation modal.
+        if let Some(ref todos) = self.todos {
+            push_todo_snapshot_lines(&mut lines, todos, content_width);
+        }
+
         for (idx, option) in PLAN_OPTIONS.iter().enumerate() {
             let number = idx + 1;
             push_option_lines(
                 &mut lines,
                 self.selected == idx,
                 number,
+                option.shortcut,
                 option.label,
                 option.description,
             );
@@ -399,44 +397,42 @@ impl ModalView for PlanPromptView {
         let rendered_lines: Vec<Line<'static>> =
             lines.into_iter().skip(scroll).take(visible_lines).collect();
 
-        // Build footer: scroll indicator (left) + data-driven option shortcuts +
-        // description of the currently selected option (right).
+        // Keep the footer intentionally compact. Long action lists live in the
+        // selectable rows so narrow terminals never clip a hidden option.
         let mut footer_spans: Vec<Span> = Vec::new();
+        let compact_footer = popup_area.width < 64;
         if total_lines > visible_lines {
-            footer_spans.push(Span::styled(
+            let scroll_text = if compact_footer {
+                format!(" [{}/{} Pg] ", scroll + 1, max_scroll + 1)
+            } else {
                 format!(
                     " [{}/{} PgUp/Dn \u{b7} Ctrl+U/D] ",
                     scroll + 1,
                     max_scroll + 1
-                ),
+                )
+            };
+            footer_spans.push(Span::styled(
+                scroll_text,
                 Style::default().fg(palette::DEEPSEEK_SKY),
             ));
         }
-        for (idx, option) in PLAN_OPTIONS.iter().enumerate() {
-            let shortcut = option.shortcut;
-            let short_label = option.short_label;
-            let is_current = self.selected == idx;
-            let shortcut_style = if is_current {
-                Style::default()
-                    .fg(palette::SELECTION_TEXT)
-                    .bg(palette::SELECTION_BG)
-                    .bold()
-            } else {
-                Style::default().fg(palette::DEEPSEEK_SKY)
-            };
-            footer_spans.push(Span::styled(
-                format!("[{}/{}] {}", idx + 1, shortcut, short_label),
-                shortcut_style,
-            ));
-            footer_spans.push(Span::raw("  "));
+        if compact_footer {
+            footer_spans.extend([
+                Span::styled("↑↓", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::raw(" "),
+                Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::raw(" "),
+                Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            ]);
+        } else {
+            footer_spans.extend([
+                Span::styled("↑/↓", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" move  ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled("Enter", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+                Span::styled(" choose  ", Style::default().fg(palette::TEXT_MUTED)),
+                Span::styled("Esc", Style::default().fg(palette::DEEPSEEK_SKY).bold()),
+            ]);
         }
-        // Selected option description, right-aligned by filling space.
-        let desc = PLAN_OPTIONS[self.selected].description;
-        let desc_span = Span::styled(
-            format!(" \u{2192} {desc}"),
-            Style::default().fg(palette::TEXT_MUTED),
-        );
-        footer_spans.push(desc_span);
 
         render_modal_chrome(area, popup_area, buf);
         // Wrap { trim: false } — disable ratatui's word-boundary-based line
@@ -568,6 +564,42 @@ fn push_plan_snapshot_lines(
         )));
         lines.push(Line::from(""));
     }
+}
+
+/// Render the active checklist/todo snapshot beneath the plan details.
+///
+/// Mirrors the plan-step glyph language (`·` pending, `▶` in progress, `✓`
+/// completed) so the two read as one surface. Completed items are dimmed so
+/// attention lands on what remains.
+fn push_todo_snapshot_lines(
+    lines: &mut Vec<Line<'static>>,
+    todos: &TodoListSnapshot,
+    content_width: usize,
+) {
+    if todos.items.is_empty() {
+        return;
+    }
+    lines.push(Line::from(Span::styled(
+        format!("Checklist ({}% complete):", todos.completion_pct),
+        Style::default().fg(palette::DEEPSEEK_SKY).bold(),
+    )));
+    for (i, item) in todos.items.iter().enumerate() {
+        let status_mark = match item.status {
+            TodoStatus::Pending => "\u{b7}",
+            TodoStatus::InProgress => "\u{25b6}",
+            TodoStatus::Completed => "\u{2713}",
+        };
+        let item_text = format!("  {status_mark} {}. {}", i + 1, &item.content);
+        let style = if matches!(item.status, TodoStatus::Completed) {
+            Style::default().fg(palette::TEXT_MUTED)
+        } else {
+            Style::default().fg(palette::TEXT_PRIMARY)
+        };
+        for line in wrap_text(&item_text, content_width) {
+            lines.push(Line::from(Span::styled(line, style)));
+        }
+    }
+    lines.push(Line::from(""));
 }
 
 fn plan_uses_rich_artifact_shape(plan: &PlanSnapshot) -> bool {
@@ -734,16 +766,40 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::{Color, Style};
 
-    fn render_view(view: &PlanPromptView, width: u16, height: u16) -> String {
+    fn render_buffer(view: &PlanPromptView, width: u16, height: u16) -> Buffer {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
+        buf
+    }
 
-        (0..height)
-            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+    fn render_view(view: &PlanPromptView, width: u16, height: u16) -> String {
+        let area = Rect::new(0, 0, width, height);
+        let buf = render_buffer(view, width, height);
+
+        buffer_text(&buf, area)
+    }
+
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        (area.y..area.y.saturating_add(area.height))
+            .map(|y| {
+                (area.x..area.x.saturating_add(area.width))
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn row_containing(buf: &Buffer, area: Rect, needle: &str) -> Option<String> {
+        (area.y..area.y.saturating_add(area.height)).find_map(|y| {
+            let row: String = (area.x..area.x.saturating_add(area.width))
+                .map(|x| buf[(x, y)].symbol())
+                .collect();
+            row.contains(needle).then_some(row)
+        })
     }
 
     #[test]
@@ -752,7 +808,8 @@ mod tests {
 
         assert!(rendered.contains("Action required"));
         assert!(rendered.contains("Choose what should happen after this plan."));
-        // Data-driven footer shows per-option shortcut labels.
+        // Data-driven option rows show per-option shortcut labels without
+        // depending on a clipped single-line footer.
         assert!(rendered.contains("[1/a]"));
         assert!(rendered.contains("[4/q]"));
     }
@@ -764,8 +821,56 @@ mod tests {
 
         let rendered = render_view(&view, 110, 36);
 
-        assert!(rendered.contains("> 2) Accept plan (YOLO)"));
+        assert!(rendered.contains("> [2/y] Accept plan (YOLO)"));
         assert!(rendered.contains("Start implementation in YOLO mode (auto-approve)"));
+    }
+
+    #[test]
+    fn plan_prompt_paints_an_opaque_modal_surface() {
+        let area = Rect::new(0, 0, 90, 24);
+        let popup_area = centered_rect(72, 52, area);
+        let mut buf = Buffer::empty(area);
+        for y in area.y..area.y.saturating_add(area.height) {
+            for x in area.x..area.x.saturating_add(area.width) {
+                buf[(x, y)]
+                    .set_symbol("X")
+                    .set_style(Style::default().fg(Color::Red).bg(Color::Blue));
+            }
+        }
+
+        PlanPromptView::new(None).render(area, &mut buf);
+
+        let blank_interior_x = popup_area.x + popup_area.width.saturating_sub(3);
+        let blank_interior_y = popup_area.y + 2;
+        let blank = &buf[(blank_interior_x, blank_interior_y)];
+        assert_eq!(blank.symbol(), " ");
+        assert_eq!(blank.bg, palette::DEEPSEEK_INK);
+
+        let mut rendered_popup = String::new();
+        for y in popup_area.y..popup_area.y.saturating_add(popup_area.height) {
+            for x in popup_area.x..popup_area.x.saturating_add(popup_area.width) {
+                rendered_popup.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(
+            !rendered_popup.contains('X'),
+            "stale background glyphs must not bleed through the plan modal"
+        );
+    }
+
+    #[test]
+    fn plan_prompt_footer_stays_compact_on_narrow_terminals() {
+        let area = Rect::new(0, 0, 72, 22);
+        let buf = render_buffer(&PlanPromptView::new(None), area.width, area.height);
+        let footer = row_containing(&buf, area, "Enter").expect("footer should render");
+
+        assert!(footer.contains("Esc"));
+        assert!(!footer.contains("Accept plan"));
+        assert!(!footer.contains("YOLO"));
+        assert!(
+            footer.chars().count() <= area.width as usize,
+            "footer must fit the terminal row: {footer:?}"
+        );
     }
 
     #[test]
@@ -802,6 +907,55 @@ mod tests {
         assert!(rendered.contains("Verification plan:"));
         assert!(rendered.contains("Handoff packet:"));
         assert!(rendered.contains("Render rich sections"));
+    }
+
+    #[test]
+    fn plan_prompt_renders_active_checklist_when_provided() {
+        use crate::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
+
+        let todos = TodoListSnapshot {
+            items: vec![
+                TodoItem {
+                    id: 1,
+                    content: "Read the brief".to_string(),
+                    status: TodoStatus::Completed,
+                },
+                TodoItem {
+                    id: 2,
+                    content: "Render the checklist".to_string(),
+                    status: TodoStatus::InProgress,
+                },
+                TodoItem {
+                    id: 3,
+                    content: "Ship the PR".to_string(),
+                    status: TodoStatus::Pending,
+                },
+            ],
+            completion_pct: 33,
+            in_progress_id: Some(2),
+        };
+        let view = PlanPromptView::new(None).with_todos(Some(todos));
+        let rendered = render_view(&view, 160, 120);
+
+        assert!(rendered.contains("Checklist (33% complete):"));
+        assert!(rendered.contains("Read the brief"));
+        assert!(rendered.contains("Render the checklist"));
+        assert!(rendered.contains("Ship the PR"));
+    }
+
+    #[test]
+    fn plan_prompt_omits_checklist_section_when_empty() {
+        use crate::tools::todo::TodoListSnapshot;
+
+        let todos = TodoListSnapshot {
+            items: vec![],
+            completion_pct: 0,
+            in_progress_id: None,
+        };
+        let view = PlanPromptView::new(None).with_todos(Some(todos));
+        let rendered = render_view(&view, 160, 120);
+
+        assert!(!rendered.contains("Checklist"));
     }
 
     #[test]
@@ -845,7 +999,7 @@ mod tests {
         let rendered = render_view(&view, 80, 24);
 
         assert!(
-            rendered.contains("PgUp/Dn"),
+            rendered.contains("Pg"),
             "scroll indicator should appear when content overflows"
         );
     }

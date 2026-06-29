@@ -7,7 +7,6 @@ release_crates=(
   deepseek-release
   deepseek-secrets
   deepseek-state
-  deepseek-tui-core
   deepseek-whaleflow
   deepseek-execpolicy
   deepseek-hooks

@@ -4,19 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core runtime boundaries for DeepSeek workspace architecture"
+description = "Core runtime boundaries for DeepSeek"
 
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-deepseek-agent = { path = "../agent", version = "0.8.54" }
-deepseek-config = { path = "../config", version = "0.8.54" }
-deepseek-execpolicy = { path = "../execpolicy", version = "0.8.54" }
-deepseek-hooks = { path = "../hooks", version = "0.8.54" }
-deepseek-mcp = { path = "../mcp", version = "0.8.54" }
-deepseek-protocol = { path = "../protocol", version = "0.8.54" }
-deepseek-state = { path = "../state", version = "0.8.54" }
-deepseek-tools = { path = "../tools", version = "0.8.54" }
+deepseek-agent = { path = "../agent", version = "0.8.65" }
+deepseek-config = { path = "../config", version = "0.8.65" }
+deepseek-execpolicy = { path = "../execpolicy", version = "0.8.65" }
+deepseek-hooks = { path = "../hooks", version = "0.8.65" }
+deepseek-mcp = { path = "../mcp", version = "0.8.65" }
+deepseek-protocol = { path = "../protocol", version = "0.8.65" }
+deepseek-state = { path = "../state", version = "0.8.65" }
+deepseek-tools = { path = "../tools", version = "0.8.65" }
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true

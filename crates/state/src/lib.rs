@@ -195,6 +195,49 @@ pub struct JobStateRecord {
     pub updated_at: i64,
 }
 
+/// Persisted lifecycle status for a thread goal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadGoalStatus {
+    /// Goal is active and should continue receiving work.
+    Active,
+    /// Goal is paused by the user.
+    Paused,
+    /// Goal is blocked and cannot make meaningful progress.
+    Blocked,
+    /// Goal stopped because account/service usage limits were reached.
+    UsageLimited,
+    /// Goal stopped because its explicit token budget was reached.
+    BudgetLimited,
+    /// Goal has been completed.
+    Complete,
+}
+
+/// Persisted goal state attached to a thread.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadGoalRecord {
+    /// Thread this goal belongs to.
+    pub thread_id: String,
+    /// Stable identifier for this goal revision.
+    pub goal_id: String,
+    /// User-visible objective.
+    pub objective: String,
+    /// Current lifecycle status.
+    pub status: ThreadGoalStatus,
+    /// Optional token budget requested by the user.
+    pub token_budget: Option<i64>,
+    /// Tokens consumed while pursuing the goal.
+    pub tokens_used: i64,
+    /// Elapsed wall-clock work time in seconds.
+    pub time_used_seconds: i64,
+    /// Durable continuation passes dispatched for this objective.
+    pub continuation_count: i64,
+    /// Unix timestamp (seconds) when the goal was created.
+    pub created_at: i64,
+    /// Unix timestamp (seconds) when the goal was last updated.
+    pub updated_at: i64,
+}
+
 /// Filters for listing conversation threads.
 #[derive(Debug, Clone)]
 pub struct ThreadListFilters {
@@ -234,7 +277,8 @@ pub struct StateStore {
 impl StateStore {
     /// Open (or create) a state store at the given database path.
     ///
-    /// If `path` is `None`, the default location (`~/.deepseek/state.db`) is used.
+    /// If `path` is `None`, the default location (`~/.deepseek/state.db`, with
+    /// `~/.deepseek/state.db` as a legacy fallback) is used.
     /// The database schema is created automatically if it does not exist.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let db_path = path.unwrap_or_else(default_state_db_path);
@@ -261,8 +305,16 @@ impl StateStore {
     }
 
     fn conn(&self) -> Result<Connection> {
-        Connection::open(&self.db_path)
-            .with_context(|| format!("failed to open state db {}", self.db_path.display()))
+        let conn = Connection::open(&self.db_path)
+            .with_context(|| format!("failed to open state db {}", self.db_path.display()))?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .with_context(|| {
+                format!(
+                    "failed to enable foreign keys for {}",
+                    self.db_path.display()
+                )
+            })?;
+        Ok(conn)
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -474,6 +526,51 @@ impl StateStore {
                 "#,
             )
             .context("failed to initialize workflow trace schema")?;
+            user_version = 2;
+        }
+        if user_version < 3 {
+            conn.execute_batch(
+                r#"
+                BEGIN;
+                CREATE TABLE IF NOT EXISTS thread_goals (
+                    thread_id TEXT PRIMARY KEY NOT NULL,
+                    goal_id TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'active',
+                        'paused',
+                        'blocked',
+                        'usage_limited',
+                        'budget_limited',
+                        'complete'
+                    )),
+                    token_budget INTEGER,
+                    tokens_used INTEGER NOT NULL DEFAULT 0,
+                    time_used_seconds INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
+                );
+
+                PRAGMA user_version = 3;
+                COMMIT;
+                "#,
+            )
+            .context("failed to initialize thread goal schema")?;
+            user_version = 3;
+        }
+        if user_version < 4 {
+            conn.execute_batch(
+                r#"
+                BEGIN;
+                ALTER TABLE thread_goals
+                    ADD COLUMN continuation_count INTEGER NOT NULL DEFAULT 0;
+
+                PRAGMA user_version = 4;
+                COMMIT;
+                "#,
+            )
+            .context("failed to initialize thread goal continuation schema")?;
         }
         Ok(())
     }
@@ -658,6 +755,153 @@ impl StateStore {
         .optional()
         .context("failed to read thread memory mode")
         .map(Option::flatten)
+    }
+
+    /// Insert or replace the persisted goal for a thread.
+    pub fn upsert_thread_goal(&self, goal: &ThreadGoalRecord) -> Result<()> {
+        let conn = self.conn()?;
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM threads WHERE id = ?1",
+                params![goal.thread_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed to verify thread before saving goal")?;
+        if exists.is_none() {
+            anyhow::bail!("thread {} not found", goal.thread_id);
+        }
+
+        conn.execute(
+            r#"
+            INSERT INTO thread_goals (
+                thread_id, goal_id, objective, status, token_budget, tokens_used,
+                time_used_seconds, continuation_count, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(thread_id) DO UPDATE SET
+                goal_id=excluded.goal_id,
+                objective=excluded.objective,
+                status=excluded.status,
+                token_budget=excluded.token_budget,
+                tokens_used=excluded.tokens_used,
+                time_used_seconds=excluded.time_used_seconds,
+                continuation_count=excluded.continuation_count,
+                created_at=excluded.created_at,
+                updated_at=excluded.updated_at
+            "#,
+            params![
+                goal.thread_id,
+                goal.goal_id,
+                goal.objective,
+                thread_goal_status_to_str(&goal.status),
+                goal.token_budget,
+                goal.tokens_used,
+                goal.time_used_seconds,
+                goal.continuation_count,
+                goal.created_at,
+                goal.updated_at,
+            ],
+        )
+        .context("failed to upsert thread goal")?;
+        Ok(())
+    }
+
+    /// Accrue additional token and wall-clock usage onto a thread's persisted goal.
+    ///
+    /// This is the durable, additive accounting path for the persistent goal loop: it
+    /// increments `tokens_used` and `time_used_seconds` in a single atomic SQL `UPDATE`
+    /// (`col = col + ?`) so concurrent accruals do not race a read-modify-write. The
+    /// goal's `updated_at` is advanced to the larger of its current value and `now`,
+    /// keeping the timestamp monotonic even if a stale `now` is supplied.
+    ///
+    /// `token_delta` and `time_delta_seconds` are added on the database side; callers
+    /// should pass non-negative deltas (negative values are accepted and will decrement,
+    /// which is intentionally left to the caller's discretion).
+    ///
+    /// Returns the updated [`ThreadGoalRecord`], or `Ok(None)` if the thread has no
+    /// persisted goal. Unlike [`upsert_thread_goal`](Self::upsert_thread_goal) this never
+    /// creates a goal row; it only accumulates onto an existing one.
+    pub fn record_thread_goal_usage(
+        &self,
+        thread_id: &str,
+        token_delta: i64,
+        time_delta_seconds: i64,
+        now: i64,
+    ) -> Result<Option<ThreadGoalRecord>> {
+        let conn = self.conn()?;
+        let changed = conn
+            .execute(
+                r#"
+                UPDATE thread_goals
+                SET tokens_used = tokens_used + ?2,
+                    time_used_seconds = time_used_seconds + ?3,
+                    updated_at = MAX(updated_at, ?4)
+                WHERE thread_id = ?1
+                "#,
+                params![thread_id, token_delta, time_delta_seconds, now],
+            )
+            .context("failed to record thread goal usage")?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get_thread_goal(thread_id)
+    }
+
+    /// Increment the durable cross-turn continuation counter for a thread goal.
+    ///
+    /// The older TUI continuation guard is scoped to one engine turn. This
+    /// counter is intentionally persisted so a resumed goal loop can feed
+    /// `goal_loop::decide_continuation` with the true cross-turn count.
+    pub fn record_thread_goal_continuation(
+        &self,
+        thread_id: &str,
+        now: i64,
+    ) -> Result<Option<ThreadGoalRecord>> {
+        let conn = self.conn()?;
+        let changed = conn
+            .execute(
+                r#"
+                UPDATE thread_goals
+                SET continuation_count = continuation_count + 1,
+                    updated_at = MAX(updated_at, ?2)
+                WHERE thread_id = ?1
+                "#,
+                params![thread_id, now],
+            )
+            .context("failed to record thread goal continuation")?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get_thread_goal(thread_id)
+    }
+
+    /// Retrieve the persisted goal for a thread.
+    pub fn get_thread_goal(&self, thread_id: &str) -> Result<Option<ThreadGoalRecord>> {
+        let conn = self.conn()?;
+        conn.query_row(
+            r#"
+            SELECT thread_id, goal_id, objective, status, token_budget, tokens_used,
+                   time_used_seconds, continuation_count, created_at, updated_at
+            FROM thread_goals
+            WHERE thread_id = ?1
+            "#,
+            params![thread_id],
+            row_to_thread_goal,
+        )
+        .optional()
+        .context("failed to read thread goal")
+    }
+
+    /// Delete the persisted goal for a thread.
+    pub fn delete_thread_goal(&self, thread_id: &str) -> Result<bool> {
+        let conn = self.conn()?;
+        let changed = conn
+            .execute(
+                "DELETE FROM thread_goals WHERE thread_id = ?1",
+                params![thread_id],
+            )
+            .context("failed to delete thread goal")?;
+        Ok(changed > 0)
     }
 
     /// List all leaf messages in a thread.
@@ -940,7 +1184,7 @@ impl StateStore {
                 SELECT ?1, ?2, ?3, ?4, ?5, ?6
                 RETURNING id
             "#, params![thread_id, role, content, item_json, created_at, message_id], |row| row.get(0)
-        ).with_context(|| format!("failed to fork at message for thread {:?}", thread_id))?;
+        ).with_context(|| format!("failed to fork at message for thread {thread_id:?}"))?;
 
         tx.execute(
             r#"
@@ -951,10 +1195,7 @@ impl StateStore {
             params![next_leaf_id, thread_id],
         )
         .with_context(|| {
-            format!(
-                "failed to update thread current leaf id for thread {:?}",
-                thread_id
-            )
+            format!("failed to update thread current leaf id for thread {thread_id:?}")
         })?;
 
         tx.commit()
@@ -1344,10 +1585,39 @@ impl StateStore {
 }
 
 fn default_state_db_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".deepseek")
-        .join("state.db")
+    // $DEEPSEEK_HOME is a hard override of the base data directory
+    // (docs/CONFIGURATION.md): when set, the state DB lives under it and we do
+    // NOT fall back to the legacy ~/.deepseek path — silent fallback would
+    // defeat the isolation the override promises (CI, containers, multi-project,
+    // test harnesses). Legacy ~/.deepseek migration only applies to the default
+    // home location.
+    if let Some(overridden) = deepseek_home_override() {
+        return overridden.join("state.db");
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    // Prefer the DeepSeek directory, falling back to legacy DeepSeek path
+    // so existing installs don't lose their session history.
+    let primary = home.join(".deepseek").join("state.db");
+    if primary.exists() || !home.join(".deepseek").join("state.db").exists() {
+        primary
+    } else {
+        home.join(".deepseek").join("state.db")
+    }
+}
+
+/// Resolve `$DEEPSEEK_HOME` as a hard override of the data directory root.
+///
+/// Returns the path verbatim (the env var IS the home dir, matching
+/// `deepseek_home()` in config — `$DEEPSEEK_HOME=/data/cw` means the home is
+/// `/data/cw`, not `/data/cw/.deepseek`). Returns `None` when unset/empty so
+/// callers can branch on "explicit override" vs "default home + legacy
+/// fallback." Mirrors config's helper without taking a dependency on it (state
+/// is a low-level leaf crate; config cannot be a dependency here without
+/// inverting the layering).
+fn deepseek_home_override() -> Option<PathBuf> {
+    std::env::var_os("DEEPSEEK_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn bool_to_i64(value: bool) -> i64 {
@@ -1426,6 +1696,29 @@ fn job_state_status_from_str(value: &str) -> JobStateStatus {
     }
 }
 
+fn thread_goal_status_to_str(status: &ThreadGoalStatus) -> &'static str {
+    match status {
+        ThreadGoalStatus::Active => "active",
+        ThreadGoalStatus::Paused => "paused",
+        ThreadGoalStatus::Blocked => "blocked",
+        ThreadGoalStatus::UsageLimited => "usage_limited",
+        ThreadGoalStatus::BudgetLimited => "budget_limited",
+        ThreadGoalStatus::Complete => "complete",
+    }
+}
+
+fn thread_goal_status_from_str(value: &str) -> ThreadGoalStatus {
+    match value {
+        "active" => ThreadGoalStatus::Active,
+        "paused" => ThreadGoalStatus::Paused,
+        "blocked" => ThreadGoalStatus::Blocked,
+        "usage_limited" => ThreadGoalStatus::UsageLimited,
+        "budget_limited" => ThreadGoalStatus::BudgetLimited,
+        "complete" => ThreadGoalStatus::Complete,
+        _ => ThreadGoalStatus::Active,
+    }
+}
+
 fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
     let status_raw: String = row.get(7)?;
     let source_raw: String = row.get(11)?;
@@ -1455,4 +1748,374 @@ fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
         memory_mode: row.get(20)?,
         current_leaf_id: row.get(21)?,
     })
+}
+
+fn row_to_thread_goal(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadGoalRecord> {
+    let status_raw: String = row.get(3)?;
+    Ok(ThreadGoalRecord {
+        thread_id: row.get(0)?,
+        goal_id: row.get(1)?,
+        objective: row.get(2)?,
+        status: thread_goal_status_from_str(&status_raw),
+        token_budget: row.get(4)?,
+        tokens_used: row.get(5)?,
+        time_used_seconds: row.get(6)?,
+        continuation_count: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_state_store(name: &str) -> StateStore {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "deepseek-state-{name}-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp state dir");
+        StateStore::open(Some(dir.join("state.db"))).expect("open state store")
+    }
+
+    fn test_thread(id: &str) -> ThreadMetadata {
+        ThreadMetadata {
+            id: id.to_string(),
+            rollout_path: None,
+            preview: "test thread".to_string(),
+            ephemeral: false,
+            model_provider: "deepseek".to_string(),
+            created_at: 10,
+            updated_at: 10,
+            status: ThreadStatus::Running,
+            path: None,
+            cwd: PathBuf::from("/tmp/deepseek"),
+            cli_version: "0.0.0-test".to_string(),
+            source: SessionSource::Interactive,
+            name: None,
+            sandbox_policy: None,
+            approval_mode: None,
+            archived: false,
+            archived_at: None,
+            git_sha: None,
+            git_branch: None,
+            git_origin_url: None,
+            memory_mode: None,
+            current_leaf_id: None,
+        }
+    }
+
+    fn test_goal(thread_id: &str, objective: &str) -> ThreadGoalRecord {
+        ThreadGoalRecord {
+            thread_id: thread_id.to_string(),
+            goal_id: "goal-1".to_string(),
+            objective: objective.to_string(),
+            status: ThreadGoalStatus::Active,
+            token_budget: Some(123),
+            tokens_used: 7,
+            time_used_seconds: 11,
+            continuation_count: 0,
+            created_at: 100,
+            updated_at: 101,
+        }
+    }
+
+    #[test]
+    fn thread_goal_crud_round_trips_and_replaces() {
+        let store = temp_state_store("thread-goal-crud");
+        store
+            .upsert_thread(&test_thread("thread-1"))
+            .expect("upsert thread");
+
+        let goal = test_goal("thread-1", "Ship v0.8.59");
+        store.upsert_thread_goal(&goal).expect("upsert goal");
+        assert_eq!(
+            store
+                .get_thread_goal("thread-1")
+                .expect("read goal")
+                .as_ref(),
+            Some(&goal)
+        );
+
+        let mut replacement = test_goal("thread-1", "Ship v0.8.59 safely");
+        replacement.goal_id = "goal-2".to_string();
+        replacement.status = ThreadGoalStatus::BudgetLimited;
+        replacement.token_budget = None;
+        replacement.updated_at = 202;
+        store
+            .upsert_thread_goal(&replacement)
+            .expect("replace goal");
+        assert_eq!(
+            store.get_thread_goal("thread-1").expect("read replacement"),
+            Some(replacement)
+        );
+
+        assert!(store.delete_thread_goal("thread-1").expect("delete goal"));
+        assert!(
+            store
+                .get_thread_goal("thread-1")
+                .expect("read empty")
+                .is_none()
+        );
+        assert!(!store.delete_thread_goal("thread-1").expect("delete empty"));
+    }
+
+    #[test]
+    fn thread_goal_requires_existing_thread() {
+        let store = temp_state_store("thread-goal-missing-thread");
+        let err = store
+            .upsert_thread_goal(&test_goal("missing-thread", "nope"))
+            .expect_err("goal without a thread should fail");
+        assert!(err.to_string().contains("thread missing-thread not found"));
+    }
+
+    #[test]
+    fn delete_thread_cascades_child_rows() {
+        let store = temp_state_store("thread-delete-cascade");
+        store
+            .upsert_thread(&test_thread("thread-1"))
+            .expect("upsert thread");
+        store
+            .append_message("thread-1", "user", "hello", None)
+            .expect("append message");
+        store
+            .save_checkpoint("thread-1", "checkpoint-1", &serde_json::json!({"ok": true}))
+            .expect("save checkpoint");
+        store
+            .persist_dynamic_tools(
+                "thread-1",
+                &[DynamicToolRecord {
+                    position: 0,
+                    name: "test_tool".to_string(),
+                    description: Some("test".to_string()),
+                    input_schema: serde_json::json!({"type": "object"}),
+                }],
+            )
+            .expect("persist dynamic tools");
+        store
+            .upsert_thread_goal(&test_goal("thread-1", "Ship v0.8.67"))
+            .expect("upsert goal");
+
+        store.delete_thread("thread-1").expect("delete thread");
+
+        let conn = store.conn().expect("conn");
+        for table in [
+            "messages",
+            "checkpoints",
+            "thread_dynamic_tools",
+            "thread_goals",
+        ] {
+            let sql = format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1");
+            let count: i64 = conn
+                .query_row(&sql, params!["thread-1"], |row| row.get(0))
+                .expect("count child rows");
+            assert_eq!(count, 0, "{table} row survived thread deletion");
+        }
+    }
+
+    #[test]
+    fn record_thread_goal_usage_accumulates_tokens_and_time() {
+        let store = temp_state_store("thread-goal-usage");
+        store
+            .upsert_thread(&test_thread("thread-1"))
+            .expect("upsert thread");
+
+        // Mirror the runtime, which creates goals with zeroed accounting.
+        let mut goal = test_goal("thread-1", "Ship the persistent goal loop");
+        goal.tokens_used = 0;
+        goal.time_used_seconds = 0;
+        goal.updated_at = 100;
+        store.upsert_thread_goal(&goal).expect("upsert goal");
+
+        // First accrual lands the deltas and advances updated_at.
+        let after_first = store
+            .record_thread_goal_usage("thread-1", 250, 12, 150)
+            .expect("record usage")
+            .expect("goal exists");
+        assert_eq!(after_first.tokens_used, 250);
+        assert_eq!(after_first.time_used_seconds, 12);
+        assert_eq!(after_first.updated_at, 150);
+        // Identity fields are preserved across accrual.
+        assert_eq!(after_first.goal_id, goal.goal_id);
+        assert_eq!(after_first.objective, goal.objective);
+        assert_eq!(after_first.status, goal.status);
+        assert_eq!(after_first.token_budget, goal.token_budget);
+        assert_eq!(after_first.created_at, goal.created_at);
+        assert_eq!(after_first.continuation_count, 0);
+
+        // Second accrual adds on top of the first (additive, not replacing).
+        let after_second = store
+            .record_thread_goal_usage("thread-1", 75, 8, 200)
+            .expect("record usage")
+            .expect("goal exists");
+        assert_eq!(after_second.tokens_used, 325);
+        assert_eq!(after_second.time_used_seconds, 20);
+        assert_eq!(after_second.updated_at, 200);
+
+        // A stale `now` must not move updated_at backwards.
+        let after_stale = store
+            .record_thread_goal_usage("thread-1", 5, 1, 1)
+            .expect("record usage")
+            .expect("goal exists");
+        assert_eq!(after_stale.tokens_used, 330);
+        assert_eq!(after_stale.time_used_seconds, 21);
+        assert_eq!(after_stale.updated_at, 200);
+
+        // Read back through the normal getter to confirm durability.
+        let persisted = store
+            .get_thread_goal("thread-1")
+            .expect("read goal")
+            .expect("goal exists");
+        assert_eq!(persisted.tokens_used, 330);
+        assert_eq!(persisted.time_used_seconds, 21);
+    }
+
+    #[test]
+    fn record_thread_goal_usage_returns_none_without_goal() {
+        let store = temp_state_store("thread-goal-usage-missing");
+        store
+            .upsert_thread(&test_thread("thread-1"))
+            .expect("upsert thread");
+        // Thread exists but has no goal row yet: accrual is a no-op, not an error,
+        // and must not create a goal.
+        let result = store
+            .record_thread_goal_usage("thread-1", 100, 5, 999)
+            .expect("record usage on goalless thread");
+        assert!(result.is_none());
+        assert!(
+            store
+                .get_thread_goal("thread-1")
+                .expect("read goal")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn record_thread_goal_continuation_accumulates_durably() {
+        let store = temp_state_store("thread-goal-continuation");
+        store
+            .upsert_thread(&test_thread("thread-1"))
+            .expect("upsert thread");
+
+        let mut goal = test_goal("thread-1", "Keep working across turns");
+        goal.updated_at = 100;
+        store.upsert_thread_goal(&goal).expect("upsert goal");
+
+        let after_first = store
+            .record_thread_goal_continuation("thread-1", 120)
+            .expect("record continuation")
+            .expect("goal exists");
+        assert_eq!(after_first.continuation_count, 1);
+        assert_eq!(after_first.tokens_used, goal.tokens_used);
+        assert_eq!(after_first.time_used_seconds, goal.time_used_seconds);
+        assert_eq!(after_first.updated_at, 120);
+
+        let after_second = store
+            .record_thread_goal_continuation("thread-1", 110)
+            .expect("record second continuation")
+            .expect("goal exists");
+        assert_eq!(after_second.continuation_count, 2);
+        assert_eq!(after_second.updated_at, 120);
+
+        let persisted = store
+            .get_thread_goal("thread-1")
+            .expect("read goal")
+            .expect("goal exists");
+        assert_eq!(persisted.continuation_count, 2);
+    }
+
+    // ── $DEEPSEEK_HOME override tests ──────────────────────────────
+    //
+    // These touch a process-global env var, so they serialize against each
+    // other (and restore the prior value) to stay hermetic under parallel test
+    // runs — the same concern AGENTS.md flags for config_command_allow_shell_*.
+
+    static DEEPSEEK_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct CodeWhaleHomeGuard {
+        prior: Option<std::ffi::OsString>,
+    }
+    impl CodeWhaleHomeGuard {
+        fn set(value: &str) -> Self {
+            let prior = std::env::var_os("DEEPSEEK_HOME");
+            // SAFETY: serialised by DEEPSEEK_HOME_TEST_LOCK.
+            unsafe { std::env::set_var("DEEPSEEK_HOME", value) };
+            Self { prior }
+        }
+        fn remove() -> Self {
+            let prior = std::env::var_os("DEEPSEEK_HOME");
+            // SAFETY: serialised by DEEPSEEK_HOME_TEST_LOCK.
+            unsafe { std::env::remove_var("DEEPSEEK_HOME") };
+            Self { prior }
+        }
+    }
+    impl Drop for CodeWhaleHomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: serialised by DEEPSEEK_HOME_TEST_LOCK.
+            unsafe {
+                match &self.prior {
+                    Some(value) => std::env::set_var("DEEPSEEK_HOME", value),
+                    None => std::env::remove_var("DEEPSEEK_HOME"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deepseek_home_override_returns_the_env_value_verbatim() {
+        let _lock = DEEPSEEK_HOME_TEST_LOCK.lock().unwrap();
+        let _g = CodeWhaleHomeGuard::set("/tmp/cw-isolated-state");
+        // The env var IS the home dir — no ".deepseek" appended. This matches
+        // deepseek_home() in config ($DEEPSEEK_HOME=/x means home is /x).
+        assert_eq!(
+            deepseek_home_override().as_deref(),
+            Some(std::path::Path::new("/tmp/cw-isolated-state"))
+        );
+    }
+
+    #[test]
+    fn deepseek_home_override_none_when_unset() {
+        let _lock = DEEPSEEK_HOME_TEST_LOCK.lock().unwrap();
+        let _g = CodeWhaleHomeGuard::remove();
+        assert!(deepseek_home_override().is_none());
+    }
+
+    #[test]
+    fn deepseek_home_override_none_when_empty() {
+        let _lock = DEEPSEEK_HOME_TEST_LOCK.lock().unwrap();
+        let _g = CodeWhaleHomeGuard::set("   ");
+        // The helper filters empty values (after the OsString check). Note:
+        // var_os returns the raw "   ", and our filter only catches truly-empty,
+        // so this documents that whitespace-only is NOT treated as unset at the
+        // override layer (config's deepseek_home trims; we don't here — the
+        // branch is "was it set at all").
+        assert!(
+            deepseek_home_override().is_some(),
+            "non-empty (even whitespace) counts as set; trimming is the caller's job"
+        );
+    }
+
+    #[test]
+    fn default_state_db_path_uses_deepseek_home_when_set() {
+        let _lock = DEEPSEEK_HOME_TEST_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "cw-home-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _g = CodeWhaleHomeGuard::set(dir.to_str().unwrap());
+        // Hard override: the DB is <DEEPSEEK_HOME>/state.db, NOT
+        // <DEEPSEEK_HOME>/.deepseek/state.db, and the legacy ~/.deepseek
+        // fallback is bypassed entirely.
+        assert_eq!(default_state_db_path(), dir.join("state.db"));
+    }
 }

@@ -7,7 +7,7 @@ Current boundary note (v0.8.6):
 - Other workspace crates are being split out incrementally, but they are not yet the sole runtime source of truth.
 - The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
   (`core/engine/lsp_hooks.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
-- The swarm agent system was removed in v0.8.5. The active v0.8.35 orchestration surface is persistent sub-agent sessions (`agent_open` / `agent_eval` / `agent_close`) and persistent RLM sessions (`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`).
+- The swarm agent system was removed in v0.8.5. The active sub-agent surface is the single `agent` tool; persistent RLM sessions remain available through `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`.
   No model-visible swarm tool remains in the active codebase.
 
 ## High-Level Overview
@@ -74,7 +74,6 @@ Current boundary note (v0.8.6):
 - **`core/`** - Main engine components
   - `engine.rs` - Engine state, operation handling, message processing
   - `engine/turn_loop.rs` - Streaming turn loop and tool execution orchestration
-  - `engine/capacity_flow.rs` - Capacity guardrail checkpoints and interventions
   - `session.rs` - Session state management
   - `turn.rs` - Turn-based conversation handling
   - `events.rs` - Event system for UI updates
@@ -98,7 +97,6 @@ Current boundary note (v0.8.6):
 - **`crates/protocol`** - Request/response framing and protocol types.
 - **`crates/secrets`** - OS keyring integration for API key storage.
 - **`crates/state`** - SQLite thread/session persistence layer.
-- **`crates/tui-core`** - Event-driven TUI state machine scaffold.
 
 ### LLM Integration
 

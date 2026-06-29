@@ -7,14 +7,14 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CODEWHALE_USER="${CODEWHALE_USER:-${DEEPSEEK_USER:-deepseek}}"
-CODEWHALE_ROOT="${CODEWHALE_ROOT:-${DEEPSEEK_ROOT:-/opt/deepseek}}"
-BRIDGE_KIND="${CODEWHALE_BRIDGE:-${DEEPSEEK_BRIDGE:-feishu}}"
+DEEPSEEK_USER="${DEEPSEEK_USER:-${DEEPSEEK_USER:-deepseek}}"
+DEEPSEEK_ROOT="${DEEPSEEK_ROOT:-${DEEPSEEK_ROOT:-/opt/deepseek}}"
+BRIDGE_KIND="${DEEPSEEK_BRIDGE:-${DEEPSEEK_BRIDGE:-feishu}}"
 
 case "${BRIDGE_KIND}" in
   feishu|lark)
     BRIDGE_SRC="integrations/feishu-bridge"
-    BRIDGE_DST="${CODEWHALE_ROOT}/bridge"
+    BRIDGE_DST="${DEEPSEEK_ROOT}/bridge"
     BRIDGE_UNIT="deepseek-feishu-bridge.service"
     BRIDGE_ENV="/etc/deepseek/feishu-bridge.env"
     BRIDGE_ENV_EXAMPLE="deploy/tencent-lighthouse/examples/feishu-bridge.env.example"
@@ -23,7 +23,7 @@ case "${BRIDGE_KIND}" in
     ;;
   telegram)
     BRIDGE_SRC="integrations/telegram-bridge"
-    BRIDGE_DST="${CODEWHALE_ROOT}/telegram-bridge"
+    BRIDGE_DST="${DEEPSEEK_ROOT}/telegram-bridge"
     BRIDGE_UNIT="deepseek-telegram-bridge.service"
     BRIDGE_ENV="/etc/deepseek/telegram-bridge.env"
     BRIDGE_ENV_EXAMPLE="deploy/tencent-lighthouse/examples/telegram-bridge.env.example"
@@ -31,23 +31,23 @@ case "${BRIDGE_KIND}" in
     VALIDATOR="integrations/telegram-bridge/scripts/validate-config.mjs"
     ;;
   *)
-    echo "Unknown bridge '${BRIDGE_KIND}'. Use CODEWHALE_BRIDGE=feishu or CODEWHALE_BRIDGE=telegram." >&2
+    echo "Unknown bridge '${BRIDGE_KIND}'. Use DEEPSEEK_BRIDGE=feishu or DEEPSEEK_BRIDGE=telegram." >&2
     exit 1
     ;;
 esac
 
-install -d -m 0750 -o root -g "${CODEWHALE_USER}" /etc/deepseek
-install -d -m 0700 -o "${CODEWHALE_USER}" -g "${CODEWHALE_USER}" "${BRIDGE_STATE_DIR}"
-install -d -o "${CODEWHALE_USER}" -g "${CODEWHALE_USER}" "${BRIDGE_DST}"
+install -d -m 0750 -o root -g "${DEEPSEEK_USER}" /etc/deepseek
+install -d -m 0700 -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${BRIDGE_STATE_DIR}"
+install -d -o "${DEEPSEEK_USER}" -g "${DEEPSEEK_USER}" "${BRIDGE_DST}"
 
 if [[ ! -f /etc/deepseek/runtime.env && -f "${REPO_ROOT}/deploy/tencent-lighthouse/examples/runtime.env.example" ]]; then
-  install -m 0640 -o root -g "${CODEWHALE_USER}" \
+  install -m 0640 -o root -g "${DEEPSEEK_USER}" \
     "${REPO_ROOT}/deploy/tencent-lighthouse/examples/runtime.env.example" \
     /etc/deepseek/runtime.env
 fi
 
 if [[ ! -f "${BRIDGE_ENV}" && -f "${REPO_ROOT}/${BRIDGE_ENV_EXAMPLE}" ]]; then
-  install -m 0640 -o root -g "${CODEWHALE_USER}" \
+  install -m 0640 -o root -g "${DEEPSEEK_USER}" \
     "${REPO_ROOT}/${BRIDGE_ENV_EXAMPLE}" \
     "${BRIDGE_ENV}"
 fi
@@ -55,12 +55,12 @@ rsync -a --delete \
   --exclude node_modules \
   "${REPO_ROOT}/${BRIDGE_SRC}/" \
   "${BRIDGE_DST}/"
-chown -R "${CODEWHALE_USER}:${CODEWHALE_USER}" "${BRIDGE_DST}"
+chown -R "${DEEPSEEK_USER}:${DEEPSEEK_USER}" "${BRIDGE_DST}"
 
 if [[ -f "${BRIDGE_DST}/package-lock.json" ]]; then
-  sudo -u "${CODEWHALE_USER}" npm --prefix "${BRIDGE_DST}" ci --omit=dev
+  sudo -u "${DEEPSEEK_USER}" npm --prefix "${BRIDGE_DST}" ci --omit=dev
 else
-  sudo -u "${CODEWHALE_USER}" npm --prefix "${BRIDGE_DST}" install --omit=dev
+  sudo -u "${DEEPSEEK_USER}" npm --prefix "${BRIDGE_DST}" install --omit=dev
 fi
 
 <<<<<<< HEAD
@@ -96,11 +96,11 @@ Then run:
 EOF
 cat <<EOF
   ${BRIDGE_ENV}
-  sudo -u ${CODEWHALE_USER} node ${REPO_ROOT}/${VALIDATOR} --env ${BRIDGE_ENV} --runtime-env /etc/deepseek/runtime.env --workspace-root /opt/whalebro --check-filesystem
+  sudo -u ${DEEPSEEK_USER} node ${REPO_ROOT}/${VALIDATOR} --env ${BRIDGE_ENV} --runtime-env /etc/deepseek/runtime.env --workspace-root /opt/whalebro --check-filesystem
 Then run:
   sudo systemctl start deepseek-runtime
   sudo systemctl start ${BRIDGE_UNIT}
-  sudo CODEWHALE_BRIDGE=${BRIDGE_KIND} bash /opt/whalebro/deepseek/scripts/tencent-lighthouse/doctor.sh
+  sudo DEEPSEEK_BRIDGE=${BRIDGE_KIND} bash /opt/whalebro/deepseek/scripts/tencent-lighthouse/doctor.sh
   sudo journalctl -u ${BRIDGE_UNIT} -f
 >>>>>>> 9463266cb1278cdb82ada338479f32d47f31a704
 EOF

@@ -1,14 +1,15 @@
 ; deepseek.nsi — NSIS installer for DeepSeek (Windows)
 ;
 ; Requirements (see https://github.com/coohu/deepseek-tui/issues/1983):
-;   - Install deepseek.exe and deepseek-tui.exe side-by-side
+;   - Install deepseek.exe, codew.exe, and deepseek-tui.exe side-by-side
 ;   - Default to %LOCALAPPDATA%\Programs\DeepSeek\bin
 ;   - Add install dir to current-user PATH
 ;   - Uninstaller removes the PATH entry
 ;
 ; Usage:
-;   1. Place both .exe files next to this script:
+;   1. Place all .exe files next to this script:
 ;        deepseek.exe
+;        codew.exe
 ;        deepseek-tui.exe
 ;   2. Build:
 ;        makensis /DVERSION=1.2.3 deepseek.nsi
@@ -74,6 +75,7 @@ Section "Install" SecInstall
 
   ; Copy binaries
   File "deepseek.exe"
+  File "codew.exe"
   File "deepseek-tui.exe"
 
   ; Write uninstaller
@@ -119,6 +121,7 @@ SectionEnd
 Section "Uninstall"
   ; Remove binaries
   Delete "$INSTDIR\bin\deepseek.exe"
+  Delete "$INSTDIR\bin\codew.exe"
   Delete "$INSTDIR\bin\deepseek-tui.exe"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR\bin"

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Session/thread persistence and recovery model for DeepSeek workspace architecture"
+description = "Session/thread persistence and recovery model for DeepSeek"
 
 [dependencies]
 anyhow.workspace = true

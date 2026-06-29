@@ -77,23 +77,52 @@ function deriveProvidersFromConfig(cfg: string): ProviderFact[] {
   // so the binary rejects it — keep it out of the docs. Issue #1104.
   const labelMap: Record<string, ProviderFact> = {
     Deepseek: { id: "deepseek", label: "DeepSeek", env: "DEEPSEEK_API_KEY" },
+    DeepseekAnthropic: { id: "deepseek-anthropic", label: "DeepSeek Anthropic", env: "DEEPSEEK_API_KEY / ANTHROPIC_API_KEY" },
     NvidiaNim: { id: "nvidia-nim", label: "NVIDIA NIM", env: "NVIDIA_API_KEY / NVIDIA_NIM_API_KEY" },
     Openai: { id: "openai", label: "OpenAI-compatible", env: "OPENAI_API_KEY" },
     Atlascloud: { id: "atlascloud", label: "AtlasCloud", env: "ATLASCLOUD_API_KEY" },
     WanjieArk: { id: "wanjie-ark", label: "Wanjie Ark", env: "WANJIE_ARK_API_KEY / WANJIE_API_KEY / WANJIE_MAAS_API_KEY" },
+    Volcengine: { id: "volcengine", label: "Volcengine Ark", env: "VOLCENGINE_API_KEY / VOLCENGINE_ARK_API_KEY / ARK_API_KEY" },
     Openrouter: { id: "openrouter", label: "OpenRouter", env: "OPENROUTER_API_KEY" },
+    XiaomiMimo: { id: "xiaomi-mimo", label: "Xiaomi MiMo", env: "XIAOMI_MIMO_API_KEY / XIAOMI_API_KEY / MIMO_API_KEY" },
     Novita: { id: "novita", label: "Novita AI", env: "NOVITA_API_KEY" },
     Fireworks: { id: "fireworks", label: "Fireworks AI", env: "FIREWORKS_API_KEY" },
+    Siliconflow: { id: "siliconflow", label: "SiliconFlow", env: "SILICONFLOW_API_KEY" },
+    SiliconflowCn: { id: "siliconflow-CN", label: "SiliconFlow CN", env: "SILICONFLOW_API_KEY" },
+    Arcee: { id: "arcee", label: "Arcee AI", env: "ARCEE_API_KEY" },
     Moonshot: { id: "moonshot", label: "Moonshot/Kimi", env: "MOONSHOT_API_KEY / KIMI_API_KEY" },
     Sglang: { id: "sglang", label: "SGLang", env: "SGLANG_API_KEY" },
     Vllm: { id: "vllm", label: "vLLM", env: "VLLM_API_KEY" },
     Ollama: { id: "ollama", label: "Ollama", env: "OLLAMA_API_KEY" },
+    Huggingface: { id: "huggingface", label: "Hugging Face", env: "HUGGINGFACE_API_KEY / HF_TOKEN" },
+    Deepinfra: { id: "deepinfra", label: "DeepInfra", env: "DEEPINFRA_API_KEY / DEEPINFRA_TOKEN" },
+    Together: { id: "together", label: "Together AI", env: "TOGETHER_API_KEY" },
+    Qianfan: { id: "qianfan", label: "Baidu Qianfan", env: "QIANFAN_API_KEY / BAIDU_QIANFAN_API_KEY" },
+    OpenaiCodex: { id: "openai-codex", label: "OpenAI Codex", env: "ChatGPT/Codex OAuth via `codex login` (OPENAI_CODEX_ACCESS_TOKEN / CODEX_ACCESS_TOKEN override)" },
+    Anthropic: { id: "anthropic", label: "Anthropic", env: "ANTHROPIC_API_KEY" },
+    Zai: { id: "zai", label: "Z.ai", env: "ZAI_API_KEY / Z_AI_API_KEY" },
+    Stepfun: { id: "stepfun", label: "StepFun", env: "STEPFUN_API_KEY / STEP_API_KEY" },
+    Minimax: { id: "minimax", label: "MiniMax", env: "MINIMAX_API_KEY" },
   };
+  // Log loudly on unmapped variants so a new provider can never be silently
+  // dropped from the drift-derived facts again. DeepseekCN (#1104) and the
+  // dynamic Custom meta-provider (#1519, user-defined endpoints) are the
+  // deliberate exclusions.
+  const EXCLUDED = new Set(["DeepseekCN", "Custom"]);
+  const unmapped = variants.filter((v) => !EXCLUDED.has(v) && !labelMap[v]);
+  if (unmapped.length > 0) {
+    console.warn(
+      `[facts-drift] ApiProvider variants missing from labelMap: ${unmapped.join(", ")}. ` +
+        "Add them to labelMap here AND in web/scripts/derive-facts.mjs (or to EXCLUDED if intentionally hidden).",
+    );
+  }
   return variants.map((v) => labelMap[v]).filter(Boolean);
 }
 
 function deriveDefaultModel(cfg: string): string | null {
-  const m = cfg.match(/DEFAULT_TEXT_MODEL[^"]*"([^"]+)"/);
+  // Match the const *definition* (`= "..."`); the definition moved to
+  // config/models.rs in the #3311 split, so callers pass config.rs + models.rs.
+  const m = cfg.match(/DEFAULT_TEXT_MODEL\s*(?::\s*&str\s*)?=\s*"([^"]+)"/);
   return m ? m[1] : null;
 }
 
@@ -135,9 +164,10 @@ function deriveLicense(licText: string): string | null {
 }
 
 export async function deriveFactsFromRemote(ghToken?: string): Promise<RepoFacts | null> {
-  const [cargo, configRs, sandboxFiles, npmPkg, licText, toolFiles, latestRelease] = await Promise.all([
+  const [cargo, configRs, configModels, sandboxFiles, npmPkg, licText, toolFiles, latestRelease] = await Promise.all([
     fetchText("Cargo.toml", ghToken),
     fetchText("crates/tui/src/config.rs", ghToken),
+    fetchText("crates/tui/src/config/models.rs", ghToken),
     fetchListing("crates/tui/src/sandbox", ghToken),
     fetchText("npm/deepseek/package.json", ghToken),
     fetchText("LICENSE", ghToken),
@@ -154,7 +184,7 @@ export async function deriveFactsFromRemote(ghToken?: string): Promise<RepoFacts
     crates: deriveCrates(cargo),
     sandboxBackends: sandboxFiles ? deriveSandboxBackends(sandboxFiles) : BUILD_FACTS.sandboxBackends,
     providers: deriveProvidersFromConfig(configRs),
-    defaultModel: deriveDefaultModel(configRs),
+    defaultModel: deriveDefaultModel(`${configRs}\n${configModels ?? ""}`),
     nodeEngines: (() => {
       try { return npmPkg ? JSON.parse(npmPkg).engines?.node ?? null : null; } catch { return null; }
     })(),

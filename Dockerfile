@@ -58,13 +58,12 @@ COPY . .
 RUN --mount=type=cache,id=deepseek-target-${TARGETARCH},target=/build/target,sharing=locked \
     --mount=type=cache,id=deepseek-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=deepseek-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
-    cargo build --release --locked --target "$(cat /rust-target)" \
+    rustup target add "$(cat /rust-target)" \
+    && cargo build --release --locked --target "$(cat /rust-target)" \
       -p deepseek-cli -p deepseek-tui \
     && mkdir -p /out \
     && cp target/$(cat /rust-target)/release/deepseek /out/ \
-    && cp target/$(cat /rust-target)/release/deepseek-tui /out/ \
-    && cp target/$(cat /rust-target)/release/deepseek /out/ \
-    && cp target/$(cat /rust-target)/release/ /out/
+    && cp target/$(cat /rust-target)/release/deepseek-tui /out/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -78,14 +77,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN groupadd --gid 1000 deepseek \
     && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 deepseek \
     && install -d -m 0700 -o deepseek -g deepseek /home/deepseek/.deepseek \
-    && install -d -m 0700 -o deepseek -g deepseek /home/deepseek/.deepseek
+    && install -d -m 0700 -o deepseek -g deepseek /home/deepseek/.deepseek \
+    # Legacy entrypoints from the deepseek-tui era; the real binaries are
+    # copied in below (symlinks may dangle until then).
+    && ln -s /usr/local/bin/deepseek /usr/local/bin/deepseek \
+    && ln -s /usr/local/bin/deepseek-tui /usr/local/bin/deepseek-tui
 USER deepseek
 WORKDIR /home/deepseek
 
 COPY --from=builder --chown=deepseek:deepseek /out/deepseek /usr/local/bin/deepseek
 COPY --from=builder --chown=deepseek:deepseek /out/deepseek-tui /usr/local/bin/deepseek-tui
-COPY --from=builder --chown=deepseek:deepseek /out/deepseek /usr/local/bin/deepseek
-COPY --from=builder --chown=deepseek:deepseek /out/ /usr/local/bin/
 
 # The dispatcher expects to find its companion binary next to it.
 # Both are in /usr/local/bin — no further path setup needed.

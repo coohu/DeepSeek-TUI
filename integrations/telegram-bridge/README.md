@@ -7,7 +7,7 @@ version does not need a public webhook URL or inbound port.
 Security model:
 
 - `deepseek serve --http` stays bound to `127.0.0.1`.
-- `/v1/*` runtime calls use `CODEWHALE_RUNTIME_TOKEN`. Legacy
+- `/v1/*` runtime calls use `DEEPSEEK_RUNTIME_TOKEN`. Legacy
   `DEEPSEEK_RUNTIME_TOKEN` is accepted only as a compatibility fallback.
 - Telegram chats must be allowlisted unless `TELEGRAM_ALLOW_UNLISTED=true` is
   set for first pairing.

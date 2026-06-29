@@ -18,8 +18,10 @@
 //! Entries are grouped by `KeybindingSection`. The `chord` field is a
 //! human-readable string formatted exactly the way it should appear in help —
 //! we avoid storing `KeyBinding` values directly because many shortcuts are
-//! pairs (`↑/↓`) or families (`Alt+1/2/3`) that don't map cleanly to a single
+//! pairs (`↑/↓`) or families (`1-8`) that don't map cleanly to a single
 //! chord.
+
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeybindingSection {
@@ -33,7 +35,7 @@ pub enum KeybindingSection {
 }
 
 impl KeybindingSection {
-    pub fn label(self, locale: crate::localization::Locale) -> &'static str {
+    pub fn label(self, locale: crate::localization::Locale) -> Cow<'static, str> {
         use crate::localization::{MessageId, tr};
         let id = match self {
             Self::Navigation => MessageId::HelpSectionNavigation,
@@ -191,6 +193,11 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
+        chord: "Ctrl+X (Tasks sidebar)",
+        description_id: crate::localization::MessageId::KbCancelBackgroundShellJobs,
+        section: KeybindingSection::Submission,
+    },
+    KeybindingEntry {
         chord: "Ctrl+P",
         description_id: crate::localization::MessageId::KbFuzzyFilePicker,
         section: KeybindingSection::Submission,
@@ -208,11 +215,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "v",
         description_id: crate::localization::MessageId::KbSelectedDetails,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
-        chord: "Alt+V",
-        description_id: crate::localization::MessageId::KbToolDetailsPager,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
@@ -237,7 +239,7 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Modes,
     },
     KeybindingEntry {
-        chord: "Alt+1 / Alt+2 / Alt+3",
+        chord: "Alt+1-8",
         description_id: crate::localization::MessageId::KbJumpPlanAgentYolo,
         section: KeybindingSection::Modes,
     },
@@ -249,11 +251,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "Alt+! / Alt+@ / Alt+# / Alt+$ / Alt+0 / Ctrl+Alt+0",
         description_id: crate::localization::MessageId::KbFocusSidebar,
-        section: KeybindingSection::Modes,
-    },
-    KeybindingEntry {
-        chord: "Ctrl+X",
-        description_id: crate::localization::MessageId::KbTogglePlanAgent,
         section: KeybindingSection::Modes,
     },
     // --- Sessions ---
@@ -353,6 +350,39 @@ mod tests {
         assert_eq!(
             crate::localization::tr(crate::localization::Locale::En, ctrl_o.description_id,),
             "Open Activity Detail"
+        );
+    }
+
+    #[test]
+    fn ctrl_x_tasks_sidebar_cancel_all_is_documented() {
+        let ctrl_x_tasks = KEYBINDINGS
+            .iter()
+            .find(|entry| entry.chord == "Ctrl+X (Tasks sidebar)")
+            .expect("Ctrl+X Tasks sidebar keybinding should be documented");
+
+        assert_eq!(
+            ctrl_x_tasks.description_id,
+            crate::localization::MessageId::KbCancelBackgroundShellJobs
+        );
+    }
+
+    #[test]
+    fn tool_details_help_documents_bare_v_without_alt_v() {
+        let selected_details = KEYBINDINGS
+            .iter()
+            .filter(|entry| {
+                entry.description_id == crate::localization::MessageId::KbSelectedDetails
+            })
+            .map(|entry| entry.chord)
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected_details, vec!["v"]);
+        let legacy_modified_details_chord = ["Alt", "V"].join("+");
+        assert!(
+            KEYBINDINGS
+                .iter()
+                .all(|entry| entry.chord != legacy_modified_details_chord),
+            "help should advertise the bare v details shortcut"
         );
     }
 

@@ -35,7 +35,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::models::{SystemPrompt, Tool};
 
@@ -578,9 +577,7 @@ fn tool_to_api_json(tool: &Tool) -> Option<String> {
 
 /// Compute the SHA-256 hex digest of a byte slice.
 fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    crate::hashing::sha256_hex(bytes)
 }
 
 /// Extract the system prompt text from an optional SystemPrompt,

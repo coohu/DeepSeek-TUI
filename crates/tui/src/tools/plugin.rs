@@ -541,7 +541,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    const DEADLOCK_CHILD_ENV: &str = "CODEWHALE_PLUGIN_DEADLOCK_CHILD";
+    const DEADLOCK_CHILD_ENV: &str = "DEEPSEEK_PLUGIN_DEADLOCK_CHILD";
 
     #[test]
     fn test_parse_frontmatter_full() {

@@ -558,6 +558,7 @@ fn resolve_diff_paths(
 }
 
 fn normalize_diff_path(raw: &str) -> Option<String> {
+    let raw = raw.split_once('\t').map_or(raw, |(path, _timestamp)| path);
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
@@ -670,10 +671,22 @@ fn inspect_patch_shape(patch: &str) -> PatchShape {
     let mut shape = PatchShape::default();
     let mut seen = HashSet::new();
     let mut old_path: Option<String> = None;
+    let mut hunk_old_remaining = 0usize;
+    let mut hunk_new_remaining = 0usize;
 
     for line in patch.lines() {
         if line.starts_with("@@") {
             shape.has_hunks = true;
+            if let Some((old_count, new_count)) = hunk_line_counts_for_shape(line) {
+                hunk_old_remaining = old_count;
+                hunk_new_remaining = new_count;
+            }
+            continue;
+        }
+
+        if hunk_old_remaining > 0 || hunk_new_remaining > 0 {
+            advance_hunk_shape_counts(line, &mut hunk_old_remaining, &mut hunk_new_remaining);
+            continue;
         }
 
         if let Some(stripped) = line.strip_prefix("--- ") {
@@ -694,6 +707,30 @@ fn inspect_patch_shape(patch: &str) -> PatchShape {
     }
 
     shape
+}
+
+fn hunk_line_counts_for_shape(header: &str) -> Option<(usize, usize)> {
+    let parts: Vec<&str> = header.split_whitespace().collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let (_, old_count) = parse_range(parts[1].trim_start_matches('-')).ok()?;
+    let (_, new_count) = parse_range(parts[2].trim_start_matches('+')).ok()?;
+    Some((old_count, new_count))
+}
+
+fn advance_hunk_shape_counts(line: &str, old_remaining: &mut usize, new_remaining: &mut usize) {
+    if line.starts_with('\\') {
+        return;
+    }
+    if line.starts_with('+') {
+        *new_remaining = new_remaining.saturating_sub(1);
+    } else if line.starts_with('-') {
+        *old_remaining = old_remaining.saturating_sub(1);
+    } else {
+        *old_remaining = old_remaining.saturating_sub(1);
+        *new_remaining = new_remaining.saturating_sub(1);
+    }
 }
 
 fn validate_patch_shape(shape: &PatchShape, path_override: Option<&str>) -> Result<(), ToolError> {
@@ -926,21 +963,26 @@ fn apply_pending_writes(pending: &[PendingWrite]) -> Result<(), ToolError> {
 
     for entry in pending {
         let result = if let Some(content) = entry.content.as_ref() {
-            if let Some(parent) = entry.path.parent() {
+            let parent_result = if let Some(parent) = entry.path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
                     ToolError::execution_failed(format!(
                         "Failed to create directory {}: {}",
                         parent.display(),
                         e
                     ))
-                })?;
-            }
-            fs::write(&entry.path, content).map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to write {}: {}",
-                    entry.path.display(),
-                    e
-                ))
+                })
+            } else {
+                Ok(())
+            };
+
+            parent_result.and_then(|()| {
+                fs::write(&entry.path, content).map_err(|e| {
+                    ToolError::execution_failed(format!(
+                        "Failed to write {}: {}",
+                        entry.path.display(),
+                        e
+                    ))
+                })
             })
         } else if entry.path.exists() {
             fs::remove_file(&entry.path).map_err(|e| {
@@ -1258,6 +1300,43 @@ diff --git a/old.rs b/old.rs
     }
 
     #[test]
+    fn test_preflight_apply_patch_timestamp_headers_strip_metadata() {
+        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n\
+--- a/src/lib.rs\t2026-06-26 10:00:00 +0000\n\
++++ b/src/lib.rs\t2026-06-26 10:01:00 +0000\n\
+@@ -1,1 +1,1 @@\n\
+-old\n\
++new\n";
+
+        let preflight = preflight_apply_patch(&json!({ "patch": patch })).expect("preflight");
+
+        assert_eq!(preflight.touched_files, vec!["src/lib.rs"]);
+        assert_eq!(preflight.files_total, 1);
+        assert_eq!(preflight.hunks_total, 1);
+    }
+
+    #[test]
+    fn test_preflight_apply_patch_ignores_forged_headers_inside_hunk_shape() {
+        let patch = r"--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,3 @@
+ line1
+--- a/forged.rs
++++ b/forged.rs
+ line3
+";
+
+        let preflight = preflight_apply_patch(&json!({
+            "path": "src/lib.rs",
+            "patch": patch
+        }))
+        .expect("preflight");
+
+        assert_eq!(preflight.touched_files, vec!["src/lib.rs"]);
+        assert_eq!(preflight.header_path_mismatch, None);
+    }
+
+    #[test]
     fn test_preflight_apply_patch_changes_list() {
         let preflight = preflight_apply_patch(&json!({
             "changes": [
@@ -1542,6 +1621,37 @@ diff --git a/same.txt b/same.txt
             fs::read_to_string(tmp.path().join("two.txt")).unwrap(),
             "second\n"
         );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_changes_list_rolls_back_on_write_failure() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+
+        fs::write(tmp.path().join("one.txt"), "old\n").expect("write");
+        fs::write(tmp.path().join("blocked"), "not a dir\n").expect("write blocker");
+
+        let tool = ApplyPatchTool;
+        let err = tool
+            .execute(
+                json!({
+                    "changes": [
+                        { "path": "one.txt", "content": "new\n" },
+                        { "path": "blocked/two.txt", "content": "second\n" }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("second write should fail");
+
+        let message = err.to_string();
+        assert!(message.contains("blocked"), "{message}");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("one.txt")).unwrap(),
+            "old\n"
+        );
+        assert!(!tmp.path().join("blocked").join("two.txt").exists());
     }
 
     #[tokio::test]

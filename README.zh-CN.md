@@ -1,59 +1,65 @@
 # DeepSeek
 
-> 面向 DeepSeek V4 和开放模型的本地 Agent 运行框架：自我、权威、证据闭环。
+> 面向任意模型的终端编程智能体——开放模型优先。
 
-[English README](README.md) · [日本語 README](README.ja-JP.md) · [Tiếng Việt README](README.vi.md)
+一套 Rust TUI 与 CLI，支持 25 个 provider。DeepSeek、OpenRouter、Hugging Face、
+DeepInfra 以及本地 vLLM/SGLang/Ollama 都是一等路由；当你手里是 Anthropic Claude
+或 OpenAI 的 key 时，CodeWhale 也以原生协议直连。工具经审批放行、操作系统级沙箱，
+每一轮都可用 `/restore` 回滚。
 
-![deepseek screenshot](assets/screenshot.png)
+[English README](README.md) · [日本語 README](README.ja-JP.md) · [Tiếng Việt README](README.vi.md) · [한국어 README](README.ko-KR.md) · [deepseek.net](https://deepseek.net/) · [安装指南](docs/INSTALL.md) · [Provider 注册表](docs/PROVIDERS.md) · [更新日志](CHANGELOG.md)
 
-## 核心想法
+[![CI](https://github.com/coohu/deepseek-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/coohu/deepseek-tui/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/deepseek-cli?label=crates.io)](https://crates.io/crates/deepseek-cli)
+[![npm](https://img.shields.io/npm/v/deepseek?label=npm)](https://www.npmjs.com/package/deepseek)
+[![DeepWiki project index](https://img.shields.io/badge/DeepWiki-project-blue)](https://deepwiki.com/coohu/deepseek-tui)
 
-多数编程 Agent 从“更强”开始：更多工具、更长上下文、更多自动化。DeepSeek 从责任开始。
-
-Agent 改仓库前，先要有一个地址：这个终端、这个用户、这个分支、这个会话。这就是 ego 层。不是炫耀，而是连续性；不是人格面具，而是责任落点。
-
-然后它需要法律。真实工作区是一组冲突来源：用户当前意图、仓库规则、Shell 输出、旧记忆、上一次交接、安全策略和未完成改动都会挤在同一轮里。DeepSeek 用 Constitution 给这些来源排出顺序：当前用户请求高于旧上下文；实时证据高于假设；验证高于自信；个性只影响语气，不决定行为。
-
-DeepSeek 的产品本质是模型外面的排序层：谁在行动、听谁的 law、有什么证据，以及下一个人或 Agent 如何继续。
-
-## 已经具备的能力
-
-- 本地优先的终端 TUI；
-- 文件、Shell、Git、Web、MCP、RLM、子 Agent 等带 schema 的工具；
-- 审批门、沙箱、side-git 快照和 `/restore` 回滚；
-- 编辑后的语言服务器诊断反馈；
-- 并发子 Agent、持久会话、fork、relay 交接和运行时 API；
-- DeepSeek V4 一等支持，同时保留 OpenRouter、Xiaomi MiMo、NVIDIA NIM、Arcee、SiliconFlow、Fireworks、Novita、自托管 SGLang/vLLM、Ollama 等显式 provider 路由。
-
-DeepSeek 是一等路径，不是唯一边界。provider、model、base URL 和凭据是分开的选择。
+![DeepSeek 在终端中运行](assets/screenshot.png)
 
 ## 安装
 
 ```bash
-cargo install deepseek-cli --locked
-cargo install deepseek-tui --locked
-deepseek --version
-deepseek --model auto
+npm install -g deepseek
+deepseek --version   # 0.8.65
 ```
 
-其他路径：
+npm wrapper（Node 18+）会从 GitHub Releases 下载经 SHA-256 校验的二进制，并安装
+`deepseek`、`codew` 和 `deepseek-tui` 三个命令。更想从源码构建？用 cargo
+（Rust 1.88+）：
 
 ```bash
-# GitHub Releases 提供平台归档包：
-# https://github.com/coohu/deepseek-tui/releases
+cargo install deepseek-cli --locked
+cargo install deepseek-tui --locked
+```
 
-# 如果 GitHub 访问不稳定，可以使用 CNB 镜像：
-cargo install --git https://cnb.cool/deepseek.net/deepseek --tag v0.8.54 deepseek-cli --locked --force
-cargo install --git https://cnb.cool/deepseek.net/deepseek --tag v0.8.54 deepseek-tui --locked --force
+> **Linux / WSL2 用户注意：** 从源码构建前请先安装系统构建依赖：
+> `sudo apt-get install -y build-essential pkg-config libdbus-1-dev`。
+> 详见 [INSTALL.md](docs/INSTALL.md#4-install-via-cargo-any-tier-1-rust-target)。
 
-# 旧 Homebrew 兼容路径，formula 仍使用 deepseek-tui 名称
-brew tap coohu/deepseek-tui
+如果访问 GitHub 不稳定，推荐直接走下面的 CNB 镜像。其他安装路径：
+
+```bash
+# Docker
+docker pull ghcr.io/hmbown/deepseek:latest
+
+# Nix
+nix run github:coohu/deepseek-tui
+
+# Windows
+scoop install deepseek        # 或使用 GitHub Releases 中的 NSIS 安装包
+
+# CNB 镜像：适合无法稳定访问 GitHub 的用户
+cargo install --git https://cnb.cool/deepseek.net/deepseek --tag v0.8.65 deepseek-cli --locked --force
+cargo install --git https://cnb.cool/deepseek.net/deepseek --tag v0.8.65 deepseek-tui --locked --force
+
+# 旧 Homebrew 兼容路径：formula 改名期间仍沿用 deepseek-tui
+brew tap Hmbown/deepseek-tui
 brew install deepseek-tui
 ```
 
-v0.8.54 的 `deepseek` npm wrapper 暂缓发布，直到 release asset 发布路径加固完成。本版本请使用 Cargo、GitHub Releases 或 CNB。
-
-Docker、直接下载、中国大陆镜像、Windows/Scoop、Nix、校验和和故障排查见 [docs/INSTALL.md](docs/INSTALL.md)。
+各平台的预编译归档——包括 Linux riscv64——都附在
+[GitHub Releases](https://github.com/coohu/deepseek-tui/releases)。校验和、
+中国大陆镜像、Windows 细节与故障排查见 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ## 第一次运行
 
@@ -64,100 +70,176 @@ deepseek doctor
 deepseek
 ```
 
-常用入口：`/provider`、`/model`、`/config`、`/statusline`、`/skills`、`/restore`。在输入框前加 `!` 可以通过正常审批和沙箱路径运行 Shell 命令。
+每个 provider 都是同样的一行写法：`--provider openrouter`、
+`--provider moonshot`，或者把 `vllm`、`sglang`、`ollama` 指向你自己的
+localhost 运行时——完全不需要 key。手里是 Claude 的 key？运行
+`deepseek auth set --provider anthropic`，或直接导出 `ANTHROPIC_API_KEY`，
+原生 Messages 适配器会接管后续。
+
+密钥保存在 `~/.deepseek/config.toml`；旧的 `~/.deepseek/` 配置仍会被读取，
+保持兼容。
+
+常用会话内命令：
+
+- `/provider` 与 `/model` 在会话中途切换路由和模型。
+- `/restore` 从 side-git 快照回滚之前的某一轮。
+- `/skills` 从 `~/.deepseek/skills/` 加载可复用的工作流。
+- `/config` 编辑运行时设置；`/statusline` 显示当前路由、费用和会话状态。
+- `! cargo test -p deepseek-tui` 让任意 shell 命令走正常的审批与沙箱路径。
+
+无头模式，用于脚本和 CI：
+
+```bash
+deepseek exec --allowed-tools read_file,exec_shell --max-turns 10 "fix the failing test"
+```
+
+## 已交付的能力
+
+一个终端原生的 Agent 运行框架——TUI + CLI、16 个 Rust crate——安全护栏是
+运行时机制，而不是要靠模型自己记住的提醒：
+
+- **审批门控工具 + 操作系统级沙箱。** 文件、Shell、Git、Web、MCP 和子 Agent
+  工具都运行在显式审批门和沙箱后端（bwrap、Landlock、Seatbelt、seccomp）之后。
+- **值得信任的回滚。** side-git 快照与 `/restore`，存放在仓库 `.git` 之外——
+  撤销一轮永远不会动你的提交历史。
+- **Hooks v2** *(0.8.58)*。`tool_call_before` 钩子返回 JSON 形式的
+  `allow`/`deny`/`ask` 决策，deny 优先，支持 glob 匹配器和项目级
+  `.deepseek/hooks.toml`。
+- **并发子 Agent + 按 provider 感知的路由** *(0.8.58)*。并行调查与实现，
+  大模型/轻量模型分档按 provider 解析——不写死任何模型 id。
+- **持久会话。** fork、relay 交接，以及跨会话的磁盘级 prompt 缓存，在
+  Plan/Agent/YOLO 模式切换之间保持字节级稳定 *(0.8.56)*。轮次可挺过系统休眠
+  *(0.8.57)*：流式途中休眠，唤醒后请求会被静默重发，而不是整轮失败。
+- **无头模式。** `deepseek exec` 支持 `--allowed-tools`、
+  `--disallowed-tools`（deny 优先）、`--max-turns` 和
+  `--append-system-prompt` *(0.8.58)*，面向脚本和 CI。
+- **随处可嵌入。** HTTP/SSE 与 ACP 运行时 API、VS Code 扩展（Phase 0），
+  以及 Telegram/飞书桥接（微信桥接实验性）。
+- **日常主力的打磨。** MCP 客户端*和*服务器、可复用 skills、7 种语言本地化
+  （0.8.56 起覆盖审批对话框），以及基于小米 MiMo 的语音/TTS。
+
+### 任意模型，开放模型优先
+
+25 个 provider 共用同一套运行框架、同一部宪法、同一组工具：
+
+- **开放模型，托管服务：** `deepseek`（同侪之首）、`openrouter`、
+  `huggingface`（Inference Providers）、`moonshot`（Kimi）、`volcengine`
+  （火山方舟）、`nvidia-nim`、`together`、`fireworks`、`novita`、
+  `siliconflow` / `siliconflow-CN`、`arcee`、`xiaomi-mimo`、`atlascloud`、
+  `deepinfra`、`wanjie-ark`，外加一条通用的 `openai` 兼容路由，可接任意网关。
+- **开放模型，自托管：** `vllm`、`sglang`、`ollama` 直连你自己的 localhost
+  端点——无需任何 key。
+- **闭源 provider，原生直连：** `anthropic` 走专用的 `/v1/messages` 适配器，
+  支持自适应思考、prompt-cache 断点和签名思考重放——不是 OpenAI 方言的转译
+  垫片；还有 `openai-codex`，复用已有的 ChatGPT/Codex CLI 登录。
+
+路由不只是换个 base URL：`/reasoning` 努力档位会翻译成各 provider 的协议方言，
+子 Agent 分档按 provider 解析，系统提示中的模型事实也按模型模板化而非写死。
+会话中途用 `/provider` 和 `/model` 即可切换。完整注册表——凭据、base URL、
+能力边界——见 [docs/PROVIDERS.md](docs/PROVIDERS.md)。
+
+子 Agent 扇出优先走配置：在 `[subagents]` 写全局默认值，再用
+`[subagents.providers.deepseek]`、`[subagents.providers.glm]`、
+`[subagents.providers.openrouter]` 等按 API 调整。直连 DeepSeek 可以放宽；
+订阅或限流 route 可以保持 3–5 个并发，不需要改 prompt 或代码。详见
+[docs/SUBAGENTS.md](docs/SUBAGENTS.md#concurrency-cap)。
+
+完整细节见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 核心想法 —— 这个版本放进来的 mission idea
+
+多数编程 Agent 从加码开始：更多工具、更长上下文、更多自主性。CodeWhale
+从落实责任开始。
+
+（这是本版本正在落地的设计使命；memory、cost、remote orchestration 等具体形态仍在迭代，详见下方的 v0.9.0 轨道。）
+
+一个会改你仓库的 Agent 应该有一个地址——这个终端、这个用户、这个分支、
+这个会话。不是人格面具，而是一个回信地址。出了问题，“是模型干的”不是答案；
+“这个实例，在这个会话里，经过这次审批”才是。
+
+接下来它需要法律。真实的工作会话是一摞冲突：你当前的请求、仓库的指令、
+新鲜的 shell 输出、过期的记忆、上一个 Agent 的交接，全都挤在同一轮里。
+**DeepSeek Constitution** 把权威次序固定下来：
+
+1. **用户意图至上。** 你当前的请求高于过期的仓库指引、记忆、先前的交接和
+   人格叠加层。
+2. **仓库法律必须显式。** 添加 `.deepseek/constitution.json`，声明项目的
+   持久权威：受保护的不变量、分支策略、验证规则。
+3. **证据高于叙述。** 工具输出胜过自信的猜测。`cargo test` 失败就如实报告
+   `cargo test` 失败，绝不被总结成乐观措辞。验证是任务的一部分，不是尾声。
+4. **记忆排在最后。** 有用，但永不具备权威。
+
+真正起作用的策略由代码强制执行，而非靠提示词：审批门、沙箱、快照、回滚和
+工具 schema 都是模型无法靠话术绕过的运行时机制。
+
+而这些法律没有一条住在模型里——这正是模型可以随时更换的原因。运行框架承载
+宪法；模型提供推理。DeepSeek 和开放权重世界是一等公民，你局域网里那台跑着
+vLLM 或 Ollama 的机器是完全平等的一员；当你手里是 Claude 或 OpenAI 的 key
+时，CodeWhale 同样以原生协议对话。
+
+这就是产品本身：不是更大的模型，而是围绕你所选模型的一套更严格的运行框架。
+换掉模型，法律不变。
 
 ## 更多文档
 
-README 只保留概念和最快路径。细节放在文档和 [deepseek.net](https://deepseek.net/)：
+README 承载理念和最快路径，细节放在文档和 [deepseek.net](https://deepseek.net/)：
 
-- [用户指南](docs/GUIDE.md)
-- [安装指南](docs/INSTALL.md)
-- [配置和仓库 constitution](docs/CONFIGURATION.md)
-- [Provider 注册表](docs/PROVIDERS.md)
-- [子 Agent](docs/SUBAGENTS.md)
-- [Runtime API](docs/RUNTIME_API.md)
-- [Model Lab](docs/MODEL_LAB.md)
-- [架构](docs/ARCHITECTURE.md)
-- [v0.9.0 发布验收](docs/V0_9_0_RELEASE_ACCEPTANCE.md)
+- [用户指南](docs/GUIDE.md) —— 上手 DeepSeek 的第一个小时。
+- [安装指南](docs/INSTALL.md) —— 所有安装路径与故障排查。
+- [配置](docs/CONFIGURATION.md) —— 配置文件、仓库 constitution 和 provider 设置。
+- [Provider 注册表](docs/PROVIDERS.md) —— 模型路由、凭据、base URL 与能力边界。
+- [子 Agent](docs/SUBAGENTS.md) —— 角色、生命周期、输出契约与恢复行为。
+- [MCP](docs/MCP.md) —— 接入外部工具服务器，或让 DeepSeek 自己作为 MCP 服务器运行。
+- [Runtime API](docs/RUNTIME_API.md) —— HTTP/SSE、ACP、移动端及 GUI/编辑器集成契约。
+- [Model Lab](docs/MODEL_LAB.md) —— 开放模型发现与评测路线图。
+- [架构](docs/ARCHITECTURE.md) —— crate 布局、运行时流程、工具系统、扩展点与安全模型。
 
 ## v0.9.0 轨道
 
-v0.9.0 仍是集成轨道，只有在 tag、GitHub Release、npm、Cargo 和发布产物都真实切出并验证后才算发布。当前重点包括 relay/交接、转录降噪、命令和 provider 架构、VS Code/GUI runtime API、HarnessProfile、WhaleFlow，以及贡献者 credit hygiene。
+v0.9.0 是当前的集成轨道，正在那里汇聚的工作包括：
+
+- 更强的跨会话、跨 Agent 的 relay 与交接界面；
+- 高密度工具运行时更安静的转录；
+- 面向 VS Code 与 GUI 客户端的运行时 API；
+- WhaleFlow 分支/叶子工作流编排。
+
+逐版本的细节见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 致谢
 
 - **[DeepSeek](https://github.com/deepseek-ai)** — 感谢 DeepSeek 提供模型与支持，让每一次交互成为可能。
-- **[DataWhale](https://github.com/datawhalechina)** — 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
-- **[OpenWarp](https://github.com/zerx-lab/warp)** — 感谢 OpenWarp 优先支持 deepseek，并一起打磨更好的终端智能体体验。
-- **[Open Design](https://github.com/nexu-io/open-design)** — 感谢 Open Design 对面向设计的智能体工作流提供支持与协作。
+- **[DataWhale](https://github.com/datawhalechina)** 🐋 — 感谢 DataWhale 的支持，并欢迎我们加入“鲸兄弟”大家庭。
+- **[OpenWarp](https://github.com/zerx-lab/warp)** — 感谢 OpenWarp 优先支持 codewhale，并一起打磨更好的终端智能体体验。
+- **[Open Design](https://github.com/nexu-io/open-design)** — 感谢 Open Design 围绕设计导向的智能体工作流给予的支持与协作。
 
-本项目由不断壮大的贡献者社区共同打造：
+本项目由不断壮大的贡献者社区共同打造。维护者的原则很简单：报告和 PR 都是
+真实的项目工作——即使最终补丁需要收窄、延后，或被吸收进维护者分支，也是如此。
 
-v0.8.48 合并或吸收的贡献者包括：**[@cy2311](https://github.com/cy2311)**、**[@LING71671](https://github.com/LING71671)**、**[@axobase001](https://github.com/axobase001)**、**[@dzyuan](https://github.com/dzyuan)**、**[@mvanhorn](https://github.com/mvanhorn)**、**[@malsony](https://github.com/malsony)**、**[@gaord](https://github.com/gaord)**、**[@yuanchenglu](https://github.com/yuanchenglu)**、**[@idling11](https://github.com/idling11)**、**[@h3c-hexin](https://github.com/h3c-hexin)**、**[@AdityaVG13](https://github.com/AdityaVG13)**、**[@Sskift](https://github.com/Sskift)**、**[@cyq1017](https://github.com/cyq1017)**、**[@HUQIANTAO](https://github.com/HUQIANTAO)**、**[@New2Niu](https://github.com/New2Niu)**、**[@AiurArtanis](https://github.com/AiurArtanis)**、**[@Lee-take](https://github.com/Lee-take)**、**[@nightt5879](https://github.com/nightt5879)**、**[@AresNing](https://github.com/AresNing)**、**[@AccMoment](https://github.com/AccMoment)**、**[@reidliu41](https://github.com/reidliu41)**、**[@aboimpinto](https://github.com/aboimpinto)**、**[@zhuangbiaowei](https://github.com/zhuangbiaowei)**、**[@donglovejava](https://github.com/donglovejava)**、**[@hongqitai](https://github.com/hongqitai)**、**[@zlh124](https://github.com/zlh124)**、**[@encyc](https://github.com/encyc)**、**[@Implementist](https://github.com/Implementist)**、**[@lihuan215](https://github.com/lihuan215)**、**[@LeoAlex0](https://github.com/LeoAlex0)**、**[@jimmyzhuu](https://github.com/jimmyzhuu)**、**[@rockyzhang](https://github.com/rockyzhang)**、**[@mo-vic](https://github.com/mo-vic)**、**[@hufanexplore](https://github.com/hufanexplore)**、**[@hoclaptrinh33](https://github.com/hoclaptrinh33)** 和 **[@BryonGo](https://github.com/BryonGo)**。
-
-同样感谢提供报告、复现和验证的 **[@buko](https://github.com/buko)**、**[@yyyCode](https://github.com/yyyCode)**、**[@gaslebinh-glitch](https://github.com/gaslebinh-glitch)**、**[@Dr3259](https://github.com/Dr3259)**、**[@lpeng1711694086-lang](https://github.com/lpeng1711694086-lang)**、**[@VerrPower](https://github.com/VerrPower)**、**[@yan-zay](https://github.com/yan-zay)**、**[@jretz](https://github.com/jretz)**、**[@Neo-millunnium](https://github.com/Neo-millunnium)**、**[@caeserchen](https://github.com/caeserchen)**、**[@T-Phuong-Nguyen](https://github.com/T-Phuong-Nguyen)**、**[@zhyuzhyu](https://github.com/zhyuzhyu)**、**[@0gl20shk0sbt36](https://github.com/0gl20shk0sbt36)**、**[@hatakes](https://github.com/hatakes)**、**[@goodvecn-dev](https://github.com/goodvecn-dev)**、**[@bevis-wong](https://github.com/bevis-wong)**、**[@PurplePulse](https://github.com/PurplePulse)** 和 **[@nbiish](https://github.com/nbiish)**。
-
-- **[merchloubna70-dot](https://github.com/merchloubna70-dot)** — 28 个 PR，涵盖功能、修复和 VS Code 扩展基础架构 (#645–#681)
-- **[WyxBUPT-22](https://github.com/WyxBUPT-22)** — Markdown 表格、粗体/斜体和水平线渲染 (#579)
-- **[loongmiaow-pixel](https://github.com/loongmiaow-pixel)** — Windows + 中国安装文档 (#578)
-- **[20bytes](https://github.com/20bytes)** — 用户记忆文档和帮助优化 (#569)
-- **[staryxchen](https://github.com/staryxchen)** — glibc 兼容性预检 (#556)
-- **[Vishnu1837](https://github.com/Vishnu1837)** — glibc 兼容性改进 (#565)
-- **[shentoumengxin](https://github.com/shentoumengxin)** — Shell `cwd` 边界验证 (#524)
-- **[toi500](https://github.com/toi500)** — Windows 粘贴修复报告
-- **[xsstomy](https://github.com/xsstomy)** — 终端启动重绘报告
-- **[melody0709](https://github.com/melody0709)** — 斜杠前缀回车激活报告
-- **[lloydzhou](https://github.com/lloydzhou)** 和 **[jeoor](https://github.com/jeoor)** — 压缩成本报告；lloydzhou 还贡献了确定性的环境上下文注入 (#813, #922) 和 KV 前缀缓存稳定化 (#1080)
-- **[Agent-Skill-007](https://github.com/Agent-Skill-007)** — README 清晰化改进 (#685)
-- **[woyxiang](https://github.com/woyxiang)** — Windows 安装文档 (#696)
-- **[wangfeng](mailto:wangfengcsu@qq.com)** — 价格/折扣信息更新 (#692)
-- **[zichen0116](https://github.com/zichen0116)** — CODE_OF_CONDUCT.md (#686)
-- **[dfwqdyl-ui](https://github.com/dfwqdyl-ui)** — 模型 ID 大小写兼容性报告 (#729)
-- **[Oliver-ZPLiu](https://github.com/Oliver-ZPLiu)** — `working...` 卡死状态 Bug 报告和 Windows 剪贴板兜底修复 (#738, #850)
-- **[reidliu41](https://github.com/reidliu41)** — 退出后的恢复提示、工作区信任持久化、Ollama provider 支持，以及思考块流式终结修复 (#863, #870, #921, #1078)
-- **[xieshutao](https://github.com/xieshutao)** — 纯 Markdown skill 兜底解析 (#869)
-- **[GK012](https://github.com/GK012)** — npm wrapper 的 `--version` 兜底 (#885)
-- **[y0sif](https://github.com/y0sif)** — 直接子智能体完成后唤醒父级 turn loop (#901)
-- **[mac119](https://github.com/mac119)** 和 **[leo119](https://github.com/leo119)** — `deepseek update` 命令文档 (#838, #917)
-- **[dumbjack](https://github.com/dumbjack)** / **浩淼的mac** — shell 命令空字节安全加固 (#706, #918)
-- **macworkers** — fork 完成后显示新 session id (#600, #919)
-- **zero** 和 **[zerx-lab](https://github.com/zerx-lab)** — 通知条件配置和更完整的 OSC 9 通知正文 (#820, #920)
-- **[chnjames](https://github.com/chnjames)** — @mention 补全缓存、配置恢复优化，以及 Windows UTF-8 shell 输出修复 (#849, #927, #982, #1018)
-- **[angziii](https://github.com/angziii)** — 配置安全、异步清理、Docker 加固和命令安全修复 (#822, #824, #827, #831, #833, #835, #837)
-- **[elowen53](https://github.com/elowen53)** — UTF-8 解码和确定性测试覆盖 (#825, #840)
-- **[wdw8276](https://github.com/wdw8276)** — 用于自定义 session 标题的 `/rename` 命令 (#836)
-- **[banqii](https://github.com/banqii)** — `.cursor/skills` 发现路径支持 (#817)
-- **[junskyeed](https://github.com/junskyeed)** — API 请求动态 `max_tokens` 计算 (#826)
-- **Hafeez Pizofreude** — `fetch_url` 的 SSRF 保护和 Star History 图表
-- **Unic (YuniqueUnic)** — 基于 schema 的配置 UI（TUI + web）
-- **Jason** — SSRF 安全加固
-- **[axobase001](https://github.com/axobase001)** — 快照孤儿文件清理、npm 安装守卫、会话遥测修复、模型作用域缓存清理、符号链接技能支持，以及 npm 镜像逃生路径指引 (#975, #1032, #1047, #1049, #1052, #1019, #1051, #1056)
-- **[MengZ-super](https://github.com/MengZ-super)** — `/theme` 命令基础和 SSE gzip/brotli 解压支持 (#1057, #1061)
-- **[DI-HUO-MING-YI](https://github.com/DI-HUO-MING-YI)** — Plan 模式只读沙箱安全修复 (#1077)
-- **[bevis-wong](https://github.com/bevis-wong)** — 粘贴-回车自动提交问题的精确复现 (#1073)
-- **[Duducoco](https://github.com/Duducoco)** 和 **[AlphaGogoo](https://github.com/AlphaGogoo)** — 技能斜杠菜单和 `/skills` 覆盖范围修复 (#1068, #1083)
-- **[ArronAI007](https://github.com/ArronAI007)** — macOS Terminal.app 和 ConHost 窗口大小调整残留修复 (#993)
-- **[THINKER-ONLY](https://github.com/THINKER-ONLY)** — OpenRouter 和自定义端点模型 ID 保留 (#1066)
-- **[Jefsky](https://github.com/Jefsky)** — `deepseek-cn` 官方端点默认值 (#1079, #1084)
-- **[wlon](https://github.com/wlon)** — NVIDIA NIM provider API key 优先级诊断 (#1081)
-- **[donglovejava](https://github.com/donglovejava)** — paste @file 整合、CJK panic 修复、用户反馈、RLM 路由、edit_file 重试 (#2154–#2168)
-- **[encyc](https://github.com/encyc)** — session token 分解显示和 `/status` (#2152)
-- **[saieswar237](https://github.com/saieswar237)** — 审查流程文档 (#2178)
-- **[sximelon](https://github.com/sximelon)** — paste Enter 抑制、键盘处理提取 (#2174, #2042)
-- **[nanookclaw](https://github.com/nanookclaw)** — search provider 显示在 doctor (#2135)
-- **[Sskift](https://github.com/Sskift)** — CLI 默认环境变量覆盖防止 (#2119)
-- **[xin1104](https://github.com/xin1104)** — Homebrew deepseek 二进制安装 (#2105)
-- **[mrluanma](https://github.com/mrluanma)** — Metaso 搜索提供商 (#2059)
-- **[Lellansin](https://github.com/Lellansin)** — 主目录下跳过配置合并 (#2055)
-- **[zhuangbiaowei](https://github.com/zhuangbiaowei)** — 更新发布渠道 (#2145)
+完整且持续更新的逐位贡献者名单，请见
+[英文 README 的 Thanks 章节](README.md#thanks)——那里是权威的致谢记录。
 
 ---
 
 ## 贡献
 
-欢迎提交 pull request——请先查看 [CONTRIBUTING.md](CONTRIBUTING.md) 并留意[开放 issue](https://github.com/coohu/DeepSeek-TUI/issues) 中的好入门任务。
+参见 [CONTRIBUTING.md](CONTRIBUTING.md)。欢迎提交 Pull Request——可以先从
+[开放 issue](https://github.com/coohu/deepseek-tui/issues) 中寻找适合入门的任务。
 
-*本项目与 DeepSeek Inc. 无隶属关系。*
+DeepSeek 收到很多高质量的报告和 PR。维护者的姿态是把这扇门一直敞开，
+同时守住发布质量：
+
+- Issue 应保持人类可读、可执行。除非维护者主动启用强制模式，接收自动化只起建议作用。
+- 评审 PR 看代码、测试、关联 issue 和运行时行为，而不只看标题。
+- 如果某个 PR 范围太大无法直接合并，维护者可能把安全的部分吸收进更窄的分支，
+  然后为作者署名并说明实际落地了什么。
+- Co-author 署名应使用 `.github/AUTHOR_MAP` 中可映射的 GitHub noreply 身份；
+  报告者和复现作者应在 changelog、release notes 和关闭评论中得到致谢。
+- 经常性贡献者可加入 `.github/APPROVED_CONTRIBUTORS`，让 dry-run 门禁不再打扰他们。
+
+支持项目：[Buy me a coffee](https://www.buymeacoffee.com/hmbown)。
+
+> [!NOTE]
+> *本项目与 DeepSeek Inc. 无隶属关系。*
 
 ## 许可证
 
